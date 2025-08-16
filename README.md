@@ -1,7 +1,7 @@
-# MyPlayer - Starter (P2P music player prototype)
+# Freely (P2P music player)
 
 Este repositorio es un **prototipo** web-first que demuestra:
-- Reproducción P2P local entre pestañas usando WebRTC (simple-peer) + BroadcastChannel.
+- Reproducción P2P local entre pestañas usando WebRTC (libp2p).
 - Base de datos local (SQLite via sql.js) con tablas para usuarios, historial, favoritos, playlists, plugins y settings.
 - Gestión básica de plugins por manifest en `/public/plugins`.
 - Import/export de todo el estado local en JSON.
@@ -19,12 +19,7 @@ npm install
 npm run dev
 ```
 
-3. Abre `http://localhost:5173` en dos pestañas para probar la señalización local (BroadcastChannel).
-
-- En una pestaña presiona `Crear peer (initiator)` y en la otra `Crear peer (receiver)`.
-- Selecciona un archivo de audio en el panel Reproductor en la pestaña iniciadora; los chunks se enviarán por DataChannel y la otra pestaña reproducirá los blobs recibidos (prototipo simple).
-
-## Pasos siguientes (Android)
+## (Android)
 Este proyecto está pensado para empaquetarse con **Capacitor** para Android. Resumen:
 
 1. Genera build de producción:
