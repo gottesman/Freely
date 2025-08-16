@@ -57,8 +57,9 @@ export default function TitleBar({ title = 'Freely', icon, onSearch }: { title?:
           className="tb-search"
           placeholder="Find your music..."
           value={query}
-          onChange={(e) => { setQuery(e.target.value); if (onSearch) onSearch(e.target.value) }}
-          onKeyDown={(e) => { if (e.key === 'Enter' && onSearch) onSearch(query) }}
+              onChange={(e) => { setQuery(e.target.value); if (onSearch) onSearch(e.target.value) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && onSearch) onSearch(query) }}
+              onFocus={() => { if (onSearch) onSearch('') }}
           aria-label="Search"
         />
       </div>
