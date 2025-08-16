@@ -22,12 +22,11 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
     ;(async () => {
       // Use sql.js (WASM) via local `src/database/sql-wasm.js` for consistent multi-platform behavior.
       try {
-  // load the bundled sql-wasm module. use require at runtime to avoid bundling issues
+  // load sql.js from the installed npm package
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  // @ts-ignore
-  const mod = require('../database/sql-wasm')
-  const initSqlJs = (mod && (mod.default || mod)) as any
-  const SQL = await initSqlJs({ locateFile: (file: string) => new URL(`../database/${file}`, import.meta.url).toString() })
+  const initSqlJs = require('sql.js')
+  // serve the wasm from the public/ root at /sql-wasm.wasm (copied there by scripts/copy-sql-wasm.js)
+  const SQL = await initSqlJs({ locateFile: () => '/sql-wasm.wasm' })
 
         const isNode = typeof process !== 'undefined' && !!(process.versions && process.versions.node)
         let resolvedPath: string | null = null

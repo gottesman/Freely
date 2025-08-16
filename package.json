@@ -3,6 +3,8 @@
     "version": "0.1.0",
     "private": true,
     "scripts": {
+        "fetch-wasm": "node scripts/copy-sql-wasm.js",
+        "postinstall": "npm run fetch-wasm",
         "dev": "vite",
         "build": "vite build",
         "preview": "vite preview"
@@ -16,8 +18,9 @@
         "@libp2p/webrtc": "^4.1.10",
         "@libp2p/websockets": "^8.2.0",
         "libp2p": "^1.9.4",
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "sql.js": "^1.8.0"
     },
     "devDependencies": {
         "@types/node": "^24.3.0",
