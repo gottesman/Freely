@@ -53,21 +53,70 @@ function createWindow() {
   });
 
   // Also monitor resize to detect user dragging to restore from snapped/maximized states.
-  let _maxNotifyTimer = null
+  let _maxNotifyTimer = null;
   const notifyMaxState = () => {
     try {
-      const isMax = mainWindow.isMaximized()
-      mainWindow.webContents.send('window:maximized', !!isMax)
+      const isMax = mainWindow.isMaximized();
+      mainWindow.webContents.send('window:maximized', !!isMax);
     } catch (e) {}
-  }
+  };
   const scheduleNotify = () => {
-    if (_maxNotifyTimer) clearTimeout(_maxNotifyTimer)
-    _maxNotifyTimer = setTimeout(() => { _maxNotifyTimer = null; notifyMaxState() }, 60)
-  }
+    if (_maxNotifyTimer) clearTimeout(_maxNotifyTimer);
+    _maxNotifyTimer = setTimeout(() => { _maxNotifyTimer = null; notifyMaxState(); }, 60);
+  };
 
   mainWindow.on('resize', scheduleNotify);
+
   // 'move' fires while dragging on many platforms — use it to detect restore-via-drag
-  mainWindow.on('move', scheduleNotify);
+  // and also start a short polling loop while the user is dragging so we can
+  // update the renderer rapidly and implement drag-to-top-to-maximize behavior.
+  let _dragPoll = null;
+  let _lastMoveAt = 0;
+  let _pendingEdgeMax = false;
+
+  const startDragPoll = () => {
+    if (_dragPoll) return;
+    _dragPoll = setInterval(() => {
+      const now = Date.now();
+        // stop polling after a short idle period -> consider this the "drop" / mouse-up
+        if (_lastMoveAt && (now - _lastMoveAt) > 300) {
+          clearInterval(_dragPoll);
+          _dragPoll = null;
+          _lastMoveAt = 0;
+          try {
+            if (_pendingEdgeMax && mainWindow && typeof mainWindow.maximize === 'function' && !mainWindow.isMaximized()) {
+              _pendingEdgeMax = false;
+              mainWindow.maximize();
+            } else {
+              _pendingEdgeMax = false;
+              notifyMaxState();
+            }
+          } catch (e) {}
+          return;
+        }
+      try {
+        const isMax = mainWindow.isMaximized();
+        mainWindow.webContents.send('window:maximized', !!isMax);
+        // detect if the user has dragged to the top edge; set a pending flag
+        // and only maximize when the drag finishes (on idle). If the window
+        // moves away from the top edge, clear the pending flag.
+        const bounds = mainWindow.getBounds();
+        if (!isMax && bounds && typeof bounds.y === 'number') {
+          if (bounds.y <= 0) {
+            _pendingEdgeMax = true;
+          } else {
+            _pendingEdgeMax = false;
+          }
+        }
+      } catch (e) {}
+    }, 50); // poll at 50ms for responsive UI updates
+  };
+
+  mainWindow.on('move', () => {
+    _lastMoveAt = Date.now();
+    scheduleNotify();
+    startDragPoll();
+  });
 }
 
 app.whenReady().then(() => {

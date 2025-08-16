@@ -18,21 +18,25 @@ function Main() {
   if (!ready) return <div style={{padding:20}}>Initializing database...</div>
   return (
     <div className="app">
-  <TitleBar title="Freely — Player" icon="/icon-192.png" accent="#6b21a8" />
-  <div className="window-body">
-      <div className="column" style={{flex:1}}>
-        <h3 className="header">Freely — Biblioteca</h3>
-        <Library />
+        <div className="bg">
+        </div>
+        <TitleBar title="Freely" icon="logo/icon-192.png" />
+        <div className="window-body">
+          <div className="content">
+            <div className="column" style={{ flex: 1 }}>
+              <h3 className="header">Freely — Biblioteca</h3>
+              <Library />
+            </div>
+            <div className="column" style={{ width: 420 }}>
+              <h3 className="header">Reproductor</h3>
+              <Player />
+            </div>
+            <div className="column" style={{ width: 320 }}>
+              <h3 className="header">Configuración / Plugins</h3>
+              <Settings />
+            </div>
+          </div>
+        </div>
       </div>
-      <div className="column" style={{width:420}}>
-        <h3 className="header">Reproductor</h3>
-        <Player />
-      </div>
-      <div className="column" style={{width:320}}>
-        <h3 className="header">Configuración / Plugins</h3>
-        <Settings />
-      </div>
-  </div>
-    </div>
   )
 }

@@ -1,61 +1,310 @@
-:root { --bg:#0f1724; --card:#0b1220; --accent:#06b6d4; --text:#e6eef6 }
-*{box-sizing:border-box}
-html, body { height: 100%; background: transparent; }
-body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;color:var(--text);overflow:hidden}
-.app{display:flex;flex-direction:column;align-items:stretch;gap:16px;height:100vh;background:var(--bg);border-radius:16px;overflow:hidden;padding:12px 12px 20px 12px;box-shadow:0 6px 18px rgba(0,0,0,0.45);} 
-.column{background:var(--card);padding:12px;border-radius:8px;min-width:280px}
-.header{display:flex;justify-content:space-between;align-items:center}
-.btn{background:var(--accent);color:#021;padding:8px 12px;border-radius:6px;border:none;cursor:pointer}
-.list{margin-top:12px;display:flex;flex-direction:column;gap:8px}
-.item{padding:8px;border-radius:6px;background:rgba(255,255,255,0.02);display:flex;justify-content:space-between;align-items:center}
+@import url("https://fonts.googleapis.com/css?family=Poppins:200,300,400,500,600,700,800,900&display=swap");
+:root {
+    --bg: 15, 23, 36;
+    --bg-opacity: 0.5;
+    --card: #0b1220;
+    --accent: #06b6d4;
+    --text: #e6eef6;
+    --grad-1: rgba(107,33,168,0.12);
+    --grad-2: rgba(29,185,84,0.04);
+    --app-border-radius: 12px;
+    --app-border-color: #fff6;
+    --app-shadow-color: #14141486;
+    --app-shadow-size: 8px;
+}
+
+* {
+    box-sizing: border-box;
+    position: relative;
+}
+
+html,
+body {
+    height: 100%;
+    overflow: hidden;
+    margin: 0;
+    font-family: "Poppins", Inter, Arial, Helvetica, sans-serif;
+    color: var(--text);
+}
+
+.app {
+    border-radius: var(--app-border-radius);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0px;
+    background: rgba(var(--bg),var(--bg-opacity));
+    height: calc(100vh - ( var(--app-shadow-size) * 2 ) );
+    margin: var(--app-shadow-size);
+    box-shadow: 
+    inset 0px 0px 1px 1px var(--app-border-color),
+    var(--app-shadow-color) 0px 2px var(--app-shadow-size) 0px
+}
+.app::before{
+    content: '';
+    width: 100%;
+    height: 100%;
+    background: rgb(var(--bg));
+    position: absolute !important;
+    z-index: -1;
+}
+
+.column {
+    background: var(--card);
+    padding: 12px;
+    border-radius: 8px;
+    min-width: 280px
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center
+}
+
+.btn {
+    background: var(--accent);
+    color: #021;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer
+}
+
+.list {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px
+}
+
+.item {
+    padding: 8px;
+    border-radius: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center
+}
 
 /* Frameless window & custom titlebar */
-.titlebar{
-	user-select: none;
-	-webkit-user-select: none;
-	-webkit-app-region: drag; /* allow dragging */
-	width: 100%;
-	box-sizing: border-box;
-	height: 44px;
-	display:flex;
-	align-items:center;
-	justify-content:space-between;
-	padding:6px 12px;
-	gap:12px;
-	border-radius:12px 12px 0 0;
-	background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-	border: 4px solid transparent;
-	position:relative;
-	overflow:visible;
+.titlebar {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-app-region: drag; /* allow dragging */
+    width: 100%;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    gap: 12px;
+    position: relative;
+    overflow: visible;
 }
 
-.titlebar::before{
-	content:'';
-	position:absolute;inset:0;border-radius:14px 14px 0 0;padding:2px;
-	background: linear-gradient(90deg, rgba(107,33,168,0.10), rgba(29,185,84,0.06));
-	mask: linear-gradient(#000,#000);
-	-webkit-mask: linear-gradient(#000,#000);
-	z-index:0;filter:blur(6px);opacity:0.85;
+
+.titlebar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index: 1
 }
 
-.titlebar-left{display:flex;align-items:center;gap:10px;z-index:1}
-.titlebar-icon{width:28px;height:28px;border-radius:6px}
-.titlebar-icon.placeholder{background:linear-gradient(135deg,var(--accent),#222);width:28px;height:28px}
-.titlebar-title{font-weight:600;color:var(--text);font-size:14px}
+.titlebar-icon {
+    width: 28px;
+    height: 28px;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center center;
+}
 
-.titlebar-right{display:flex;align-items:center;gap:6px;z-index:1}
-.tb-btn{ -webkit-app-region: no-drag; border: none; padding:6px 10px; border-radius:8px; cursor:pointer; background:transparent; color:var(--text); }
-.tb-btn:hover{ background:rgba(255,255,255,0.03) }
-.tb-close{ color:#ff6b6b }
+.titlebar-icon.placeholder {
+    background: linear-gradient(135deg, var(--accent), #222);
+    width: 28px;
+    height: 28px
+}
 
-/* Window body that sits below the titlebar with matching rounded corners */
-.window-body{ border-radius:12px; overflow:hidden; width:100%; display:flex; gap:16px; padding:16px; background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); border:4px solid rgba(255,255,255,0.02) }
+.titlebar-title {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.titlebar-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 1;
+}
+
+.tb-search-icon{
+    position: absolute;
+    left: 15px;
+    display: inline-flex;
+    justify-content: center;
+    color: rgba(230, 238, 246, 0.6);
+    width: 16px;
+    height: 19px;
+    cursor: pointer;
+    z-index: 1;
+}
+
+.titlebar-search{ position: relative; }
+.titlebar-search{
+    -webkit-app-region: no-drag; /* make the input interactive */
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    margin: 0 8px;
+    min-width: 120px;
+}
+
+.tb-search{
+    width: 100%;
+    padding: 6px 10px 6px 28px; /* leave room for the icon */
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.02);
+    color: var(--text);
+    outline: none;
+    font-size: 13px;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.tb-search::placeholder{
+    color: rgba(230,238,246,0.3);
+}
+
+.tb-search:hover {
+    border-color: color-mix(in srgb, var(--accent) 50%, #fff3 50%);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.tb-search:focus {
+    background: rgb(var(--bg));
+    border-color: #fff;
+}
+
+.tb-btn {
+    -webkit-app-region: no-drag;
+    border: none;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text);
+}
+
+.tb-btn:hover {
+    background: rgba(255, 255, 255, 0.03)
+}
+
+.tb-close {
+    color: #ff6b6b
+}
+
+.window-body{
+    border-radius: 12px;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    padding: 0px 16px 16px 16px;
+    box-sizing: border-box;
+}
+
+
+.content {
+    display: flex;
+    gap: 16px;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.content > * {
+    min-width: 120px;
+    min-height: 80px;
+}
 
 /* When maximized remove rounded corners and shadow for native look */
-.app.maximized{ border-radius:0; box-shadow:none; padding:0; }
-.app.maximized .titlebar{ border-radius:0 }
-.app.maximized .window-body{ border-radius:0 }
+.maximized, .maximized {
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0px;
+}
 
-/* animated border: subtle pulsing accent */
-@keyframes pulseBorder{ 0%{box-shadow:0 0 0 0 rgba(107,33,168,0.12)}50%{box-shadow:0 0 24px 6px rgba(29,185,84,0.04)}100%{box-shadow:0 0 0 0 rgba(107,33,168,0.12)} }
-.window-body{ animation: pulseBorder 6s ease-in-out infinite }
+.maximized .titlebar {
+    border-radius: 0
+}
+
+.maximized .window-body {
+    border-radius: 0
+}
+
+/* Rotating blurred background layer with changeable URLs via CSS variables
+   Usage (CSS-only):
+     .bg { --bg-image: url("/path/to/color.png"); --bg-image: url("/path/to/black.png"); }
+   Or inline in HTML:
+     <div class="frame-bg" style="--bg-image:url('color.png'); --bg-image:url('black.png')"></div>
+   If no image URLs are provided the styles fall back to soft radial gradients.
+*/
+.bg{
+    position: absolute;
+    inset: 0; /* top:0; right:0; bottom:0; left:0 */
+    pointer-events: none;
+    z-index: -1;
+    overflow: hidden;
+    /* Image variables: set these to url(...) to use an image instead of the gradient fallback */
+    --bg-image: none;
+    --bg-image: none;
+    /* gradient fallbacks */
+    --bg-color-default: radial-gradient(circle at 70% 20%, rgba(6,182,212,0.28) 0%, rgba(6,182,212,0.12) 20%, transparent 60%);
+    --bg-black-default: radial-gradient(circle at 20% 80%, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.18) 25%, transparent 60%);
+}
+
+.bg::before,
+.bg::after{
+    content: "";
+    position: absolute;
+    width: 200%;
+    height: 200%;
+    border-radius: 100em;
+    transform-origin: 50% 50%;
+    animation: rotate 40s linear infinite;
+    filter: blur(200px) brightness(0.7);
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-position: center;
+}
+
+.bg::before{ /* color blob */
+    right: 0;
+    top: 0;
+    z-index: 10;
+    mix-blend-mode: luminosity;
+    /* prefer image if provided, otherwise use gradient fallback */
+    background-image: var(--bg-image), var(--bg-color-default);
+}
+
+.bg::after{ /* dark blob */
+    left: 0;
+    bottom: 0;
+    z-index: 1;
+    animation-direction: reverse;
+    animation-delay: 10s;
+    background-image: var(--bg-image), var(--bg-black-default);
+}
+
+@keyframes rotate{
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.bg {
+  --bg-image: url('https://img.freepik.com/free-vector/abstract-colorful-flow-shapes-background_23-2148233991.jpg');
+}

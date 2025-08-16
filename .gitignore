@@ -3,3 +3,4 @@ dist
 public/sql*
 server/uploads
 build*
+logo
