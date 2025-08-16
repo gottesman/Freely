@@ -1,57 +1,48 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { chunkArrayBuffer } from '../core/chunker';
-import { createNode, PROTOCOL } from '../core/p2p';
-import type { Libp2p } from 'libp2p';
+import { createNode, PROTOCOL, BOOTSTRAP_PEERS } from '../core/p2p';
 
 export default function Player() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaSourceRef = useRef<MediaSource | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
 
-  const [node, setNode] = useState<Libp2p | null>(null);
+  const [node, setNode] = useState<any | null>(null);
   const [status, setStatus] = useState('Offline');
   const [peerId, setPeerId] = useState<string>('');
   const [remotePeerId, setRemotePeerId] = useState<string>('');
+  const [magnetURI, setMagnetURI] = useState<string | null>(null);
+  const [torrentName, setTorrentName] = useState<string | null>(null);
+  const [torrentMime, setTorrentMime] = useState<string | null>(null);
+  const [progress, setProgress] = useState<number>(0);
 
-  // Effect to initialize and manage the libp2p node
-  useEffect(() => {
-    if (!node) return;
-
-    const handleIncomingStream = async ({ stream }: { stream: any }) => {
-      // stream typing is `any` to avoid depending on @libp2p/interface-stream-muxer types
-      console.log('Incoming stream from', stream.remotePeer?.toString?.());
-      setStatus(`Receiving file from ${stream.remotePeer.toString().slice(-6)}...`);
-      
-      let receivedFirstChunk = false;
-      for await (const chunk of stream.source) {
-        const data = chunk.subarray();
-        if (!receivedFirstChunk) {
-          // 1. First chunk is metadata (MIME type)
-          const metadata = JSON.parse(new TextDecoder().decode(data));
-          console.log('Received metadata:', metadata);
-          setupMediaSource(metadata.mimeType);
-          receivedFirstChunk = true;
-        } else {
-          // 2. Subsequent chunks are audio data
-          appendChunk(data.buffer);
-        }
-      }
-    };
-    
-    node.handle(PROTOCOL, handleIncomingStream);
-
-    return () => {
-      node.unhandle(PROTOCOL);
-    };
-  }, [node]);
+  useEffect(() => {}, [node]);
 
   const startNode = async () => {
     setStatus('Starting node...');
-    const libp2pNode = await createNode();
-    setNode(libp2pNode);
-    setPeerId(libp2pNode.peerId.toString());
+    const p2pNode = await createNode();
+    setNode(p2pNode);
+    setPeerId(p2pNode.peerId.toString());
     setStatus('Node online');
   };
+
+  // Poll torrent status when we have a magnet/infoHash
+  useEffect(() => {
+    let timer: any;
+    if (!magnetURI) return;
+    const infoHash = magnetURI.split(':').pop();
+    const poll = async () => {
+      try {
+        const resp = await fetch(`http://localhost:9000/status/${infoHash}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        setProgress(Math.round((data.progress || 0) * 100));
+      } catch (e) {}
+    };
+    poll();
+    timer = setInterval(poll, 2000);
+    return () => clearInterval(timer);
+  }, [magnetURI]);
   
   const setupMediaSource = (mimeType: string) => {
     if (!MediaSource.isTypeSupported(mimeType)) {
@@ -84,47 +75,46 @@ export default function Player() {
 
   const handleFileSend = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !node || !remotePeerId) {
-      alert('Please start the node and enter a remote peer ID.');
+    if (!file || !node) {
+      alert('Please start the node before sending a file.');
       return;
     }
 
-    setStatus(`Connecting to ${remotePeerId.slice(-6)}...`);
+    setStatus('Uploading and seeding...');
     try {
-  // dialProtocol accepts PeerId | Multiaddr | Multiaddr[] at runtime; cast to any to satisfy TS
-  const stream = await node.dialProtocol(remotePeerId as any, PROTOCOL);
-      setStatus('Connected. Sending file...');
-
-      // 1. Send metadata first
-      const metadata = JSON.stringify({ mimeType: file.type || 'application/octet-stream', name: file.name });
-      await stream.sink([new TextEncoder().encode(metadata)]);
-      
-      // 2. Stream file chunks
-      const fileBuffer = await file.arrayBuffer();
-      const chunks = chunkArrayBuffer(fileBuffer, 256 * 1024);
-      
-      for (const chunk of chunks) {
-        await stream.sink([new Uint8Array(chunk)]);
-        // A small delay can help with flow control on some networks
-        await new Promise(res => setTimeout(res, 20)); 
+      const result = await node.seedFile(file);
+      const streamUrl = node.getStreamUrl(result.infoHash);
+      setMagnetURI(result.magnetURI);
+      setTorrentName(result.name || file.name);
+      setTorrentMime(result.mimeType || file.type || 'application/octet-stream');
+      setStatus('Seeding. Playing...');
+      if (audioRef.current) {
+        audioRef.current.src = streamUrl;
+        await audioRef.current.play();
       }
-      
-      await stream.close();
-      setStatus('File sent successfully!');
+      setStatus('Playing from torrent stream');
     } catch (err: any) {
-      console.error('Failed to send file:', err);
-      setStatus(`Error: ${err.message}`);
+      console.error('Failed to seed file:', err);
+      setStatus(`Error: ${err?.message || err}`);
     }
   };
 
   return (
     <div>
       {!node ? (
-        <button className="btn" onClick={startNode}>Start P2P Node</button>
+        <button className="btn" onClick={startNode}>Start Node</button>
       ) : (
         <div>
-          <strong>Your Peer ID:</strong>
+          <strong>Local Node:</strong>
           <pre style={{ overflowWrap: 'break-word', fontSize: 12 }}>{peerId}</pre>
+        </div>
+      )}
+      {magnetURI && (
+        <div style={{ marginTop: 12 }}>
+          <div><strong>Magnet:</strong> <small style={{ wordBreak: 'break-all' }}>{magnetURI}</small></div>
+          <div><strong>Name:</strong> {torrentName}</div>
+          <div><strong>MIME:</strong> {torrentMime}</div>
+          <div><strong>Progress:</strong> {progress}%</div>
         </div>
       )}
       <div style={{ marginTop: 12 }}>

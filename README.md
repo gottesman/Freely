@@ -1,45 +1,64 @@
-# Freely (P2P music player)
+# Freely — decentralized, P2P music player
 
-Este repositorio es un **prototipo** web-first que demuestra:
-- Reproducción P2P local entre pestañas usando WebRTC (libp2p).
-- Base de datos local (SQLite via sql.js) con tablas para usuarios, historial, favoritos, playlists, plugins y settings.
-- Gestión básica de plugins por manifest en `/public/plugins`.
-- Import/export de todo el estado local en JSON.
+**Freely** is an experimental, web-first music player focused on **peer-to-peer streaming** and **local-first data ownership**.
 
-## Cómo ejecutar en desarrollo (PC)
-1. Instala dependencias:
+The idea: stream music directly from other peers, work offline, and carry your playlists, favorites, and settings anywhere.
+
+## Highlights
+
+* **P2P-first streaming** — play music from LAN or WebRTC peers.
+* **Local-first** — your data stays with you; export/import anytime.
+* **Multi-format** — MP3, FLAC, WAV, OGG, AAC.
+* **Customizable UI** — themes, plugins, small-screen mode.
+* **Cross-platform** — web, desktop, mobile.
+
+## Current Status
+
+✨ **Prototype** — core P2P transport, local DB, basic UI.
+Missing: advanced buffering, robust chunking, polished UX.
+
+## How to Run (Dev)
 
 ```bash
 npm install
-```
-
-2. Ejecuta en modo desarrollo:
-
-```bash
 npm run dev
 ```
 
-## (Android)
-Este proyecto está pensado para empaquetarse con **Capacitor** para Android. Resumen:
+## Desktop build (Electron)
 
-1. Genera build de producción:
-```bash
+This project can be packaged as a Windows executable using Electron + electron-builder.
+
+Developer quick-run (recommended):
+
+```powershell
+npm install
+npm run start-torrent-server   # start local torrent server
+npx electron .                 # run electron from npx (no global install)
+```
+
+To create a Windows installer (.exe / NSIS):
+
+```powershell
 npm run build
+npx electron-builder --win --x64
 ```
-2. Añade Capacitor a tu proyecto (desde la carpeta del frontend):
-```bash
-npm install @capacitor/core @capacitor/cli --save
-npx cap init MyPlayer com.example.myplayer
-npx cap add android
-npx cap copy android
-npx cap open android
-```
-3. En Android Studio ejecuta el proyecto en emulador o dispositivo.
 
-> Nota: WebRTC en WebView puede tener diferencias respecto a navegadores. Para pruebas Android nativas y mejor P2P (sockets/QUIC) deberás integrar un adaptador nativo o usar Tauri + Rust native core. Este repo es punto de partida.
+Note: electron-builder will download Electron binaries. Ensure you have network access and enough disk space.
 
-## Limitaciones del prototipo
-- El flujo de reproducir chunks aquí es **intencionalmente simple** (blob por chunk). Para producción debes implementar buffering, MSE o WebAudio con decoders, verificación de integridad (hash por chunk), reintentos, peers multiplexing y almacenamiento persistente de chunks en disco.
-- Plugins en `public/plugins` son ejemplos estáticos. Implementa un gestor de plugins en el core para ejecutar WASM plugins o conectarse a servicios remotos.
+## Roadmap
+
+1. Better streaming reliability (chunk hashing, multi-peer fetch)
+2. Native SQLite for desktop
+3. IndexedDB option for web
+4. Plugin manager & sandboxing
+5. Mobile polish & WebRTC fixes
+
+## Why?
+
+I couldn’t find a music player that was P2P, plugin-friendly, customizable, and truly local. So I built one.
 
 ---
+
+**License:** MIT
+
+*This is a prototype. Expect breaking changes and rough edges.*

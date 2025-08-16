@@ -1,2 +1,5 @@
 node_modules
+dist
 public/sql*
+server/uploads
+build*

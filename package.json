@@ -1,26 +1,26 @@
 {
     "name": "freely-player",
     "version": "0.1.0",
+    "main": "electron/main.js",
     "private": true,
     "scripts": {
         "fetch-wasm": "node scripts/copy-sql-wasm.js",
         "postinstall": "npm run fetch-wasm",
-        "dev": "vite",
-        "build": "vite build",
-        "preview": "vite preview"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start-torrent-server": "node server/torrent-server.js",
+    "electron:dev": "npm run build && electron .",
+    "electron:build": "npm run build && electron-builder --win --x64",
+    "smoke": "npm run build && npx electron . --enable-logging"
     },
     "dependencies": {
-        "@chainsafe/libp2p-noise": "^16.1.4",
-        "@chainsafe/libp2p-yamux": "^7.0.4",
-        "@libp2p/bootstrap": "^9.0.12",
-        "@libp2p/noise": "^12.0.1",
-        "@libp2p/peer-id": "^3.0.6",
-        "@libp2p/webrtc": "^4.1.10",
-        "@libp2p/websockets": "^8.2.0",
-        "libp2p": "^1.9.4",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "sql.js": "^1.8.0"
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "sql.js": "^1.8.0",
+    "webtorrent": "^1.0.0",
+        "express": "^4.18.2",
+        "multer": "^1.4.5-lts.1"
     },
     "devDependencies": {
         "@types/node": "^24.3.0",
@@ -29,7 +29,34 @@
         "@types/ws": "^8.18.1",
         "@vitejs/plugin-react": "^4.0.0",
         "prettier": "^2.8.8",
-        "typescript": "^5.1.6",
-        "vite": "^7.1.2"
+                "typescript": "^5.1.6",
+                "vite": "^7.1.2",
+                "electron": "^26.0.0",
+                "electron-builder": "^24.6.0"
     }
+        ,
+        "build": {
+            "appId": "com.freely.player",
+            "productName": "Freely Player",
+            "files": [
+                "dist/**",
+                "server/**",
+                "electron/**",
+                "node_modules/**",
+                "package.json"
+            ],
+            "directories": {
+                "output": "build"
+            },
+            "win": {
+                "target": ["nsis"],
+                "icon": "public/icon.ico"
+            }
+        }
+
+        ,
+        "asarUnpack": [
+            "server/**"
+        ]
 }
+

@@ -7,9 +7,11 @@ type DBContext = {
   importJSON: (json: string) => Promise<void>
   exportDB: () => Promise<Uint8Array | null>
   importDB: (data: Uint8Array | ArrayBuffer) => Promise<void>
+  getSetting: (key: string) => Promise<string | null>
+  setSetting: (key: string, value: string) => Promise<void>
 }
 
-const ctx = createContext<DBContext>({ db: null, ready: false, exportJSON: async () => '[]', importJSON: async () => {}, exportDB: async () => null, importDB: async () => {} })
+const ctx = createContext<DBContext>({ db: null, ready: false, exportJSON: async () => '[]', importJSON: async () => {}, exportDB: async () => null, importDB: async () => {}, getSetting: async () => null, setSetting: async () => {} })
 
 export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }> = ({ children, dbPath }) => {
   const [db, setDb] = useState<AnyDB | null>(null)
@@ -20,19 +22,69 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
   useEffect(() => {
     let mounted = true
     ;(async () => {
-      // Use sql.js (WASM) via local `src/database/sql-wasm.js` for consistent multi-platform behavior.
+      // Initialize sql.js (WASM). Try to support both CJS (require) and ESM (dynamic import).
       try {
-  // load sql.js from the installed npm package
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const initSqlJs = require('sql.js')
-  // serve the wasm from the public/ root at /sql-wasm.wasm (copied there by scripts/copy-sql-wasm.js)
-  const SQL = await initSqlJs({ locateFile: () => '/sql-wasm.wasm' })
+        // prefer require when available (Node), otherwise dynamic import
+        let initSqlJs: any = null
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          initSqlJs = require('sql.js')
+        } catch (_) {
+          const mod = await import('sql.js')
+          initSqlJs = mod && (mod.default || mod)
+        }
+
+        if (!initSqlJs) throw new Error('sql.js not available')
+        const locateFile = (file: string) => {
+          // If running in a browser/renderer (including Electron), resolve
+          // the wasm relative to the current document location so file://
+          // points to the built `dist` folder where sql-wasm.wasm is copied.
+          try {
+            if (typeof window !== 'undefined' && window.location) {
+              // base directory containing index.html
+              const href = window.location.href.split('#')[0].split('?')[0]
+              const base = href.substring(0, href.lastIndexOf('/') + 1)
+              return base + file
+            }
+          } catch (e) {}
+
+          // Fallback: try using import.meta if available (module-relative)
+          try {
+            if (typeof import.meta !== 'undefined') {
+              return new URL(`./${file}`, import.meta.url).href
+            }
+          } catch (e) {}
+
+          // Fallback Node path resolution
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const path = require('path')
+            return path.join(process.cwd(), file)
+          } catch (e) {
+            return file
+          }
+        }
+
+        const SQL = await initSqlJs({ locateFile })
 
         const isNode = typeof process !== 'undefined' && !!(process.versions && process.versions.node)
         let resolvedPath: string | null = null
         let database: any
 
-  if (isNode) {
+        const ensureSchema = (dbInstance: any) => {
+          const schema = `
+            CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE);
+            CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT, played_at INTEGER);
+            CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT);
+            CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, track_id TEXT, title TEXT);
+            CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY, manifest TEXT);
+            CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
+          `
+          dbInstance.exec(schema)
+        }
+
+        if (isNode) {
           // Try to open a file DB if present
           try {
             const fs = require('fs')
@@ -45,17 +97,7 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
             } else {
               database = new SQL.Database()
             }
-            // ensure schema
-            const schema = `
-              CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE);
-              CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT, played_at INTEGER);
-              CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT);
-              CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT);
-              CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, track_id TEXT, title TEXT);
-              CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY, manifest TEXT);
-              CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
-            `
-            database.exec(schema)
+            ensureSchema(database)
             if (mounted) {
               setDb(database)
               setReady(true)
@@ -73,46 +115,79 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
               } catch (e) { /* ignore */ }
             }
             process && process.on && process.on('exit', saveToDisk)
-            // also save on SIGINT
             process && process.on && process.on('SIGINT', () => { saveToDisk(); process.exit() })
           } catch (e) {
             // fallback to in-memory sql.js DB
             database = new SQL.Database()
             sqlRef.current = SQL
-            const schema = `
-              CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE);
-              CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT, played_at INTEGER);
-              CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT);
-              CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT);
-              CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, track_id TEXT, title TEXT);
-              CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY, manifest TEXT);
-              CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
-            `
-            database.exec(schema)
+            ensureSchema(database)
             if (mounted) { setDb(database); setReady(true) }
           }
-          } else {
+        } else {
           // Browser / React Native: in-memory sql.js DB (can be extended to persist via IndexedDB)
-            database = new SQL.Database()
-            sqlRef.current = SQL
-            const schema = `
-            CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE);
-            CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT, played_at INTEGER);
-            CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT);
-            CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT);
-            CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, track_id TEXT, title TEXT);
-            CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY, manifest TEXT);
-            CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
-          `
-          database.exec(schema)
-            if (mounted) { setDb(database); setReady(true) }
+          database = new SQL.Database()
+          sqlRef.current = SQL
+          ensureSchema(database)
+          if (mounted) { setDb(database); setReady(true) }
         }
       } catch (err) {
         // If loading sql-wasm fails, leave db null
       }
     })()
     return () => { mounted = false }
-  }, [])
+  }, [dbPath])
+
+  async function getSetting(key: string) {
+    if (!db) return null
+    try {
+      // sqlite3 style API
+      if (typeof db.get === 'function') {
+        return await new Promise<string | null>((resolve) => {
+          try {
+            db.get('SELECT v FROM settings WHERE k = ?', [key], (err: any, row: any) => {
+              if (err || !row) return resolve(null)
+              resolve(row.v)
+            })
+          } catch (e) { resolve(null) }
+        })
+      }
+
+      // sql.js style API
+      if (typeof db.exec === 'function') {
+        try {
+          const res = db.exec(`SELECT v FROM settings WHERE k = '${key.replace(/'/g, "''")}'`)
+          if (res && res.length && res[0].values && res[0].values.length) return res[0].values[0][0]
+        } catch (e) {}
+        return null
+      }
+    } catch (e) { return null }
+    return null
+  }
+
+  async function setSetting(key: string, value: string) {
+    if (!db) return
+    try {
+      if (typeof db.run === 'function') {
+        // sqlite3 style
+        return await new Promise<void>((resolve, reject) => {
+          try {
+            db.run('INSERT OR REPLACE INTO settings(k,v) VALUES(?,?)', [key, value], function (err: any) {
+              if (err) return reject(err)
+              resolve()
+            })
+          } catch (e) { resolve() }
+        })
+      }
+
+      if (typeof db.exec === 'function') {
+        try {
+          const k = key.replace(/'/g, "''")
+          const v = String(value).replace(/'/g, "''")
+          db.exec(`INSERT OR REPLACE INTO settings(k,v) VALUES ('${k}','${v}')`)
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
 
   async function exportJSON() {
     if (!db) return '{}'
@@ -200,7 +275,7 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
     }
   }
 
-  return <ctx.Provider value={{ db, ready, exportJSON, importJSON, exportDB, importDB }}>{children}</ctx.Provider>
+  return <ctx.Provider value={{ db, ready, exportJSON, importJSON, exportDB, importDB, getSetting, setSetting }}>{children}</ctx.Provider>
 }
 
 export function useDB() {

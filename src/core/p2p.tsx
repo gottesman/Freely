@@ -1,39 +1,31 @@
-import { createLibp2p, Libp2p } from 'libp2p';
-import { yamux } from '@chainsafe/libp2p-yamux';
-import { webRTC } from '@libp2p/webrtc';
-import { webSockets } from '@libp2p/websockets';
-import { noise } from '@libp2p/noise';
-import { bootstrap } from '@libp2p/bootstrap';
+// Thin shim: use local torrent server for seeding/streaming.
+// This file preserves the exports used elsewhere but exposes
+// a minimal HTTP-based API to seed files and get stream URLs.
 
-// Protocol name for our music streaming application
-export const PROTOCOL = '/freely-player/1.0.0';
+export const PROTOCOL = 'torrent/http';
+export const BOOTSTRAP_PEERS: string[] = [];
 
-// Public bootstrap servers for peer discovery
-const BOOTSTRAP_PEERS = [
-  '/dns4/wrtc-star1.par.dwebops.pub/tcp/443/wss/p2p/12D3KooWSoL6WTbwv6XzbpYPSh15By9362ADdUS2U1asNuiJTeea',
-  '/dns4/wrtc-star2.sjc.dwebops.pub/tcp/443/wss/p2p/12D3KooW9xgV71GqK2rV3g44UncF9AFGNYmcDoILTfxA3a5dKZT8',
-];
-
-export async function createNode(): Promise<Libp2p> {
-  const node = await createLibp2p({
-    addresses: {
-      listen: [
-        '/dns4/wrtc-star1.par.dwebops.pub/tcp/443/wss/p2p-webrtc-star',
-        '/dns4/wrtc-star2.sjc.dwebops.pub/tcp/443/wss/p2p-webrtc-star',
-      ],
+/**
+ * createNode() kept for API compatibility. In this torrent-backed
+ * flow it does not create a libp2p node; instead it returns a small
+ * object with helper methods that mirror what the app expects.
+ */
+export async function createNode() {
+  return {
+    // seedFile: POST to /seed on local torrent server. Accepts FormData
+    seedFile: async (file: File | Blob) => {
+      const fd = new FormData();
+      fd.append('file', file as any, (file as any).name || 'upload.bin');
+      const resp = await fetch('http://localhost:9000/seed', { method: 'POST', body: fd });
+      if (!resp.ok) throw new Error('Failed to seed file');
+      return resp.json();
     },
-  transports: [webSockets(), webRTC()],
-  // cast to any to avoid type incompatibilities between different libp2p package copies
-  connectionEncryption: [noise() as any],
-    streamMuxers: [yamux()], // UPDATED to use yamux
-    peerDiscovery: [
-      bootstrap({
-        list: BOOTSTRAP_PEERS,
-      }) as any,
-    ],
-  });
-
-  await node.start();
-  console.log('libp2p node started with Peer ID:', node.peerId.toString());
-  return node;
+    // getStreamUrl: returns the local HTTP stream URL for an infoHash
+    getStreamUrl: (infoHash: string) => `http://localhost:9000/stream/${infoHash}`,
+    // a no-op handler placeholder so Player code calling node.handle/node.unhandle doesn't break
+    handle: () => {},
+    unhandle: () => {},
+    // include a fake peerId for compatibility; consumer should not rely on libp2p PeerId methods
+    peerId: { toString: () => 'torrent-local' },
+  } as any;
 }

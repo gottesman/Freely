@@ -1,9 +1,61 @@
 :root { --bg:#0f1724; --card:#0b1220; --accent:#06b6d4; --text:#e6eef6 }
 *{box-sizing:border-box}
-body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
-.app{display:flex;gap:16px;padding:20px}
+html, body { height: 100%; background: transparent; }
+body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;color:var(--text);overflow:hidden}
+.app{display:flex;flex-direction:column;align-items:stretch;gap:16px;height:100vh;background:var(--bg);border-radius:16px;overflow:hidden;padding:12px 12px 20px 12px;box-shadow:0 6px 18px rgba(0,0,0,0.45);} 
 .column{background:var(--card);padding:12px;border-radius:8px;min-width:280px}
 .header{display:flex;justify-content:space-between;align-items:center}
 .btn{background:var(--accent);color:#021;padding:8px 12px;border-radius:6px;border:none;cursor:pointer}
 .list{margin-top:12px;display:flex;flex-direction:column;gap:8px}
 .item{padding:8px;border-radius:6px;background:rgba(255,255,255,0.02);display:flex;justify-content:space-between;align-items:center}
+
+/* Frameless window & custom titlebar */
+.titlebar{
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-app-region: drag; /* allow dragging */
+	width: 100%;
+	box-sizing: border-box;
+	height: 44px;
+	display:flex;
+	align-items:center;
+	justify-content:space-between;
+	padding:6px 12px;
+	gap:12px;
+	border-radius:12px 12px 0 0;
+	background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+	border: 4px solid transparent;
+	position:relative;
+	overflow:visible;
+}
+
+.titlebar::before{
+	content:'';
+	position:absolute;inset:0;border-radius:14px 14px 0 0;padding:2px;
+	background: linear-gradient(90deg, rgba(107,33,168,0.10), rgba(29,185,84,0.06));
+	mask: linear-gradient(#000,#000);
+	-webkit-mask: linear-gradient(#000,#000);
+	z-index:0;filter:blur(6px);opacity:0.85;
+}
+
+.titlebar-left{display:flex;align-items:center;gap:10px;z-index:1}
+.titlebar-icon{width:28px;height:28px;border-radius:6px}
+.titlebar-icon.placeholder{background:linear-gradient(135deg,var(--accent),#222);width:28px;height:28px}
+.titlebar-title{font-weight:600;color:var(--text);font-size:14px}
+
+.titlebar-right{display:flex;align-items:center;gap:6px;z-index:1}
+.tb-btn{ -webkit-app-region: no-drag; border: none; padding:6px 10px; border-radius:8px; cursor:pointer; background:transparent; color:var(--text); }
+.tb-btn:hover{ background:rgba(255,255,255,0.03) }
+.tb-close{ color:#ff6b6b }
+
+/* Window body that sits below the titlebar with matching rounded corners */
+.window-body{ border-radius:12px; overflow:hidden; width:100%; display:flex; gap:16px; padding:16px; background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005)); border:4px solid rgba(255,255,255,0.02) }
+
+/* When maximized remove rounded corners and shadow for native look */
+.app.maximized{ border-radius:0; box-shadow:none; padding:0; }
+.app.maximized .titlebar{ border-radius:0 }
+.app.maximized .window-body{ border-radius:0 }
+
+/* animated border: subtle pulsing accent */
+@keyframes pulseBorder{ 0%{box-shadow:0 0 0 0 rgba(107,33,168,0.12)}50%{box-shadow:0 0 24px 6px rgba(29,185,84,0.04)}100%{box-shadow:0 0 0 0 rgba(107,33,168,0.12)} }
+.window-body{ animation: pulseBorder 6s ease-in-out infinite }
