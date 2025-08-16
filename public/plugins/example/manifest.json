@@ -1,0 +1,11 @@
+{
+  "name": "example-indexer",
+  "version": "1.0.0",
+  "capabilities": ["search","signaling","tracker"],
+  "endpoints": {
+    "search": "https://example.com/api/search?q={query}",
+    "signaling": "wss://example-signal.example.org/ws",
+    "announce": "wss://example-tracker.example.org/announce"
+  },
+  "notes": "Plugin demo — no real external servers."
+}

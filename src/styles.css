@@ -1,0 +1,9 @@
+:root { --bg:#0f1724; --card:#0b1220; --accent:#06b6d4; --text:#e6eef6 }
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
+.app{display:flex;gap:16px;padding:20px}
+.column{background:var(--card);padding:12px;border-radius:8px;min-width:280px}
+.header{display:flex;justify-content:space-between;align-items:center}
+.btn{background:var(--accent);color:#021;padding:8px 12px;border-radius:6px;border:none;cursor:pointer}
+.list{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.item{padding:8px;border-radius:6px;background:rgba(255,255,255,0.02);display:flex;justify-content:space-between;align-items:center}

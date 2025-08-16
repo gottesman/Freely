@@ -1,0 +1,7 @@
+[
+  {
+    "name": "example-indexer",
+    "version": "1.0.0",
+    "manifest": "/plugins/example/manifest.json"
+  }
+]
