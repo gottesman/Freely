@@ -4,3 +4,8 @@ public/sql*
 server/uploads
 build*
 logo
+website
+apis
+.env
+.env.*
+!.env.example

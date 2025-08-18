@@ -3,20 +3,54 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
+// Load environment variables from .env (development) before using them
+try {
+  const dotenvPath = path.join(__dirname, '..', '.env');
+  if (fs.existsSync(dotenvPath)) {
+    require('dotenv').config({ path: dotenvPath });
+  }
+} catch (e) {
+  console.warn('[env] Could not load .env file:', e?.message || e);
+}
+
 let mainWindow;
 let serverProcess;
 
 function createWindow() {
+  // Resolve window icon depending on environment (dev vs packaged)
+  const resolveIcon = () => {
+    const iconFile = 'icon.ico';
+    if (app.isPackaged) {
+      // Prefer icon inside asar/dist (vite copies public assets to dist)
+      const distAsar = path.join(process.resourcesPath, 'app.asar', 'dist', iconFile);
+      if (fs.existsSync(distAsar)) return distAsar;
+      const distUnpacked = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', iconFile);
+      if (fs.existsSync(distUnpacked)) return distUnpacked;
+      // Fallback: root of resources
+      const rootIcon = path.join(process.resourcesPath, iconFile);
+      if (fs.existsSync(rootIcon)) return rootIcon;
+      return undefined; // let Electron fallback to default icon
+    } else {
+      // In dev: use public/icon.ico if present, else attempt dist copy
+      const publicIcon = path.join(__dirname, '..', 'public', iconFile);
+      if (fs.existsSync(publicIcon)) return publicIcon;
+      const distIcon = path.join(__dirname, '..', 'dist', iconFile);
+      if (fs.existsSync(distIcon)) return distIcon;
+      return undefined;
+    }
+  };
+
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 800,
-    minWidth: 200,
-    minHeight: 200,
+    minWidth: 755,
+    minHeight: 136,
   frame: false, // we'll draw our own titlebar
   transparent: true,
     resizable: true,
   // use fully transparent background so CSS rounded corners render as transparent
   backgroundColor: '#00000000',
+    icon: resolveIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -185,6 +219,280 @@ ipcMain.on('window:restore', () => {
 ipcMain.on('window:close', () => {
   if (mainWindow) mainWindow.close();
 });
+
+// ---------------- Genius API Proxy (CORS bypass) ----------------
+// Renderer cannot call Genius directly due to CORS; perform request here.
+// Requires GENIUS_ACCESS_TOKEN (preferred) or VITE_GENIUS_ACCESS_TOKEN env var.
+const GENIUS_TOKEN = process.env.GENIUS_ACCESS_TOKEN || process.env.VITE_GENIUS_ACCESS_TOKEN;
+ipcMain.handle('genius:search', async (_ev, query) => {
+  if (!GENIUS_TOKEN) throw new Error('Missing Genius access token environment variable');
+  if (typeof query !== 'string' || !query.trim()) return { query, hits: [] };
+  const url = 'https://api.genius.com/search?' + new URLSearchParams({ q: query.trim() });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${GENIUS_TOKEN}` } });
+  if (!res.ok) throw new Error(`Genius search failed: ${res.status}`);
+  const data = await res.json();
+  const hits = (data.response?.hits || []).map(h => {
+    const s = h.result;
+    return {
+      id: s.id,
+      title: s.title,
+      fullTitle: s.full_title,
+      url: s.url,
+      songArtImageUrl: s.song_art_image_url,
+      headerImageUrl: s.header_image_url,
+      primaryArtist: { id: s.primary_artist?.id, name: s.primary_artist?.name }
+    };
+  });
+  return { query, hits };
+});
+
+// Helper fetch for other endpoints
+async function geniusGet(path) {
+  if (!GENIUS_TOKEN) throw new Error('Missing Genius access token environment variable');
+  const url = 'https://api.genius.com' + path;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${GENIUS_TOKEN}` } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function mapSong(s) {
+  return {
+    id: s.id,
+    title: s.title,
+    fullTitle: s.full_title,
+    url: s.url,
+    headerImageUrl: s.header_image_url,
+    songArtImageUrl: s.song_art_image_url,
+    releaseDate: s.release_date || s.release_date_for_display,
+    primaryArtist: s.primary_artist && { id: s.primary_artist.id, name: s.primary_artist.name },
+    album: s.album ? { id: s.album.id, name: s.album.name, coverArtUrl: s.album.cover_art_url } : undefined
+  };
+}
+
+function mapArtist(a){
+  let plain = a.description?.plain || (a.description?.dom ? flattenGeniusDescriptionDom(a.description.dom) : undefined);
+  // Build minimal HTML without anchor tags
+  let html = undefined;
+  try {
+    if (a.description?.dom) html = buildDescriptionHtml(a.description.dom);
+    else if (plain) html = plain.split(/\n{2,}/).map(p=>`<p>${escapeHtml(p.trim())}</p>`).join('');
+  } catch(_) { /* ignore */ }
+  return {
+    id: a.id,
+    name: a.name,
+    url: a.url,
+    imageUrl: a.image_url || a.header_image_url,
+    description: { plain, html }
+  };
+}
+
+function buildDescriptionHtml(root){
+  if(root == null) return '';
+  if(typeof root === 'string') return escapeHtml(root);
+  const tag = (root.tag||'').toLowerCase();
+  const voidTags = new Set(['br','hr']);
+  const blockLike = ['p','div','section','h1','h2','h3','h4','h5','h6','ul','ol','li'];
+  let childrenHtml = '';
+  if(Array.isArray(root.children)) childrenHtml = root.children.map(c=> buildDescriptionHtml(c)).join('');
+  if(tag === 'a') return childrenHtml; // strip link wrapper
+  if(!tag) return childrenHtml;
+  if(voidTags.has(tag)) return `<${tag}>`;
+  const allowed = new Set([...blockLike,'strong','em','i','b','u','span','br','ul','ol','li']);
+  const safeTag = allowed.has(tag) ? tag : 'span';
+  return `<${safeTag}>${childrenHtml}</${safeTag}>`;
+}
+function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// Flatten Genius description DOM tree to plain text (fallback when plain missing)
+function flattenGeniusDescriptionDom(node, acc = []){
+  if (!node) return acc.join('').trim();
+  if (typeof node === 'string') { acc.push(node); return acc.join(''); }
+  const tag = (node.tag||'').toLowerCase();
+  const isBlock = ['p','div','section','br','h1','h2','h3','h4','h5','h6','ul','ol','li'].includes(tag);
+  if (tag === 'br') acc.push('\n');
+  if (Array.isArray(node.children)) {
+    for (const c of node.children) flattenGeniusDescriptionDom(c, acc);
+  }
+  if (isBlock) acc.push('\n\n');
+  // Collapse stray tabs / returns
+  return acc.join('').replace(/[\t\r]+/g,'').replace(/\n{3,}/g,'\n\n').trim();
+}
+
+function mapAlbum(a){
+  return {
+    id: a.id,
+    name: a.name,
+    fullTitle: a.full_title,
+    url: a.url,
+    coverArtUrl: a.cover_art_url,
+    releaseDate: a.release_date,
+    artist: a.artist ? { id: a.artist.id, name: a.artist.name } : undefined,
+    trackIds: (a.tracks || []).map(t => t.song?.id).filter(Boolean)
+  };
+}
+
+// Lyrics parsing (reuse regex strategy matching earlier implementation)
+const LYRICS_SELECTORS = [
+  /<div[^>]+data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/gi,
+  /<div class="lyrics"[^>]*>([\s\S]*?)<\/div>/i
+];
+function stripTags(html){
+  return html
+    .replace(/<br\s*\/?>(?=\n?)/gi, '\n')
+    .replace(/<p[^>]*>/gi, '')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&mdash;/g, '—')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+function parseLyrics(html){
+  for (const re of LYRICS_SELECTORS){
+    const parts = [];
+    let m; re.lastIndex = 0;
+    while ((m = re.exec(html)) !== null){ parts.push(m[1]); }
+    if (parts.length){
+      const text = stripTags(parts.join('\n'));
+      if (text) return text;
+    }
+  }
+  return undefined;
+}
+
+ipcMain.handle('genius:getSong', async (_ev, id) => {
+  const json = await geniusGet(`/songs/${id}`);
+  const s = json.response?.song; if(!s) throw new Error('Not found');
+  return mapSong(s);
+});
+
+ipcMain.handle('genius:getArtist', async (_ev, id) => {
+  const json = await geniusGet(`/artists/${id}`);
+  const a = json.response?.artist; if(!a) throw new Error('Not found');
+  return mapArtist(a);
+});
+
+ipcMain.handle('genius:getAlbum', async (_ev, id) => {
+  const json = await geniusGet(`/albums/${id}`);
+  const a = json.response?.album; if(!a) throw new Error('Not found');
+  return mapAlbum(a);
+});
+
+ipcMain.handle('genius:getLyrics', async (_ev, id) => {
+  const json = await geniusGet(`/songs/${id}`);
+  const s = json.response?.song; if(!s) throw new Error('Not found');
+  const pageRes = await fetch(s.url, { headers: { 'User-Agent': 'FreelyPlayer/0.1' } });
+  if(!pageRes.ok) throw new Error(`Lyrics page HTTP ${pageRes.status}`);
+  const html = await pageRes.text();
+  const lyrics = parseLyrics(html);
+  return { songId: s.id, url: s.url, lyrics, source: lyrics ? 'parsed-html' : 'unavailable', fetchedAt: Date.now() };
+});
+
+// ---------------- Spotify API Proxy (client credentials) ----------------
+// We keep client secret out of renderer; obtain and cache app token here.
+let spotifyToken = null; // { access_token, expires_at }
+async function getSpotifyToken(){
+  if (spotifyToken && spotifyToken.expires_at > Date.now() + 60_000) return spotifyToken.access_token;
+  const cid = process.env.SPOTIFY_CLIENT_ID;
+  const secret = process.env.SPOTIFY_CLIENT_SECRET;
+  if (!cid || !secret) throw new Error('Missing Spotify credentials');
+  const basic = Buffer.from(cid + ':' + secret).toString('base64');
+  const body = new URLSearchParams({ grant_type: 'client_credentials' });
+  const res = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { 'Authorization': 'Basic ' + basic, 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  if (!res.ok) throw new Error('Spotify token HTTP ' + res.status);
+  const json = await res.json();
+  spotifyToken = { access_token: json.access_token, expires_at: Date.now() + (json.expires_in * 1000) };
+  return spotifyToken.access_token;
+}
+
+async function spotifyGet(path, params){
+  const token = await getSpotifyToken();
+  const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v])=>v!==undefined)) : '';
+  const url = 'https://api.spotify.com/v1' + path + search;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) throw new Error('Spotify HTTP ' + res.status);
+  return res.json();
+}
+
+ipcMain.handle('spotify:search', async (_ev, query, typeOrTypes='track') => { // typeOrTypes: string | string[]
+  if (!query || !query.trim()) return { query, types: [], results: {} };
+  const types = Array.isArray(typeOrTypes) ? typeOrTypes : String(typeOrTypes).split(',').map(s=>s.trim()).filter(Boolean);
+  const typeParam = types.join(',');
+  const json = await spotifyGet('/search', { q: query.trim(), type: typeParam, limit: '20', market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' });
+  const results = {};
+  if (types.includes('track')) results.track = (json.tracks?.items||[]).map(mapSpotifyTrack);
+  if (types.includes('album')) results.album = (json.albums?.items||[]).map(mapSpotifyAlbum);
+  if (types.includes('artist')) results.artist = (json.artists?.items||[]).map(mapSpotifyArtist);
+  return { query, types, results };
+});
+ipcMain.handle('spotify:getTrack', async (_ev, id) => mapSpotifyTrack(await spotifyGet('/tracks/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })) );
+ipcMain.handle('spotify:getAlbum', async (_ev, id) => mapSpotifyAlbum(await spotifyGet('/albums/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })) );
+ipcMain.handle('spotify:getArtist', async (_ev, id) => mapSpotifyArtist(await spotifyGet('/artists/' + id)) );
+// Retrieve album tracks with optional pagination (mirrors renderer SpotifyClient behavior)
+ipcMain.handle('spotify:getAlbumTracks', async (_ev, id, opts={}) => {
+  if(!id) throw new Error('album id required');
+  const limit = Math.min(Math.max(opts.limit ?? 50,1),50);
+  const fetchAll = opts.fetchAll !== false; // default true
+  const maxPages = opts.maxPages ?? 10;
+  const market = process.env.SPOTIFY_DEFAULT_MARKET || 'US';
+  let offset = 0; let page = 0; let total = 0; const items = []; const raws = [];
+  do {
+    const json = await spotifyGet(`/albums/${id}/tracks`, { market, limit: String(limit), offset: String(offset) });
+    total = json.total ?? total;
+    const tracks = (json.items||[]).map(t => mapSpotifyTrack(t));
+    items.push(...tracks);
+    raws.push(json);
+    offset += tracks.length;
+    page++;
+    if(!fetchAll) break;
+  } while(offset < total && page < maxPages);
+  return { albumId: id, total, items, raw: raws };
+});
+
+// Fetch artist albums (album,single groups by default, similar to renderer client)
+ipcMain.handle('spotify:getArtistAlbums', async (_ev, id, opts={}) => {
+  if(!id) throw new Error('artist id required');
+  const includeGroups = opts.includeGroups || 'album,single';
+  const limit = Math.min(Math.max(opts.limit ?? 50,1),50);
+  const fetchAll = opts.fetchAll === true; // default first page only unless explicitly true
+  const maxPages = opts.maxPages ?? 5;
+  const market = process.env.SPOTIFY_DEFAULT_MARKET || 'US';
+  let offset = 0; let page = 0; let total = 0; const items = []; const raws = [];
+  do {
+    const json = await spotifyGet(`/artists/${id}/albums`, { include_groups: includeGroups, market, limit: String(limit), offset: String(offset) });
+    total = json.total ?? total;
+    const albums = (json.items||[]).map(a => mapSpotifyAlbum(a));
+    items.push(...albums); raws.push(json);
+    offset += albums.length; page++;
+    if(!fetchAll) break;
+  } while(offset < total && page < maxPages);
+  return { artistId: id, total, items, raw: raws };
+});
+
+// Search playlists (simple wrapper; limited fields already mapped by track/album search mapper style if needed)
+ipcMain.handle('spotify:searchPlaylists', async (_ev, query) => {
+  if(!query || !query.trim()) return { query, items: [] };
+  const market = process.env.SPOTIFY_DEFAULT_MARKET || 'US';
+  const json = await spotifyGet('/search', { q: query.trim(), type: 'playlist', market, limit: '20' });
+  const rawItems = Array.isArray(json.playlists?.items) ? json.playlists.items : [];
+  const items = rawItems
+    .filter(p => p && p.id && p.name) // guard against null/undefined entries
+    .map(p => ({
+      id: p.id,
+      name: p.name,
+      url: p.external_urls?.spotify,
+      images: Array.isArray(p.images) ? p.images.filter(Boolean) : [],
+      description: p.description
+    }));
+  return { query, items };
+});
+
+function mapSpotifyArtist(a){ return { id: a.id, name: a.name, url: a.external_urls?.spotify, genres: a.genres||[], images: a.images||[], followers: a.followers?.total, popularity: a.popularity }; }
+function mapSpotifyAlbum(a){ return { id: a.id, name: a.name, url: a.external_urls?.spotify, albumType: a.album_type, releaseDate: a.release_date, totalTracks: a.total_tracks, images: a.images||[], artists: (a.artists||[]).map(ar => ({ id: ar.id, name: ar.name, url: ar.external_urls?.spotify })) }; }
+function mapSpotifyTrack(t){ return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url||undefined, popularity: t.popularity, artists: (t.artists||[]).map(ar => ({ id: ar.id, name: ar.name, url: ar.external_urls?.spotify })), album: t.album ? { id: t.album.id, name: t.album.name, url: t.album.external_urls?.spotify, images: t.album.images||[] } : undefined }; }
 
 app.on('window-all-closed', () => {
   if (serverProcess) {

@@ -1,0 +1,48 @@
+/* Animated Background */
+.bg {
+	--bg-image: url('https://img.freepik.com/free-vector/abstract-colorful-flow-shapes-background_23-2148233991.jpg');
+		--bg-color-default: radial-gradient(circle at 70% 20%, rgba(6,182,212,0.28) 0%, rgba(6,182,212,0.12) 20%, transparent 60%);
+		--bg-black-default: radial-gradient(circle at 20% 80%, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.18) 25%, transparent 60%);
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: -1;
+	overflow: hidden;
+}
+
+.bg::before,
+.bg::after {
+	content: "";
+	position: absolute;
+	width: 200%;
+	height: 200%;
+	border-radius: 100em;
+	transform-origin: 50% 50%;
+	animation: rotate 40s linear infinite;
+	filter: blur(200px) brightness(0.7);
+	background-repeat: no-repeat;
+	background-size: cover;
+	background-position: center;
+}
+
+.bg::before {
+	right: 0;
+	top: 0;
+	z-index: 10;
+	mix-blend-mode: luminosity;
+	background-image: var(--bg-image), var(--bg-color-default);
+}
+
+.bg::after {
+	left: 0;
+	bottom: 0;
+	z-index: 1;
+	animation-direction: reverse;
+	animation-delay: 10s;
+	background-image: var(--bg-image), var(--bg-black-default);
+}
+
+@keyframes rotate {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}

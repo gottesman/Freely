@@ -12,4 +12,21 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('window:maximized', (_ev, val) => cb(val))
     }
   },
+  genius: {
+  search: (q) => ipcRenderer.invoke('genius:search', q),
+  getSong: (id) => ipcRenderer.invoke('genius:getSong', id),
+  getArtist: (id) => ipcRenderer.invoke('genius:getArtist', id),
+  getAlbum: (id) => ipcRenderer.invoke('genius:getAlbum', id),
+  getLyrics: (id) => ipcRenderer.invoke('genius:getLyrics', id)
+  }
+  ,
+  spotify: {
+    search: (q, types='track') => ipcRenderer.invoke('spotify:search', q, types),
+    getTrack: (id) => ipcRenderer.invoke('spotify:getTrack', id),
+    getAlbum: (id) => ipcRenderer.invoke('spotify:getAlbum', id),
+  getArtist: (id) => ipcRenderer.invoke('spotify:getArtist', id),
+  getAlbumTracks: (id, opts) => ipcRenderer.invoke('spotify:getAlbumTracks', id, opts),
+  getArtistAlbums: (id, opts) => ipcRenderer.invoke('spotify:getArtistAlbums', id, opts),
+  searchPlaylists: (q) => ipcRenderer.invoke('spotify:searchPlaylists', q)
+  }
 });

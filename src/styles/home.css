@@ -1,0 +1,15 @@
+/* Home Page */
+.home-page { display:flex; flex-direction:column; gap:42px; box-sizing:border-box; padding-bottom:42px; }
+.home-hero { position:relative; min-height:260px; overflow:hidden; isolation:isolate; background: linear-gradient(140deg, rgba(0,0,0,.6), rgba(0,0,0,.2)), var(--hero-image) center / cover no-repeat; display:flex; align-items:flex-end; }
+.home-hero-overlay { position:absolute; inset:0; background:radial-gradient(circle at 70% 30%, rgba(var(--bg),0.55), rgba(0,0,0,0.85)); mix-blend-mode:overlay; }
+.home-hero-body { position:relative; z-index:1; padding:32px 36px 30px; display:flex; flex-direction:column; gap:14px; }
+.home-hero-title { margin:0; font-size:40px; letter-spacing:.5px; }
+.home-hero-sub { margin:0; opacity:.85; font-size:15px; }
+.home-hero-actions { display:flex; gap:10px; }
+.home-section { display:flex; flex-direction:column; gap:16px; padding:0 16px; }
+.home-sec-head { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.home-sec-title { margin:0; font-size:20px; letter-spacing:.5px; }
+.home-sec-more { font-size:11px; text-transform:uppercase; letter-spacing:1px; }
+
+@media (max-width:900px){ .home-hero { min-height:220px; } .home-hero-title { font-size:34px; } }
+@media (max-width:620px){ .home-hero-body { padding:26px 26px 24px; } .home-hero-title { font-size:28px; } .home-hero { border-radius:22px; } .media-row { gap:14px; } }

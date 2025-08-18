@@ -1,9 +1,9 @@
 import React from 'react'
 
-export default function LeftPanel({ collapsed, onToggle }: { collapsed: boolean, onToggle: () => void }){
+export default function LeftPanel({ collapsed, onToggle, width }: { collapsed: boolean, onToggle: () => void, width?: number }){
   return (
-    <aside className={`left-panel ${collapsed ? 'collapsed' : ''}`}>
-      <div className="left-panel-toggle" onClick={onToggle}>{collapsed ? '▶' : '◀'}</div>
+  <aside className={`main-panels left-panel ${collapsed ? 'collapsed' : ''}`} style={!collapsed && width ? { width } : undefined}>
+      <div className="panel-collapse-toggle left-panel-toggle" onClick={onToggle}>{collapsed ? '▶' : '◀'}</div>
       <nav className="left-nav">
         <h4>Collections</h4>
         <ul>

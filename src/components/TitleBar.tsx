@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
 
-export default function TitleBar({ title = 'Freely', icon, onSearch }: { title?: string, icon?: string, onSearch?: (q: string) => void }) {
+export default function TitleBar({ title = 'Freely', icon, onSearch, onNavigate, activeTab }: { title?: string, icon?: string, onSearch?: (q: string) => void, onNavigate?: (dest: string) => void, activeTab?: string }) {
   const [maximized, setMaximized] = useState(false)
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -39,31 +39,38 @@ export default function TitleBar({ title = 'Freely', icon, onSearch }: { title?:
         {icon ? <div className="titlebar-icon" style={{ backgroundImage: `url(${icon})` }} /> : <div className="titlebar-icon placeholder" />}
         <div className="titlebar-title">{title}</div>
       </div>
-      <div className="titlebar-search">
-        <span
-          className="tb-search-icon"
-          onClick={() => { inputRef.current?.focus() }}
-          role="button"
-          aria-hidden={false}
-        >
-          {/* simple magnifier SVG */}
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-        <input
-          ref={inputRef}
-          className="tb-search"
-          placeholder="Find your music..."
-          value={query}
-              onChange={(e) => { setQuery(e.target.value); if (onSearch) onSearch(e.target.value) }}
-              onKeyDown={(e) => { if (e.key === 'Enter' && onSearch) onSearch(query) }}
-              onFocus={() => { if (onSearch) onSearch('') }}
-          aria-label="Search"
-        />
+      <div className="titlebar-nav">
+  <button type="button" className={`tb-nav-btn ${activeTab==='home'?'active':''}`} aria-label="Home" title="Home" onClick={()=> onNavigate && onNavigate('home')}>
+          <span className="material-symbols-rounded filled">home</span>
+        </button>
+  <button type="button" className={`tb-nav-btn ${activeTab==='settings'?'active':''}`} aria-label="Settings" title="Settings" onClick={()=> onNavigate && onNavigate('settings')}>
+          <span className="material-symbols-rounded filled">settings</span>
+        </button>
+  <button type="button" className={`tb-nav-btn ${activeTab==='apis'?'active':''}`} aria-label="Dev / Testing" title="Dev / Testing" onClick={()=> onNavigate && onNavigate('apis')}>
+          <span className="material-symbols-rounded filled">terminal</span>
+        </button>
+  <div className={"titlebar-search" + (activeTab==='search' ? ' search-active' : '')}>
+          <span
+            className="tb-search-icon material-symbols-rounded"
+            onClick={() => { inputRef.current?.focus() }}
+            role="button"
+            aria-label="Focus search"
+          >search</span>
+          <input
+            ref={inputRef}
+            className="tb-search"
+            placeholder="Find your music..."
+            value={query}
+                onChange={(e) => { setQuery(e.target.value); if (onSearch) onSearch(e.target.value) }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && onSearch) onSearch(query) }}
+                onFocus={() => { if (onSearch) onSearch('') }}
+            aria-label="Search"
+          />
+        </div>
       </div>
-      <div className="titlebar-right">
+      
+  {/* Additional right-side custom buttons could go here */}
+      <div className="titlebar-right titlebar-window-buttons">
         <button className="tb-btn tb-min" onClick={onMin} aria-label="Minimize">—</button>
         {maximized ? (
           <button className="tb-btn tb-restore" onClick={onToggleMax} aria-label="Restore">❐</button>

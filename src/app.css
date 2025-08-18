@@ -1,0 +1,2 @@
+/* Main application stylesheet (deferred) */
+@import './styles.css'; /* temporary: hold previous full content until we separate */

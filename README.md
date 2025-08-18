@@ -24,6 +24,28 @@ npm install
 npm run dev
 ```
 
+Create a local `.env` (copy from `.env.example`) and add your Genius API credentials if you plan to use lyrics / metadata lookups:
+
+```
+cp .env.example .env # then edit values
+```
+
+Only variables prefixed with `VITE_` are exposed to the renderer bundle. Keep `GENIUS_CLIENT_SECRET` private.
+
+### Spotify API
+
+For richer, high-quality metadata (track durations, preview URLs, popularity, artist genres) the app can use the Spotify Web API (client credentials flow) purely for read-only public data.
+
+Add the following to your `.env`:
+
+```
+SPOTIFY_CLIENT_ID=your_client_id
+SPOTIFY_CLIENT_SECRET=your_client_secret
+SPOTIFY_DEFAULT_MARKET=US
+```
+
+These are used only in the Electron main process to obtain an app access token; secrets are never exposed to the renderer. Search, Track, Album, Artist queries will prefer Spotify where available (future UI integration pending).
+
 ## Desktop build (Electron)
 
 This project can be packaged as a Windows executable using Electron + electron-builder.
@@ -52,6 +74,10 @@ Note: electron-builder will download Electron binaries. Ensure you have network 
 3. IndexedDB option for web
 4. Plugin manager & sandboxing
 5. Mobile polish & WebRTC fixes
+
+## CSS / Styling Architecture
+
+Styles have been modularized (see `STYLES.md` for detailed structure). The root `src/styles.css` aggregates partials under `src/styles/` (tokens, base reset, components, feature views, player, background, alerts, tests). Design tokens live in `variables.css` and are consumed via CSS custom properties. Run `npm run lint:css` to validate style rules with Stylelint.
 
 ## Why?
 

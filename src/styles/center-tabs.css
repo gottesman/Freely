@@ -1,0 +1,8 @@
+/* Tabs */
+.center-tabs { flex:1 1 auto; display:flex; flex-direction:column; height:100%; min-height:0; overflow:hidden; }
+.tabs-header { display:flex; gap:8px; padding:12px; position:absolute; top:0; z-index:10; width:100%; }
+.tabs-header::before { content:""; position:absolute; inset:0; z-index:-1; backdrop-filter:blur(18px); border-radius:var(--app-border-radius) var(--app-border-radius) 0 0; height:150%; mask: linear-gradient(to bottom,#fff 10%,#fff0); background: linear-gradient(to bottom,var(--panels-bg) 10%, #fff0); }
+.tabs-header button { background: rgb(var(--bg)); color:var(--text); border:1px solid rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; }
+.tabs-header button:hover { border-color: color-mix(in srgb, var(--accent) 50%, #fff3 50%); }
+.tabs-header button.active { background:var(--accent); color:#021; border-color:transparent; }
+.tabs-body { flex:1 1 auto; overflow:auto; display:block; min-height:0; }
