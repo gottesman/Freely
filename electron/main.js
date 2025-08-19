@@ -395,7 +395,35 @@ ipcMain.handle('genius:getLyrics', async (_ev, id) => {
 // 2. Provide SPOTIFY_PROXY_ENDPOINT (server that proxies Spotify Web API directly). (Not implemented here.)
 // If neither is set, Spotify features degrade gracefully (empty results / errors).
 // Prefer environment variable override so production can point to a Cloudflare Worker / serverless function
-const SPOTIFY_TOKEN_ENDPOINT = process.env.SPOTIFY_TOKEN_ENDPOINT || 'https://freely.ct.ws/spotify-token.php?i=1'; // fallback legacy
+// In packaged builds environment variables are often stripped; allow a lightweight config file fallback.
+let SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'unset';
+const SPOTIFY_TOKEN_ENDPOINT = (() => {
+  const envVal = process.env.SPOTIFY_TOKEN_ENDPOINT || process.env.VITE_SPOTIFY_TOKEN_ENDPOINT;
+  if (envVal) { SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'env'; return envVal; }
+  // Try config file(s)
+  try {
+    const candidates = [
+      path.join(__dirname, '..', 'config', 'spotify-token-endpoint.txt')
+    ];
+    // When packaged, also look inside resources path (unpacked preferred)
+    try {
+      if (process.resourcesPath) {
+        candidates.push(path.join(process.resourcesPath, 'config', 'spotify-token-endpoint.txt'));
+        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'config', 'spotify-token-endpoint.txt'));
+      }
+    } catch(_) {}
+    for (const file of candidates) {
+      try {
+        if (fs.existsSync(file)) {
+          const v = fs.readFileSync(file, 'utf8').trim();
+          if (v) { SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'file:'+file; return v; }
+        }
+      } catch(_) { /* ignore individual file errors */ }
+    }
+  } catch(_) {}
+  SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'missing';
+  return null;
+})();
 let spotifyToken = null; // { access_token, expires_at }
 let spotifyTokenDebug = { lastFetchAt: null, lastError: null, lastBodySnippet: null, lastContentType: null, lastStatus: null, lastLength: null, lastClassified: null };
 // Lightweight classifier to label common HTML error/challenge pages so UI can surface clearer guidance.
@@ -462,6 +490,7 @@ ipcMain.handle('spotify:tokenStatus', () => {
   return {
     configured: !!SPOTIFY_TOKEN_ENDPOINT,
     endpoint: SPOTIFY_TOKEN_ENDPOINT,
+  source: SPOTIFY_TOKEN_ENDPOINT_SOURCE,
     cached: !!spotifyToken,
     expiresAt: spotifyToken?.expires_at || null,
     now: Date.now(),
