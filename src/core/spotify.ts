@@ -39,12 +39,50 @@ export class SpotifyClient {
   setAccessToken(token: string, expiresInSec = 3500){ this.cfg.accessToken = token; this.cfg.tokenExpiresAt = Date.now() + (expiresInSec * 1000); }
 
   private async ensureToken(){
-    if (this.cfg.accessToken && this.cfg.tokenExpiresAt && Date.now() < this.cfg.tokenExpiresAt - 60_000) return; // still valid (1m early refresh)
+    // Reuse cached token if still valid (1 min early refresh window)
+    if (this.cfg.accessToken && this.cfg.tokenExpiresAt && Date.now() < this.cfg.tokenExpiresAt - 60_000) return;
+
+    // Support external token endpoint for browser (no secret). Vite exposes only VITE_ prefixed vars.
+    const externalEndpoint = env('VITE_SPOTIFY_TOKEN_ENDPOINT') || env('SPOTIFY_TOKEN_ENDPOINT');
+    if (externalEndpoint){
+      try {
+        const r = await fetch(String(externalEndpoint), { headers: { 'Accept':'application/json' } });
+        const ct = r.headers.get('content-type')||'';
+        let raw = '';
+        if(!r.ok){ raw = await safeReadText(r); throw new Error('token_http_'+r.status); }
+        if(!/json/i.test(ct)){ raw = await safeReadText(r); throw new Error('token_ct:'+ct+' snippet:'+ raw.slice(0,40)); }
+        const j = await r.json();
+        if(!j.access_token) throw new Error('token_missing_access_token');
+        const exp = Number(j.expires_in || 3600);
+        this.setAccessToken(j.access_token, exp);
+        return;
+      } catch (e){
+        // Fall through to client credentials attempt only if we actually have credentials
+        const hasCreds = (this.cfg.clientId || env('SPOTIFY_CLIENT_ID')) && (this.cfg.clientSecret || env('SPOTIFY_CLIENT_SECRET'));
+        if(!hasCreds){
+          // No credentials to fallback to; propagate a clearer message (handled by callers)
+          throw new Error('Spotify token endpoint failed & no credentials: ' + (e as any)?.message);
+        }
+      }
+    }
+
     const id = this.cfg.clientId || env('SPOTIFY_CLIENT_ID');
     const secret = this.cfg.clientSecret || env('SPOTIFY_CLIENT_SECRET');
-    if (!id || !secret) throw new Error('Missing Spotify client credentials');
+    if (!id || !secret) throw new Error('Spotify disabled (no credentials or token endpoint)');
     const body = new URLSearchParams({ grant_type: 'client_credentials' });
-    const basic = Buffer.from(id + ':' + secret).toString('base64');
+    // Use Buffer if available (Node / Electron), else btoa (browser)
+    let basic: string;
+    try {
+      // @ts-ignore
+      if (typeof Buffer !== 'undefined') { // Node/Electron
+        // @ts-ignore
+        basic = Buffer.from(id + ':' + secret).toString('base64');
+      } else {
+        basic = btoa(id + ':' + secret);
+      }
+    } catch {
+      basic = btoa(id + ':' + secret);
+    }
     const res = await fetch(TOKEN_URL, { method:'POST', headers: { 'Authorization': 'Basic ' + basic, 'Content-Type':'application/x-www-form-urlencoded' }, body });
     if (!res.ok) throw new Error('Spotify token failed ' + res.status);
     const json = await res.json();
@@ -143,5 +181,7 @@ function mapAlbum(a: any): SpotifyAlbum { return { id: a.id, name: a.name, url: 
 function mapAlbumRef(a: any): SpotifyAlbumRef { return { id: a.id, name: a.name, url: a.external_urls?.spotify, images: a.images || [] }; }
 function mapTrack(t: any): SpotifyTrack { return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url || undefined, popularity: t.popularity, artists: (t.artists||[]).map(mapArtistRef), album: t.album ? mapAlbumRef(t.album) : undefined }; }
 function mapPlaylist(p: any): SpotifyPlaylist { return { id: p.id, name: p.name, url: p.external_urls?.spotify, images: p.images || [], description: p.description }; }
+
+async function safeReadText(res: Response){ try { return await res.text(); } catch { return ''; } }
 
 export default SpotifyClient;

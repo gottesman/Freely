@@ -1,6 +1,6 @@
 {
     "name": "freely-player",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "main": "electron/main.js",
     "private": true,
     "scripts": {

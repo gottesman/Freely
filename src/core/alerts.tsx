@@ -5,20 +5,32 @@ export interface AlertItem { id: string; msg: string; severity: AlertSeverity; }
 
 interface AlertsCtxValue {
   alerts: AlertItem[];
-  push: (msg: string, severity?: AlertSeverity) => void;
+  push: (msg: string, severity?: AlertSeverity, meta?: any) => void;
   dismiss: (id: string) => void;
   clear: () => void;
+  addLogListener: (fn: (entry: LogEntry) => void) => () => void;
 }
+
+export interface LogEntry { ts:number; source:string; msg:string; severity:AlertSeverity; meta?:any }
 
 const AlertsCtx = createContext<AlertsCtxValue | undefined>(undefined);
 
 export const AlertsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const logListenersRef = React.useRef<((e:LogEntry)=>void)[]>([]);
 
-  const push = useCallback((msg: string, severity: AlertSeverity = 'info') => {
-    if(!msg) return;
-    setAlerts(a => [...a, { id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), msg, severity }]);
+  const emitLog = useCallback((entry: LogEntry) => {
+    for (const fn of logListenersRef.current) {
+      try { fn(entry); } catch(_){}
+    }
   }, []);
+
+  const push = useCallback((msg: string, severity: AlertSeverity = 'info', meta?: any) => {
+    if(!msg) return;
+    const id = Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+    setAlerts(a => [...a, { id, msg, severity }]);
+    emitLog({ ts: Date.now(), source:'alert', msg, severity, meta });
+  }, [emitLog]);
 
   const dismiss = useCallback((id: string) => {
     setAlerts(a => a.filter(al => al.id !== id));
@@ -26,8 +38,13 @@ export const AlertsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const clear = useCallback(() => setAlerts([]), []);
 
+  const addLogListener = useCallback((fn: (e:LogEntry)=>void) => {
+    logListenersRef.current.push(fn);
+    return () => { logListenersRef.current = logListenersRef.current.filter(f => f!==fn); };
+  }, []);
+
   return (
-    <AlertsCtx.Provider value={{ alerts, push, dismiss, clear }}>
+    <AlertsCtx.Provider value={{ alerts, push, dismiss, clear, addLogListener }}>
       {children}
     </AlertsCtx.Provider>
   );

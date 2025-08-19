@@ -12,7 +12,7 @@
 /* Panels */
 .left-panel, .right-panel { border-radius: var(--app-border-radius); padding:8px; width:220px; box-sizing:border-box; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
 .main-panels { background: var(--panels-bg); }
-.main-panels.collapsed { width:36px; overflow:hidden; }
+.main-panels.collapsed { width:56px; overflow-x: hidden; }
 .main-panels .panel-collapse-toggle { cursor:pointer; font-size:12px; padding:4px; }
 
 /* Resize Handle */

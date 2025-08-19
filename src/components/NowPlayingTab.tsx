@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useI18n } from '../core/i18n';
 import { usePlayback } from '../core/playback';
 import type { SpotifyAlbum, SpotifyArtist, SpotifyTrack } from '../core/spotify';
 
@@ -9,6 +10,7 @@ function fmt(ms?: number){
 }
 
 export default function NowPlayingTab(){
+  const { t } = useI18n();
   const { currentTrack, loading, error } = usePlayback();
   const [album, setAlbum] = useState<SpotifyAlbum|undefined>();
   const [primaryArtist, setPrimaryArtist] = useState<SpotifyArtist|undefined>();
@@ -118,7 +120,7 @@ export default function NowPlayingTab(){
       <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
         <div className="np-hero-inner">
           <h1 id="np-heading" className="np-title">
-            { loading ? 'Loading…' : (currentTrack?.name || 'No track') }
+            { loading ? t('np.loading') : (currentTrack?.name || t('np.noTrack')) }
           </h1>
           {error && <div className="np-error" role="alert">{error}</div>}
           {currentTrack && (
@@ -136,28 +138,28 @@ export default function NowPlayingTab(){
             </div>
           )}
           <div className="np-extras">
-            <div className="np-tags" aria-label="Genres / tags">
+            <div className="np-tags" aria-label={t('np.genresTags')}>
               {genres.length? genres.map(g=> <span key={g} className="tag">{g}</span>) : <span className="tag">—</span>}
             </div>
-            <div className="np-actions" aria-label="Track actions">
-              <button className="np-icon" aria-label="Add to playlist" disabled><span className="material-symbols-rounded">add_circle</span></button>
-              <button className="np-icon" aria-label="Like" disabled><span className="material-symbols-rounded">favorite</span></button>
-              <button className="np-icon" aria-label="Share" onClick={()=> currentTrack?.url && navigator.clipboard?.writeText(currentTrack.url)}><span className="material-symbols-rounded">ios_share</span></button>
+            <div className="np-actions" aria-label={t('np.trackActions')}>
+              <button className="np-icon" aria-label={t('player.addPlaylist')} disabled><span className="material-symbols-rounded">add_circle</span></button>
+              <button className="np-icon" aria-label={t('np.like','Like')} disabled><span className="material-symbols-rounded">favorite</span></button>
+              <button className="np-icon" aria-label={t('np.share','Share')} onClick={()=> currentTrack?.url && navigator.clipboard?.writeText(currentTrack.url)}><span className="material-symbols-rounded">ios_share</span></button>
             </div>
           </div>
         </div>
       </header>
 
-      <div className="np-section np-album-tracks" aria-label="Album track list">
-        <h4 className="np-sec-title">From the same album</h4>
+      <div className="np-section np-album-tracks" aria-label={t('np.albumTrackList','Album track list')}>
+        <h4 className="np-sec-title">{t('np.fromSameAlbum')}</h4>
         {album && (
           <div className="np-album-heading">
             <span className="np-album-name" title={album.name}>{album.name}</span>
-            <span className="np-album-trackcount">{album.totalTracks} tracks</span>
+            <span className="np-album-trackcount">{t('np.tracks', undefined, { count: album.totalTracks })}</span>
           </div>
         )}
-        {!currentTrack && !loading && <p className="np-hint">Select a track to view its album.</p>}
-        {tracksLoading && <p className="np-hint">Loading tracks…</p>}
+        {!currentTrack && !loading && <p className="np-hint">{t('np.selectTrackHint')}</p>}
+        {tracksLoading && <p className="np-hint">{t('np.loadingTracks')}</p>}
         {albumTracks && (
           <ol className="np-tracklist" style={artistColWidth ? ({ ['--artist-col-width' as any]: artistColWidth + 'px' }) : undefined}>
             {albumTracks.map((t,i)=>(
@@ -170,11 +172,11 @@ export default function NowPlayingTab(){
             ))}
           </ol>
         )}
-  {!tracksLoading && !albumTracks && currentTrack?.album && <p className="np-hint">Album tracks unavailable.</p>}
+  {!tracksLoading && !albumTracks && currentTrack?.album && <p className="np-hint">{t('np.albumUnavailable')}</p>}
       </div>
 
-      <div className="np-section np-artist-info" aria-label="Artist information">
-        <h4 className="np-sec-title">Artist Info</h4>
+      <div className="np-section np-artist-info" aria-label={t('np.artistInfoFull','Artist information')}>
+        <h4 className="np-sec-title">{t('np.artistInfo')}</h4>
         {primaryArtist ? (
           <div className="artist-header">
             <div className="artist-avatar-wrap" aria-hidden="true">
@@ -184,20 +186,20 @@ export default function NowPlayingTab(){
             <div className="artist-primary">
               <h3 className="artist-name">{primaryArtist.name}</h3>
               <div className="artist-stats">
-                {primaryArtist.followers !== undefined && <span><strong>{Intl.NumberFormat().format(primaryArtist.followers)}</strong> followers</span>}
-                {primaryArtist.popularity !== undefined && <span><strong>{primaryArtist.popularity}</strong> popularity</span>}
-                <button className="np-pill follow-btn" type="button" disabled>Follow</button>
+                {primaryArtist.followers !== undefined && <span><strong>{Intl.NumberFormat().format(primaryArtist.followers)}</strong> {t('np.followers', undefined, { count: '' }).replace('{count}','')}</span>}
+                {primaryArtist.popularity !== undefined && <span><strong>{primaryArtist.popularity}</strong> {t('np.popularity', undefined, { score: '' }).replace('{score}','')}</span>}
+                <button className="np-pill follow-btn" type="button" disabled>{t('np.follow')}</button>
               </div>
             </div>
           </div>
         ) : (
-          <p className="np-hint">{currentTrack? 'Loading artist…':'No artist selected.'}</p>
+          <p className="np-hint">{currentTrack? t('np.loadingArtist'):t('np.noArtist')}</p>
         )}
         {primaryArtist && (
           <div className={`artist-bio ${bioExpanded ? 'expanded' : 'collapsed'}`}>
             <div className="bio-content">
               <p>Genres: {primaryArtist.genres.length? primaryArtist.genres.join(', '):'—'}</p>
-              {geniusBioLoading && <p className="np-hint">Loading biography…</p>}
+              {geniusBioLoading && <p className="np-hint">{t('np.bio.loading')}</p>}
               {!geniusBioLoading && geniusBio && (
                 <div className="np-bio-text" 
                   dangerouslySetInnerHTML={{
@@ -207,12 +209,12 @@ export default function NowPlayingTab(){
                   }} />
               )}
               {!geniusBioLoading && !geniusBio && !geniusBioErr && (
-                <p className="np-hint">Biography not found.</p>
+                <p className="np-hint">{t('np.bio.notFound')}</p>
               )}
               {geniusBioErr && !geniusBioLoading && <p className="np-error" role="alert">{geniusBioErr}</p>}
             </div>
             <button type="button" className="bio-toggle np-link" onClick={()=> setBioExpanded(v=>!v)}>
-              {bioExpanded? 'Show less':'Read more'}
+              {bioExpanded? t('np.bio.showLess'):t('np.bio.readMore')}
             </button>
           </div>
         )}

@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electron', {
   getArtist: (id) => ipcRenderer.invoke('spotify:getArtist', id),
   getAlbumTracks: (id, opts) => ipcRenderer.invoke('spotify:getAlbumTracks', id, opts),
   getArtistAlbums: (id, opts) => ipcRenderer.invoke('spotify:getArtistAlbums', id, opts),
-  searchPlaylists: (q) => ipcRenderer.invoke('spotify:searchPlaylists', q)
+  searchPlaylists: (q) => ipcRenderer.invoke('spotify:searchPlaylists', q),
+  tokenStatus: () => ipcRenderer.invoke('spotify:tokenStatus')
   }
 });

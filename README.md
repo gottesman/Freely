@@ -1,5 +1,9 @@
 # Freely — decentralized, P2P music player
 
+<p align="center">
+	<img src="public/splash.png" alt="Freely splash screen" width="480" />
+</p>
+
 **Freely** is an experimental, web-first music player focused on **peer-to-peer streaming** and **local-first data ownership**.
 
 The idea: stream music directly from other peers, work offline, and carry your playlists, favorites, and settings anywhere.
@@ -36,7 +40,7 @@ Only variables prefixed with `VITE_` are exposed to the renderer bundle. Keep `G
 
 For richer, high-quality metadata (track durations, preview URLs, popularity, artist genres) the app can use the Spotify Web API (client credentials flow) purely for read-only public data.
 
-Add the following to your `.env`:
+Add the following to your `.env` (direct main-process credential flow):
 
 ```
 SPOTIFY_CLIENT_ID=your_client_id
@@ -45,6 +49,48 @@ SPOTIFY_DEFAULT_MARKET=US
 ```
 
 These are used only in the Electron main process to obtain an app access token; secrets are never exposed to the renderer. Search, Track, Album, Artist queries will prefer Spotify where available (future UI integration pending).
+
+#### Recommended: External Token Endpoint (Cloudflare Worker)
+
+To avoid even storing the Spotify client secret locally, deploy a tiny Cloudflare Worker that performs the Client Credentials exchange and returns only `{ access_token, expires_in }`. Then set `SPOTIFY_TOKEN_ENDPOINT` and omit `SPOTIFY_CLIENT_SECRET` from your local `.env`.
+
+Worker example (`src/index.js` in a Worker project):
+
+```js
+export default {
+	async fetch(req, env) {
+		const basic = btoa(env.SPOTIFY_CLIENT_ID + ':' + env.SPOTIFY_CLIENT_SECRET);
+		const r = await fetch('https://accounts.spotify.com/api/token', {
+			method: 'POST',
+			headers: {
+				'Authorization': 'Basic ' + basic,
+				'Content-Type': 'application/x-www-form-urlencoded'
+			},
+			body: 'grant_type=client_credentials'
+		});
+		if(!r.ok){
+			return new Response(JSON.stringify({ error: 'spotify_http_'+r.status }), { status: 500, headers:{'Content-Type':'application/json'} });
+		}
+		const j = await r.json();
+		return new Response(JSON.stringify({ access_token: j.access_token, expires_in: j.expires_in }), {
+			headers: { 'Content-Type': 'application/json', 'Cache-Control':'public,max-age=240' }
+		});
+	}
+}
+```
+
+Deploy steps:
+1. `npm install -g wrangler`
+2. `wrangler init freely-spotify-token --no-open --type=javascript`
+3. Replace generated `src/index.js` with above.
+4. Set secrets:
+	 - `wrangler secret put SPOTIFY_CLIENT_ID`
+	 - `wrangler secret put SPOTIFY_CLIENT_SECRET`
+5. `wrangler deploy`
+6. Copy the deployed URL and set in `.env`:
+	 - `SPOTIFY_TOKEN_ENDPOINT=https://your-worker-subdomain.workers.dev`
+
+In Electron main we read `process.env.SPOTIFY_TOKEN_ENDPOINT`; if present the app fetches the token from there (no secret locally). The Tests tab has a Token Status button that logs debug info (status, body snippet) to help diagnose hosting issues (e.g. HTML challenge pages).
 
 ## Desktop build (Electron)
 

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react'
+import { useI18n } from '../core/i18n'
 import { useDB } from '../core/db'
 
 export default function Library(){
+  const { t } = useI18n();
   const { db } = useDB()
   const [plays, setPlays] = useState<any[]>([])
 
@@ -18,7 +20,7 @@ export default function Library(){
 
   return (
     <div>
-      <h4>Historial reciente</h4>
+  <h4>{t('library.recentHistory')}</h4>
       <div className="list">
         {plays.map(p => (
           <div className="item" key={p.id}>

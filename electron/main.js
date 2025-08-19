@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -190,11 +190,9 @@ app.whenReady().then(() => {
   createWindow();
 
   app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
-});
-
-const { ipcMain } = require('electron');
 
 ipcMain.handle('window:isMaximized', () => {
   return mainWindow ? mainWindow.isMaximized() : false;
@@ -391,24 +389,94 @@ ipcMain.handle('genius:getLyrics', async (_ev, id) => {
   return { songId: s.id, url: s.url, lyrics, source: lyrics ? 'parsed-html' : 'unavailable', fetchedAt: Date.now() };
 });
 
-// ---------------- Spotify API Proxy (client credentials) ----------------
-// We keep client secret out of renderer; obtain and cache app token here.
+// ---------------- Spotify API Proxy (no bundled secret) ----------------
+// We intentionally do NOT bundle the client secret. Options:
+// 1. Provide SPOTIFY_TOKEN_ENDPOINT (server you control that returns { access_token, expires_in })
+// 2. Provide SPOTIFY_PROXY_ENDPOINT (server that proxies Spotify Web API directly). (Not implemented here.)
+// If neither is set, Spotify features degrade gracefully (empty results / errors).
+// Prefer environment variable override so production can point to a Cloudflare Worker / serverless function
+const SPOTIFY_TOKEN_ENDPOINT = process.env.SPOTIFY_TOKEN_ENDPOINT || 'https://freely.ct.ws/spotify-token.php?i=1'; // fallback legacy
 let spotifyToken = null; // { access_token, expires_at }
+let spotifyTokenDebug = { lastFetchAt: null, lastError: null, lastBodySnippet: null, lastContentType: null, lastStatus: null, lastLength: null, lastClassified: null };
+// Lightweight classifier to label common HTML error/challenge pages so UI can surface clearer guidance.
+function classifyBodySnippet(snippet){
+  if(!snippet) return null;
+  const lower = snippet.toLowerCase();
+  if(lower.includes('<html') && lower.includes('cloudflare')) return 'cloudflare_challenge_or_block';
+  if(lower.includes('captcha')) return 'captcha_challenge';
+  if(lower.includes('404') && lower.includes('<html')) return 'not_found_html';
+  if(lower.includes('error') && lower.includes('<html')) return 'html_error_page';
+  if(lower.includes('aes.js')) return 'host_injected_script';
+  return null;
+}
+
 async function getSpotifyToken(){
+  if (!SPOTIFY_TOKEN_ENDPOINT) throw new Error('Spotify disabled (no SPOTIFY_TOKEN_ENDPOINT)');
   if (spotifyToken && spotifyToken.expires_at > Date.now() + 60_000) return spotifyToken.access_token;
-  const cid = process.env.SPOTIFY_CLIENT_ID;
-  const secret = process.env.SPOTIFY_CLIENT_SECRET;
-  if (!cid || !secret) throw new Error('Missing Spotify credentials');
-  const basic = Buffer.from(cid + ':' + secret).toString('base64');
-  const body = new URLSearchParams({ grant_type: 'client_credentials' });
-  const res = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { 'Authorization': 'Basic ' + basic, 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  if (!res.ok) throw new Error('Spotify token HTTP ' + res.status);
-  const json = await res.json();
-  spotifyToken = { access_token: json.access_token, expires_at: Date.now() + (json.expires_in * 1000) };
+  const res = await fetch(SPOTIFY_TOKEN_ENDPOINT, { method:'GET', headers: { 'Accept':'application/json,text/plain,*/*' } });
+  spotifyTokenDebug.lastFetchAt = Date.now();
+  spotifyTokenDebug.lastStatus = res.status;
+  spotifyTokenDebug.lastContentType = res.headers.get('content-type')||null;
+  if(!res.ok){
+    let bodyTxt = '';
+    try { bodyTxt = await res.text(); } catch(_){}
+    spotifyTokenDebug.lastError = 'HTTP ' + res.status;
+    spotifyTokenDebug.lastBodySnippet = bodyTxt.slice(0,300);
+    spotifyTokenDebug.lastLength = bodyTxt.length || null;
+    spotifyTokenDebug.lastClassified = classifyBodySnippet(spotifyTokenDebug.lastBodySnippet);
+    throw new Error('Token endpoint HTTP ' + res.status + (bodyTxt ? ' body: ' + bodyTxt.slice(0,80) : ''));
+  }
+  let json;
+  const ct = res.headers.get('content-type')||'';
+  let rawTxt = '';
+  try {
+    if(!/json/i.test(ct)) { rawTxt = await res.text(); throw new Error('Unexpected content-type '+ct+' body starts '+rawTxt.slice(0,60)); }
+    json = await res.json();
+  } catch(parseErr){
+    if(!rawTxt){ try { rawTxt = await res.text(); } catch(_){} }
+    spotifyTokenDebug.lastError = 'parse_error:' + (parseErr?.message||parseErr);
+    spotifyTokenDebug.lastBodySnippet = rawTxt.slice(0,300);
+    spotifyTokenDebug.lastLength = rawTxt.length || null;
+    spotifyTokenDebug.lastClassified = classifyBodySnippet(spotifyTokenDebug.lastBodySnippet);
+    console.error('[spotify-token] Parse error. Snippet:', spotifyTokenDebug.lastBodySnippet);
+    throw new Error('Token parse failed: ' + (parseErr?.message||parseErr));
+  }
+  if(!json.access_token){
+    spotifyTokenDebug.lastError = 'missing_access_token';
+    spotifyTokenDebug.lastBodySnippet = JSON.stringify(json).slice(0,300);
+    spotifyTokenDebug.lastLength = spotifyTokenDebug.lastBodySnippet.length;
+    spotifyTokenDebug.lastClassified = classifyBodySnippet(spotifyTokenDebug.lastBodySnippet);
+    throw new Error('Token endpoint missing access_token');
+  }
+  spotifyTokenDebug.lastError = null;
+  spotifyTokenDebug.lastBodySnippet = null;
+  spotifyTokenDebug.lastLength = null;
+  spotifyTokenDebug.lastClassified = null;
+  const expiresIn = Number(json.expires_in || 3600);
+  spotifyToken = { access_token: json.access_token, expires_at: Date.now() + (expiresIn * 1000) };
   return spotifyToken.access_token;
 }
 
+// Debug IPC to inspect last token fetch state (no secrets included)
+ipcMain.handle('spotify:tokenStatus', () => {
+  return {
+    configured: !!SPOTIFY_TOKEN_ENDPOINT,
+    endpoint: SPOTIFY_TOKEN_ENDPOINT,
+    cached: !!spotifyToken,
+    expiresAt: spotifyToken?.expires_at || null,
+    now: Date.now(),
+    lastFetchAt: spotifyTokenDebug.lastFetchAt,
+    lastError: spotifyTokenDebug.lastError,
+    lastBodySnippet: spotifyTokenDebug.lastBodySnippet,
+    lastContentType: spotifyTokenDebug.lastContentType,
+    lastStatus: spotifyTokenDebug.lastStatus,
+    lastLength: spotifyTokenDebug.lastLength,
+    lastClassified: spotifyTokenDebug.lastClassified
+  };
+});
+
 async function spotifyGet(path, params){
+  if(!SPOTIFY_TOKEN_ENDPOINT) throw new Error('Spotify disabled');
   const token = await getSpotifyToken();
   const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v])=>v!==undefined)) : '';
   const url = 'https://api.spotify.com/v1' + path + search;
@@ -418,19 +486,29 @@ async function spotifyGet(path, params){
 }
 
 ipcMain.handle('spotify:search', async (_ev, query, typeOrTypes='track') => { // typeOrTypes: string | string[]
-  if (!query || !query.trim()) return { query, types: [], results: {} };
-  const types = Array.isArray(typeOrTypes) ? typeOrTypes : String(typeOrTypes).split(',').map(s=>s.trim()).filter(Boolean);
-  const typeParam = types.join(',');
-  const json = await spotifyGet('/search', { q: query.trim(), type: typeParam, limit: '20', market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' });
-  const results = {};
-  if (types.includes('track')) results.track = (json.tracks?.items||[]).map(mapSpotifyTrack);
-  if (types.includes('album')) results.album = (json.albums?.items||[]).map(mapSpotifyAlbum);
-  if (types.includes('artist')) results.artist = (json.artists?.items||[]).map(mapSpotifyArtist);
-  return { query, types, results };
+  try {
+    if (!query || !query.trim()) return { query, types: [], results: {} };
+    const types = Array.isArray(typeOrTypes) ? typeOrTypes : String(typeOrTypes).split(',').map(s=>s.trim()).filter(Boolean);
+    const typeParam = types.join(',');
+    const json = await spotifyGet('/search', { q: query.trim(), type: typeParam, limit: '20', market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' });
+    const results = {};
+    if (types.includes('track')) results.track = (json.tracks?.items||[]).map(mapSpotifyTrack);
+    if (types.includes('album')) results.album = (json.albums?.items||[]).map(mapSpotifyAlbum);
+    if (types.includes('artist')) results.artist = (json.artists?.items||[]).map(mapSpotifyArtist);
+    return { query, types, results };
+  } catch (e){
+    return { query, types: [], results: {}, error: e?.message || String(e) };
+  }
 });
-ipcMain.handle('spotify:getTrack', async (_ev, id) => mapSpotifyTrack(await spotifyGet('/tracks/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })) );
-ipcMain.handle('spotify:getAlbum', async (_ev, id) => mapSpotifyAlbum(await spotifyGet('/albums/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })) );
-ipcMain.handle('spotify:getArtist', async (_ev, id) => mapSpotifyArtist(await spotifyGet('/artists/' + id)) );
+ipcMain.handle('spotify:getTrack', async (_ev, id) => {
+  try { return mapSpotifyTrack(await spotifyGet('/tracks/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })); } catch(e){ return { error: e?.message||String(e) }; }
+});
+ipcMain.handle('spotify:getAlbum', async (_ev, id) => {
+  try { return mapSpotifyAlbum(await spotifyGet('/albums/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })); } catch(e){ return { error: e?.message||String(e) }; }
+});
+ipcMain.handle('spotify:getArtist', async (_ev, id) => {
+  try { return mapSpotifyArtist(await spotifyGet('/artists/' + id)); } catch(e){ return { error: e?.message||String(e) }; }
+});
 // Retrieve album tracks with optional pagination (mirrors renderer SpotifyClient behavior)
 ipcMain.handle('spotify:getAlbumTracks', async (_ev, id, opts={}) => {
   if(!id) throw new Error('album id required');

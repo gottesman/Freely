@@ -23,11 +23,25 @@
 
 /* Queue */
 .np-queue-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
-.np-queue-list li { display:flex; gap:10px; align-items:baseline; background:var(--surface-1); padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.2; border:1px solid var(--border-subtle); cursor:pointer; transition: background var(--dur-med), border-color var(--dur-med); }
+.np-queue-list li { display:flex; gap:10px; align-items:center; background:var(--surface-1); padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.2; border:1px solid var(--border-subtle); cursor:pointer; transition: background var(--dur-med), border-color var(--dur-med), transform 160ms cubic-bezier(.2,.8,.3,1); position:relative; will-change:transform; }
+.np-queue-list.no-tx li { transition: background var(--dur-med), border-color var(--dur-med); }
 .np-queue-list li:hover { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
-.np-queue-list li.active { background:var(--accent); color:#021; border-color:transparent; font-weight:600; }
+.np-queue-list li.active { background:var(--accent); color:#021; border:transparent; font-weight:inherit; box-shadow:0 0 0 1px rgba(0,0,0,0.15) inset; }
 .np-queue-list li .track { flex:1 1 auto; }
 .np-queue-list li .artist { opacity:.7; }
+.np-queue-list li .queue-art { width:38px; height:38px; border-radius:8px; overflow:hidden; background:rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 2px 4px -1px rgba(0,0,0,.4); }
+.np-queue-list li .queue-art img { width:100%; height:100%; object-fit:cover; display:block; }
+
+/* Hover play button overlay */
+.queue-play-btn { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); color:#fff; border:none; cursor:pointer; opacity:0; transition: opacity var(--dur-med); font-size:18px; margin:0; padding:0; }
+.queue-play-btn .material-symbols-rounded { font-size:22px; }
+.np-queue-list li:not(.active):hover .queue-play-btn { opacity:1; }
+
+/* Suppress play overlay while hovering drag handle (browsers supporting :has) */
+.np-queue-list li:has(.queue-drag-handle:hover) .queue-play-btn { opacity:0 !important; }
+
+/* Active dragging item visual */
+.np-queue-list li.dragging-item { box-shadow:0 0 0 2px var(--accent) inset, 0 4px 12px -2px rgba(0,0,0,.6); z-index:3; backdrop-filter: blur(15px); }
 
 /* Tracklist */
 .np-tracklist { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }

@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useI18n } from '../core/i18n';
 import GeniusClient, { SongDetails } from '../core/musicdata';
 import SpotifyClient from '../core/spotify';
+import { useAlerts, LogEntry as AlertLogEntry } from '../core/alerts';
 
 function useApis(){
   const win: any = typeof window !== 'undefined' ? window : {};
@@ -14,8 +16,35 @@ function useApis(){
 
 type LogEntry = { ts:number; label:string; data:any };
 
+function serializeError(err: any){
+  if(!err) return { message: 'Unknown error', raw: String(err) };
+  const base: any = {
+    name: err.name || undefined,
+    message: err.message || String(err),
+    stack: err.stack || undefined,
+  };
+  // Include common fields if present
+  if(typeof err.status !== 'undefined') base.status = err.status;
+  if(typeof err.statusText !== 'undefined') base.statusText = err.statusText;
+  if(typeof err.code !== 'undefined') base.code = err.code;
+  // Copy enumerable own props (shallow) up to a limit
+  try {
+    Object.keys(err).slice(0,20).forEach(k=>{
+      if(base[k] !== undefined) return;
+      const v = (err as any)[k];
+      if(v == null) base[k] = v;
+      else if(typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') base[k] = v;
+      else if(Array.isArray(v)) base[k] = v.slice(0,5);
+      else if(typeof v === 'object') base[k] = Object.keys(v).slice(0,10);
+    });
+  } catch(_){}
+  return base;
+}
+
 export default function APIsTests(){
+  const { t } = useI18n();
   const { geniusProxy, spotifyProxy, geniusDirect, spotifyDirect } = useApis();
+  const { addLogListener } = useAlerts();
   // Shared state
   const [loading, setLoading] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -33,6 +62,26 @@ export default function APIsTests(){
   const [sAlbumId, setSAlbumId] = useState('');
   const [sTypes, setSTypes] = useState<string[]>(['track']);
 
+  // Auto-diagnostic once to ensure something appears in log
+  const didAuto = useRef(false);
+  useEffect(()=>{
+    if(didAuto.current) return;
+    didAuto.current = true;
+    // Record environment first
+    append('tests:init', { geniusProxy: !!geniusProxy, spotifyProxy: !!spotifyProxy });
+    // Kick off searches (non-blocking) to populate log; ignore errors (they'll be logged by existing handlers)
+    setTimeout(()=>{ if(gQuery) gSearch(); if(sQuery) sSearch(); }, 50);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Subscribe to alert logs
+  useEffect(()=>{
+    const off = addLogListener((entry: AlertLogEntry) => {
+      setLog(l => [{ ts: entry.ts, label: 'alert:'+entry.severity, data: { msg: entry.msg, meta: entry.meta } }, ...l.slice(0,199)]);
+    });
+    return off;
+  }, [addLogListener]);
+
   function append(label:string, data:any){ setLog(l => [{ ts:Date.now(), label, data }, ...l.slice(0,199)]); }
 
   /* ---------------- Genius Actions ---------------- */
@@ -43,13 +92,13 @@ export default function APIsTests(){
       const res = geniusProxy?.search ? await geniusProxy.search(gQuery) : await geniusDirect.search(gQuery);
       append('genius:search', { query: gQuery, result: res });
       if(res?.hits?.[0]) setGSongId(String(res.hits[0].id));
-    } catch(e:any){ append('genius:search:error', { query: gQuery, error: e.message||String(e) }); }
+  } catch(e:any){ append('genius:search:error', { query: gQuery, error: serializeError(e) }); }
     finally { setLoading(false); }
   }
-  async function gGetSong(){ if(!gSongId) return; setLoading(true); try { const id = Number(gSongId); const res: SongDetails = geniusProxy?.getSong ? await geniusProxy.getSong(id) : await geniusDirect.getSong(id); append('genius:getSong', res); } catch(e:any){ append('genius:getSong:error', e.message||String(e)); } finally { setLoading(false); } }
-  async function gLyrics(){ if(!gSongId) return; setLoading(true); try { const id = Number(gSongId); const lyr = geniusProxy?.getLyrics ? await geniusProxy.getLyrics(id) : await geniusDirect.getLyricsForSong(id); append('genius:lyrics', lyr); } catch(e:any){ append('genius:lyrics:error', e.message||String(e)); } finally { setLoading(false); } }
-  async function gArtist(){ if(!gArtistId) return; setLoading(true); try { const data = geniusProxy?.getArtist ? await geniusProxy.getArtist(Number(gArtistId)) : await geniusDirect.getArtist(Number(gArtistId)); append('genius:getArtist', data); } catch(e:any){ append('genius:getArtist:error', e.message||String(e)); } finally { setLoading(false); } }
-  async function gAlbum(){ if(!gAlbumId) return; setLoading(true); try { const data = geniusProxy?.getAlbum ? await geniusProxy.getAlbum(Number(gAlbumId)) : await geniusDirect.getAlbum(Number(gAlbumId)); append('genius:getAlbum', data); } catch(e:any){ append('genius:getAlbum:error', e.message||String(e)); } finally { setLoading(false); } }
+  async function gGetSong(){ if(!gSongId) return; setLoading(true); try { const id = Number(gSongId); const res: SongDetails = geniusProxy?.getSong ? await geniusProxy.getSong(id) : await geniusDirect.getSong(id); append('genius:getSong', res); } catch(e:any){ append('genius:getSong:error', serializeError(e)); } finally { setLoading(false); } }
+  async function gLyrics(){ if(!gSongId) return; setLoading(true); try { const id = Number(gSongId); const lyr = geniusProxy?.getLyrics ? await geniusProxy.getLyrics(id) : await geniusDirect.getLyricsForSong(id); append('genius:lyrics', lyr); } catch(e:any){ append('genius:lyrics:error', serializeError(e)); } finally { setLoading(false); } }
+  async function gArtist(){ if(!gArtistId) return; setLoading(true); try { const data = geniusProxy?.getArtist ? await geniusProxy.getArtist(Number(gArtistId)) : await geniusDirect.getArtist(Number(gArtistId)); append('genius:getArtist', data); } catch(e:any){ append('genius:getArtist:error', serializeError(e)); } finally { setLoading(false); } }
+  async function gAlbum(){ if(!gAlbumId) return; setLoading(true); try { const data = geniusProxy?.getAlbum ? await geniusProxy.getAlbum(Number(gAlbumId)) : await geniusDirect.getAlbum(Number(gAlbumId)); append('genius:getAlbum', data); } catch(e:any){ append('genius:getAlbum:error', serializeError(e)); } finally { setLoading(false); } }
 
   /* ---------------- Spotify Actions ---------------- */
   async function sSearch(){
@@ -61,18 +110,41 @@ export default function APIsTests(){
       if(Array.isArray(res.results?.track) && res.results.track[0]) setSTrackId(res.results.track[0].id);
       if(Array.isArray(res.results?.album) && res.results.album[0]) setSAlbumId(res.results.album[0].id);
       if(Array.isArray(res.results?.artist) && res.results.artist[0]) setSArtistId(res.results.artist[0].id);
-    } catch(e:any){ append('spotify:search:error', { query: sQuery, types: sTypes, error: e.message||String(e) }); }
+  } catch(e:any){ append('spotify:search:error', { query: sQuery, types: sTypes, error: serializeError(e) }); }
     finally { setLoading(false); }
   }
-  async function sGetTrack(){ if(!sTrackId) return; setLoading(true); try { const data = spotifyProxy?.getTrack ? await spotifyProxy.getTrack(sTrackId) : await spotifyDirect.getTrack(sTrackId); append('spotify:getTrack', data); } catch(e:any){ append('spotify:getTrack:error', e.message||String(e)); } finally { setLoading(false); } }
-  async function sGetArtist(){ if(!sArtistId) return; setLoading(true); try { const data = spotifyProxy?.getArtist ? await spotifyProxy.getArtist(sArtistId) : await spotifyDirect.getArtist(sArtistId); append('spotify:getArtist', data); } catch(e:any){ append('spotify:getArtist:error', e.message||String(e)); } finally { setLoading(false); } }
-  async function sGetAlbum(){ if(!sAlbumId) return; setLoading(true); try { const data = spotifyProxy?.getAlbum ? await spotifyProxy.getAlbum(sAlbumId) : await spotifyDirect.getAlbum(sAlbumId); append('spotify:getAlbum', data); } catch(e:any){ append('spotify:getAlbum:error', e.message||String(e)); } finally { setLoading(false); } }
+  async function sGetTrack(){ if(!sTrackId) return; setLoading(true); try { const data = spotifyProxy?.getTrack ? await spotifyProxy.getTrack(sTrackId) : await spotifyDirect.getTrack(sTrackId); append('spotify:getTrack', data); } catch(e:any){ append('spotify:getTrack:error', serializeError(e)); } finally { setLoading(false); } }
+  async function sGetArtist(){ if(!sArtistId) return; setLoading(true); try { const data = spotifyProxy?.getArtist ? await spotifyProxy.getArtist(sArtistId) : await spotifyDirect.getArtist(sArtistId); append('spotify:getArtist', data); } catch(e:any){ append('spotify:getArtist:error', serializeError(e)); } finally { setLoading(false); } }
+  async function sGetAlbum(){ if(!sAlbumId) return; setLoading(true); try { const data = spotifyProxy?.getAlbum ? await spotifyProxy.getAlbum(sAlbumId) : await spotifyDirect.getAlbum(sAlbumId); append('spotify:getAlbum', data); } catch(e:any){ append('spotify:getAlbum:error', serializeError(e)); } finally { setLoading(false); } }
+
+  // Token status (diagnostics)
+  async function sTokenStatus(){
+    setLoading(true);
+    try {
+      if(!spotifyProxy?.tokenStatus){ append('spotify:tokenStatus:error', { message: 'No spotify IPC tokenStatus available' }); return; }
+      const status = await spotifyProxy.tokenStatus();
+      append('spotify:tokenStatus', status);
+      if(status?.lastClassified){ append('spotify:tokenStatus:classified', { classification: status.lastClassified, hint: classificationHint(status.lastClassified) }); }
+    } catch(e:any){ append('spotify:tokenStatus:error', serializeError(e)); }
+    finally { setLoading(false); }
+  }
+
+  function classificationHint(c:string){
+    switch(c){
+      case 'cloudflare_challenge_or_block': return 'Server likely behind Cloudflare returning challenge HTML instead of JSON. Ensure token PHP bypasses challenges or use a backend environment.';
+      case 'captcha_challenge': return 'A captcha page was returned. Disable captcha for the token endpoint or whitelist your server.';
+      case 'not_found_html': return '404 HTML page. Verify SPOTIFY_TOKEN_ENDPOINT URL path and file existence.';
+      case 'html_error_page': return 'Generic HTML error page. Check server/PHP error logs.';
+      case 'host_injected_script': return 'Host inserted script (e.g., free hosting platform). Might be injecting encryption/ads breaking JSON. Consider moving endpoint to clean host.';
+      default: return 'Unrecognized classification.';
+    }
+  }
 
   return (
     <section className="genius-tests" aria-label="tests">
-      <h2 className="np-sec-title" style={{marginTop:0}}>Logs</h2>
+  <h2 className="np-sec-title" style={{marginTop:0}}>{t('tests.logs')}</h2>
       <div className="gt-log" aria-label="Results log" >
-        {log.length === 0 && <div className="gt-empty">Empty log.</div>}
+  {log.length === 0 && <div className="gt-empty">{t('tests.emptyLog')}</div>}
         {log.map(entry => (
           <details key={entry.ts} open>
             <summary><strong>{new Date(entry.ts).toLocaleTimeString()} — {entry.label}</strong></summary>
@@ -80,40 +152,40 @@ export default function APIsTests(){
           </details>
         ))}
       </div>
-      <h2 className="np-sec-title" style={{marginTop:0}}>APIs Tests</h2>
+  <h2 className="np-sec-title" style={{marginTop:0}}>{t('tests.apis')}</h2>
       {/* Genius Section */}
-      <h3 className="mini-title" style={{margin:'6px 0 4px'}}>Genius API</h3>
+  <h3 className="mini-title" style={{margin:'6px 0 4px'}}>{t('tests.genius.api')}</h3>
       <div className="gt-grid">
         <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Search</h4>
+          <h4 className="mini-title" style={{marginTop:0}}>{t('tests.search')}</h4>
           <input className="tb-search" value={gQuery} onChange={e=>setGQuery(e.target.value)} placeholder="Genius query" />
-          <button className="np-pill" disabled={loading} onClick={gSearch}>Search</button>
+          <button className="np-pill" disabled={loading} onClick={gSearch}>{t('tests.search')}</button>
         </div>
         <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Song ID</h4>
-          <input className="tb-search" value={gSongId} onChange={e=>setGSongId(e.target.value)} placeholder="Song ID" />
+          <h4 className="mini-title" style={{marginTop:0}}>{t('tests.songId')}</h4>
+          <input className="tb-search" value={gSongId} onChange={e=>setGSongId(e.target.value)} placeholder={t('tests.songId')} />
           <div className="gt-actions">
-            <button className="np-pill" disabled={loading} onClick={gGetSong}>Get Song</button>
-            <button className="np-pill" disabled={loading} onClick={gLyrics}>Lyrics</button>
+            <button className="np-pill" disabled={loading} onClick={gGetSong}>{t('tests.getSong')}</button>
+            <button className="np-pill" disabled={loading} onClick={gLyrics}>{t('tests.lyrics')}</button>
           </div>
         </div>
         <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Artist ID</h4>
-          <input className="tb-search" value={gArtistId} onChange={e=>setGArtistId(e.target.value)} placeholder="Artist ID" />
-          <button className="np-pill" disabled={loading} onClick={gArtist}>Get Artist</button>
+          <h4 className="mini-title" style={{marginTop:0}}>{t('tests.artistId')}</h4>
+          <input className="tb-search" value={gArtistId} onChange={e=>setGArtistId(e.target.value)} placeholder={t('tests.artistId')} />
+          <button className="np-pill" disabled={loading} onClick={gArtist}>{t('tests.getArtist')}</button>
         </div>
         <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Album ID</h4>
-          <input className="tb-search" value={gAlbumId} onChange={e=>setGAlbumId(e.target.value)} placeholder="Album ID" />
-          <button className="np-pill" disabled={loading} onClick={gAlbum}>Get Album</button>
+          <h4 className="mini-title" style={{marginTop:0}}>{t('tests.albumId')}</h4>
+          <input className="tb-search" value={gAlbumId} onChange={e=>setGAlbumId(e.target.value)} placeholder={t('tests.albumId')} />
+          <button className="np-pill" disabled={loading} onClick={gAlbum}>{t('tests.getAlbum')}</button>
         </div>
       </div>
 
       {/* Spotify Section */}
-      <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Spotify API</h3>
+  <h3 className="mini-title" style={{margin:'28px 0 4px'}}>{t('tests.spotify.api')}</h3>
       <div className="gt-grid">
         <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Search</h4>
+          <h4 className="mini-title" style={{marginTop:0}}>{t('tests.search')}</h4>
           <input className="tb-search" value={sQuery} onChange={e=>setSQuery(e.target.value)} placeholder="Spotify query" />
           <div className="gt-actions">
             <select
@@ -125,17 +197,18 @@ export default function APIsTests(){
                 setSTypes(opts.length?opts:['track']);
               }}
             >
-              <option value="track">Tracks</option>
-              <option value="album">Albums</option>
-              <option value="artist">Artists</option>
+              <option value="track">{t('tests.tracks')}</option>
+              <option value="album">{t('tests.albums')}</option>
+              <option value="artist">{t('tests.artists')}</option>
             </select>
-            <button className="np-pill" disabled={loading} onClick={sSearch}>Search</button>
+            <button className="np-pill" disabled={loading} onClick={sSearch}>{t('tests.search')}</button>
+            <button className="np-pill" disabled={loading} onClick={sTokenStatus}>Token Status</button>
           </div>
         </div>
         <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Track ID</h4>
-          <input className="tb-search" value={sTrackId} onChange={e=>setSTrackId(e.target.value)} placeholder="Track ID" />
-          <button className="np-pill" disabled={loading} onClick={sGetTrack}>Get Track</button>
+          <h4 className="mini-title" style={{marginTop:0}}>{t('tests.trackId','Track ID')}</h4>
+          <input className="tb-search" value={sTrackId} onChange={e=>setSTrackId(e.target.value)} placeholder={t('tests.trackId','Track ID')} />
+          <button className="np-pill" disabled={loading} onClick={sGetTrack}>{t('tests.getTrack')}</button>
         </div>
         <div className="gt-block">
           <h4 className="mini-title" style={{marginTop:0}}>Artist ID</h4>

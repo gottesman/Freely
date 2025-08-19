@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { usePlayback } from '../core/playback'
+import { useI18n } from '../core/i18n'
 import { useAlerts } from '../core/alerts'
 
 export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNowPlaying, onToggleQueueTab, queueActive }: { lyricsOpen?: boolean, onToggleLyrics?: () => void, onActivateNowPlaying?: () => void, onToggleQueueTab?: () => void, queueActive?: boolean }){
@@ -16,7 +17,8 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
     if (volRef.current) volRef.current.style.setProperty('--vol', `${v}%`)
   }
 
-  const { currentTrack, loading: trackLoading, error } = usePlayback();
+  const { currentTrack, loading: trackLoading, error, next, prev } = usePlayback();
+  const { t } = useI18n();
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [positionMs, setPositionMs] = useState<number>(0);
 
@@ -39,13 +41,18 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
     if (!duration) return;
     const iv = setInterval(() => {
       setPositionMs(p => {
-        const next = p + 1000;
-        if (next >= duration) { clearInterval(iv); return duration; }
-        return next;
+        const updated = p + 1000;
+        if (updated >= duration) {
+          clearInterval(iv);
+          // Snap to end, then auto-advance
+          setTimeout(() => { next(); }, 0);
+          return duration;
+        }
+        return updated;
       });
     }, 1000);
     return () => clearInterval(iv);
-  }, [isPlaying, currentTrack?.id, currentTrack?.durationMs]);
+  }, [isPlaying, currentTrack?.id, currentTrack?.durationMs, next]);
 
   function togglePlay(){ setIsPlaying(p => !p); }
 
@@ -68,16 +75,16 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
     setPositionMs(Math.floor(ratio * durationMs));
   }
 
-  const title = currentTrack?.name || (trackLoading ? 'Loading track...' : 'Song Title');
-  const artist = currentTrack?.artists?.map(a=>a.name).join(', ') || 'Artist Name';
-  const album = currentTrack?.album?.name || 'Album Name';
+  const title = currentTrack?.name || (trackLoading ? t('np.loading') : t('np.noTrack'));
+  const artist = currentTrack?.artists?.map(a=>a.name).join(', ') || '';
+  const album = currentTrack?.album?.name || '';
   const cover = currentTrack?.album?.images?.[0]?.url || '/icon-192.png';
 
   return (
     <div className="bottom-player main-panels">
       <div className='track-progress'>
         <div className='time current'>{fmt(positionMs)}</div>
-        <div className='bar' onClick={onSeek} role="progressbar" aria-valuemin={0} aria-valuemax={durationMs} aria-valuenow={positionMs} aria-label="Track position">
+  <div className='bar' onClick={onSeek} role="progressbar" aria-valuemin={0} aria-valuemax={durationMs} aria-valuenow={positionMs} aria-label={t('np.trackPosition','Track position')}>
           <div className='fill' style={{ width: `${progress*100}%` }} />
           <div className='handle' style={{ left: `${progress*100}%` }} />
         </div>
@@ -89,7 +96,7 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
           className="meta"
           role="button"
           tabIndex={0}
-          aria-label="Show now playing details"
+          aria-label={t('np.showDetails','Show now playing details')}
           onClick={() => onActivateNowPlaying && onActivateNowPlaying()}
           onKeyDown={(e) => { if((e.key === 'Enter' || e.key === ' ') && onActivateNowPlaying){ e.preventDefault(); onActivateNowPlaying(); } }}
         >
@@ -100,33 +107,33 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
             <div className="song-album">{album}</div>
           </div>
         </div>
-  <button className="small player-icons player-icons-add-playlist" aria-label="Add to playlist"><span className="material-symbols-rounded">add_circle</span></button>
+  <button className="small player-icons player-icons-add-playlist" aria-label={t('player.addPlaylist')}><span className="material-symbols-rounded">add_circle</span></button>
       </div>
 
       <div className="controls">
-  <button className="small player-icons player-icons-shuffle" aria-label="Shuffle"><span className="material-symbols-rounded filled">shuffle</span></button>
-  <button className="player-icons player-icons-prev" aria-label="Previous"><span className="material-symbols-rounded filled">skip_previous</span></button>
-  <button className="play player-icons player-icons-play" aria-label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlay}>
+  <button className="small player-icons player-icons-shuffle" aria-label={t('player.shuffle')}><span className="material-symbols-rounded filled">shuffle</span></button>
+  <button className="player-icons player-icons-prev" aria-label={t('player.previous')} onClick={prev}><span className="material-symbols-rounded filled">skip_previous</span></button>
+  <button className="play player-icons player-icons-play" aria-label={isPlaying ? t('player.pause') : t('player.play')} onClick={togglePlay}>
   <span className="material-symbols-rounded filled">{isPlaying ? 'pause_circle' : 'play_circle'}</span>
   </button>
-  <button className="player-icons player-icons-next" aria-label="Next"><span className="material-symbols-rounded filled">skip_next</span></button>
-  <button className="small player-icons player-icons-repeat-off" aria-label="Repeat"><span className="material-symbols-rounded filled">repeat</span></button>
+  <button className="player-icons player-icons-next" aria-label={t('player.next')} onClick={next}><span className="material-symbols-rounded filled">skip_next</span></button>
+  <button className="small player-icons player-icons-repeat-off" aria-label={t('player.repeat')}><span className="material-symbols-rounded filled">repeat</span></button>
       </div>
 
       <div className="extras">
   <button
     className={`small player-icons player-icons-lyrics ${lyricsOpen ? 'active' : ''}`}
-    aria-label={lyricsOpen ? 'Hide lyrics' : 'Show lyrics'}
+  aria-label={lyricsOpen ? t('player.hideLyrics') : t('player.showLyrics')}
     aria-pressed={lyricsOpen ? 'true' : 'false'}
     onClick={onToggleLyrics}
   ><span className="material-symbols-rounded">lyrics</span></button>
   <button
     className={`small player-icons player-icons-queue ${queueActive ? 'active' : ''}`}
-    aria-label={queueActive ? 'Hide queue' : 'Show queue'}
+  aria-label={queueActive ? t('player.hideQueue') : t('player.showQueue')}
     aria-pressed={queueActive ? 'true' : 'false'}
     onClick={onToggleQueueTab}
   ><span className="material-symbols-rounded filled">line_weight</span></button>
-  <button className="small player-icons player-icons-mute" aria-label="Mute"><span className="material-symbols-rounded filled">volume_up</span></button>
+  <button className="small player-icons player-icons-mute" aria-label={t('player.mute')}><span className="material-symbols-rounded filled">volume_up</span></button>
   <input
     ref={volRef}
     className="volume-range"
@@ -137,8 +144,8 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
     onChange={(e) => onVolume(Number(e.target.value))}
     style={{ ['--vol' as any]: `${volume}%` }}
   />
-  <button className='small player-icons player-icons-mini' aria-label="Mini player"><span className="material-symbols-rounded">pip</span></button>
-  <button className='small player-icons player-icons-fullscreen' aria-label="Fullscreen"><span className="material-symbols-rounded filled">pan_zoom</span></button>
+  <button className='small player-icons player-icons-mini' aria-label={t('player.mini')}><span className="material-symbols-rounded">pip</span></button>
+  <button className='small player-icons player-icons-fullscreen' aria-label={t('player.fullscreen')}><span className="material-symbols-rounded filled">pan_zoom</span></button>
       </div>
     </div>
     </div>

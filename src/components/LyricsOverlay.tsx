@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback } from 'react'
+import { useI18n } from '../core/i18n'
 
 interface LyricsOverlayProps {
   open: boolean
@@ -24,7 +25,9 @@ Static whispers under violet rain
 Fragments looping in a soft refrain
 `
 
-export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, title = 'Lyrics' }: LyricsOverlayProps){
+export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, title }: LyricsOverlayProps){
+  const { t } = useI18n();
+  const resolvedTitle = title || t('lyrics.title');
   // Close on Escape
   const handleKey = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape' && open) onClose()
@@ -39,7 +42,7 @@ export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, t
     <div
       className={`np-lyrics-overlay ${open ? 'active' : ''}`}
       aria-hidden={!open}
-      aria-label="Lyrics overlay"
+  aria-label={t('lyrics.overlay')}
       role="dialog"
     >
       <div className="np-lyrics-scroll" onClick={(e) => e.stopPropagation()}>
@@ -47,12 +50,12 @@ export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, t
           <button
             type="button"
             className="player-icons np-overlay-close"
-            aria-label="Close lyrics"
+            aria-label={t('lyrics.close')}
             onClick={onClose}
           >
             <span className="material-symbols-rounded filled">close</span>
           </button>
-          <h2 style={{marginTop:0}}>{title}</h2>
+          <h2 style={{marginTop:0}}>{resolvedTitle}</h2>
           <pre style={{margin:0}}>{lyrics}</pre>
         </div>
       </div>

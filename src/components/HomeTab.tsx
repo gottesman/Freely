@@ -1,25 +1,27 @@
 import React from 'react'
+import { useI18n } from '../core/i18n'
 
 export default function HomeTab(){
+  const { t } = useI18n();
   const heroImage = '../icon-192.png'
   return (
-    <section className="home-page" aria-label="Browse and personalized content">
+  <section className="home-page" aria-label={t('home.pageLabel','Browse and personalized content')}>
       {/* Hero / Welcome */}
       <div className="home-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
         <div className="home-hero-overlay" />
         <div className="home-hero-body">
-          <h1 className="home-hero-title">Welcome back</h1>
-          <p className="home-hero-sub">Your daily mix & fresh releases are ready.</p>
+          <h1 className="home-hero-title">{t('home.welcome')}</h1>
+          <p className="home-hero-sub">{t('home.subtitle')}</p>
           <div className="home-hero-actions">
-            <button className="np-icon" type="button" aria-label="Play Daily Mix"><span className="material-symbols-rounded filled">play_arrow</span></button>
-            <button className="np-icon" type="button" aria-label="Shuffle All"><span className="material-symbols-rounded filled">shuffle</span></button>
-            <button className="np-icon" type="button" aria-label="Open Queue"><span className="material-symbols-rounded filled">queue_music</span></button>
+            <button className="np-icon" type="button" aria-label={t('home.cta.playDailyMix')}><span className="material-symbols-rounded filled">play_arrow</span></button>
+            <button className="np-icon" type="button" aria-label={t('home.cta.shuffleAll')}><span className="material-symbols-rounded filled">shuffle</span></button>
+            <button className="np-icon" type="button" aria-label={t('home.cta.openQueue')}><span className="material-symbols-rounded filled">queue_music</span></button>
           </div>
         </div>
       </div>
 
       {/* Continue Listening */}
-      <HomeSection id="continue" title="Continue Listening" more> 
+  <HomeSection id="continue" title={t('home.section.continue')} more> 
         <div className="media-row scroll-x">
           {Array.from({length:6}).map((_,i)=> (
             <MediaCard key={i} kind="album" progress>
@@ -33,7 +35,7 @@ export default function HomeTab(){
       </HomeSection>
 
       {/* Latest Releases */}
-      <HomeSection id="latest" title="Latest Releases" more>
+  <HomeSection id="latest" title={t('home.section.latest')} more>
         <div className="media-row scroll-x">
           {Array.from({length:10}).map((_,i)=> (
             <MediaCard key={i} kind="album">
@@ -46,7 +48,7 @@ export default function HomeTab(){
       </HomeSection>
 
       {/* Recommended For You */}
-      <HomeSection id="recommended" title="Recommended For You" more>
+  <HomeSection id="recommended" title={t('home.section.recommended')} more>
         <div className="media-row scroll-x">
           {Array.from({length:8}).map((_,i)=> (
             <MediaCard key={i} kind="playlist">
@@ -59,7 +61,7 @@ export default function HomeTab(){
       </HomeSection>
 
       {/* Trending Now */}
-      <HomeSection id="trending" title="Trending Now" more>
+  <HomeSection id="trending" title={t('home.section.trending')} more>
         <div className="media-row scroll-x dense">
           {Array.from({length:12}).map((_,i)=> (
             <MediaCard key={i} kind="track" compact>
@@ -72,7 +74,7 @@ export default function HomeTab(){
       </HomeSection>
 
       {/* Top Artists */}
-      <HomeSection id="artists" title="Top Artists" more>
+  <HomeSection id="artists" title={t('home.section.artists')} more>
         <div className="media-row scroll-x artists">
           {Array.from({length:10}).map((_,i)=> (
             <MediaCard key={i} kind="artist" circle>
@@ -85,7 +87,7 @@ export default function HomeTab(){
       </HomeSection>
 
       {/* Genres & Moods */}
-      <HomeSection id="genres" title="Genres & Moods" more>
+  <HomeSection id="genres" title={t('home.section.genres')} more>
         <div className="chip-grid">
           {['Electronic','Chill','Focus','Gaming','Workout','Jazz','Classical','Hip-Hop','Ambient','Indie'].map(tag => (
             <button key={tag} className="chip" type="button">{tag}</button>
@@ -99,11 +101,12 @@ export default function HomeTab(){
 /* --- Internal compositional components (lightweight) --- */
 interface HomeSectionProps { id:string; title:string; children: React.ReactNode; more?:boolean }
 function HomeSection({id,title,children,more}:HomeSectionProps){
+  const { t } = useI18n();
   return (
     <section className="home-section" aria-labelledby={`${id}-title`}>
       <header className="home-sec-head">
         <h2 id={`${id}-title`} className="home-sec-title">{title}</h2>
-        {more && <button className="np-link home-sec-more" type="button">See all</button>}
+        {more && <button className="np-link home-sec-more" type="button">{t('home.section.seeAll')}</button>}
       </header>
       {children}
     </section>

@@ -1,5 +1,5 @@
 /* Right Panel & Shelves */
-.right-tabs { display:flex; flex-direction:column; gap:12px; height:100%; padding-bottom:18px; }
+.right-tabs { display:flex; flex-direction:column; height:100%; padding-bottom:18px; }
 .right-tabs-header { display:flex; gap:6px; -webkit-app-region:no-drag; }
 .right-tabs-header button { flex:1 1 auto; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); color:var(--text); font-size:11px; letter-spacing:.5px; padding:8px 10px; border-radius:10px; cursor:pointer; transition:background var(--dur-med),border-color var(--dur-med),color var(--dur-med); }
 .right-tabs-header button:hover { background:rgba(255,255,255,0.12); border-color:rgba(255,255,255,0.2); }
@@ -7,9 +7,10 @@
 .right-tabs-body { display:flex; flex-direction:column; gap:16px; min-height:0; flex:1 1 auto; overflow-y:auto; overflow-x:hidden; }
 .rt-panel { display:flex; flex-direction:column; gap:12px; flex:1 1 auto; min-height:0; overflow-y:auto; }
 .rt-placeholder { font-size:12px; opacity:.7; padding:4px 2px; }
-.rt-title { font-size:18px; margin:0 0 4px; letter-spacing:.5px; }
+.panel-title { font-size:18px; margin:0 0 4px; letter-spacing:.5px; }
 .rt-subheading { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; margin-top:-4px; }
 .rt-artist-name { font-size:20px; font-weight:600; background:linear-gradient(90deg,var(--accent), var(--accent-soft,#7fd)); -webkit-background-clip:text; background-clip:text; color:transparent; line-height:1.2; }
+.gradient-icon { background:linear-gradient(90deg,var(--accent), var(--accent-soft,#7fd)); -webkit-background-clip:text; background-clip:text; color:transparent; display:inline-block; }
 .rt-release-count { font-size:12px; opacity:.6; letter-spacing:.5px; }
 .artist-shelf { display:flex; flex-direction:column; gap:6px; }
 .artist-shelf + .artist-shelf { margin-top:4px; }
@@ -23,3 +24,9 @@
 .card-img-wrap img { width:100%; height:100%; object-fit:cover; display:block; }
 .card-meta { display:flex; flex-direction:column; gap:2px; }
 .card-name { font-size:12px; line-height:1.25; height:2.5em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical; }
+.panel-header{display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+}
