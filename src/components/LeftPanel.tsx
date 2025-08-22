@@ -2,7 +2,7 @@ import React from 'react'
 import { useI18n } from '../core/i18n'
 import { usePlaylists } from '../core/playlists'
 
-export default function LeftPanel({ collapsed, onToggle, width, extraClass }: { collapsed: boolean, onToggle: () => void, width?: number, extraClass?: string }){
+export default function LeftPanel({ collapsed, onToggle, width, extraClass, onSelectPlaylist, activePlaylistId }: { collapsed: boolean, onToggle: () => void, width?: number, extraClass?: string, onSelectPlaylist?: (id: string)=>void, activePlaylistId?: string }){
   const { t } = useI18n();
   const { playlists, createPlaylist, deletePlaylist } = usePlaylists();
   const [query, setQuery] = React.useState('');
@@ -25,6 +25,11 @@ export default function LeftPanel({ collapsed, onToggle, width, extraClass }: { 
     .filter(p => !query || p.name.toLowerCase().includes(query.toLowerCase()))
     .filter(p => !tagFilter || p.tags.includes(tagFilter))
     .sort((a,b)=>{
+      // Always pin Favorites (system + code==='favorites') to the top
+      const aFav = a.system && a.code === 'favorites';
+      const bFav = b.system && b.code === 'favorites';
+      if(aFav && !bFav) return -1;
+      if(bFav && !aFav) return 1;
       let cmp = 0;
       if(order==='name') cmp = a.name.localeCompare(b.name);
       else if(order==='created') cmp = (a.created_at||0) - (b.created_at||0);
@@ -51,7 +56,11 @@ export default function LeftPanel({ collapsed, onToggle, width, extraClass }: { 
         <div className="collapsed-thumb-list">
           {filtered.map(p => (
             <div key={p.id} className="collapsed-thumb-item" title={p.name}>
-              <div className="collapsed-thumb" aria-hidden="true">{p.name.slice(0,2).toUpperCase()}</div>
+              <div className="collapsed-thumb" aria-hidden="true">
+                {p.system && p.code==='favorites' ? (
+                  <span className="material-symbols-rounded filled" style={{fontSize:18}}>star</span>
+                ) : p.name.slice(0,2).toUpperCase()}
+              </div>
             </div>
           ))}
         </div>
@@ -87,7 +96,7 @@ export default function LeftPanel({ collapsed, onToggle, width, extraClass }: { 
             aria-label={t('pl.filter.panel','Playlist filters')}
             aria-pressed={showFilters}
             onClick={()=> setShowFilters(s=>!s)}
-            style={{flex:'0 0 38px', width:38, display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 0', position:'relative'}}
+            style={{flex:'0 0 30px', width:30, display:'flex', alignItems:'center', justifyContent:'center', padding:'4px 0', position:'relative'}}
             title={hasActiveFilters ? t('pl.filter.panel','Playlist filters') + ' *' : t('pl.filter.panel','Playlist filters')}
           >
             <span className="material-symbols-rounded filled" style={{fontSize:18}}>filter_alt</span>
@@ -165,17 +174,33 @@ export default function LeftPanel({ collapsed, onToggle, width, extraClass }: { 
               <div className="pl-sub">{t('pl.new.hint','Click to create')}</div>
             </div>
           </div>
-          {filtered.map(p => (
-            <div key={p.id} className="pl-item" title={p.name}>
-              <div className="pl-thumb" aria-hidden="true">{p.name.slice(0,2).toUpperCase()}</div>
-              <div className="pl-meta">
-                <div className="pl-name">{p.name}</div>
-                <div className="pl-sub">{(p.track_count||0)} · {p.tags.join(', ')}</div>
+          {filtered.map(p => {
+            const pid = (p.system && p.code==='favorites') ? 'favorites' : ('local:'+p.id);
+            const isActive = activePlaylistId === pid;
+            return (
+              <div
+                key={p.id}
+                className={`pl-item ${p.system? 'system':''} ${isActive? 'active':''}`}
+                title={p.name}
+                role={onSelectPlaylist ? 'button' : undefined}
+                tabIndex={onSelectPlaylist ? 0 : undefined}
+                aria-current={isActive? 'true': undefined}
+                onClick={()=> { if(onSelectPlaylist){ onSelectPlaylist(pid);} }}
+                onKeyDown={(e)=> { if(!onSelectPlaylist) return; if(e.key==='Enter' || e.key===' '){ e.preventDefault(); onSelectPlaylist(pid);} }}
+              >
+                <div className={`pl-thumb ${(p.system && p.code==='favorites')?"pl-favorites" : ""}`} aria-hidden="true">
+                  {p.system && p.code==='favorites' ? (
+                    <span className="material-symbols-rounded filled" style={{color:'var(var(--glass-bg-strong2))'}}>star</span>
+                  ) : p.name.slice(0,2).toUpperCase()}
+                </div>
+                <div className="pl-meta">
+                  <div className="pl-name">{p.system && p.code==='favorites' ? t('pl.favorites','Favorites') : p.name}</div>
+                  <div className="pl-sub">{(p.track_count||0)} {t('pl.tracks','tracks')}{p.tags.length ? ' · ' + p.tags.join(', ') : ''}</div>
+                </div>
               </div>
-              <button className="pl-del" aria-label={t('pl.delete','Delete')} onClick={()=> deletePlaylist(p.id)}>×</button>
-            </div>
-          ))}
-          {!filtered.length && <div style={{opacity:0.65, fontSize:12}}>{t('pl.empty','No playlists')}</div>}
+            );
+          })}
+          {!filtered.length && <div style={{opacity:0.65, fontSize:12, margin: '12px 0'}}>{t('pl.empty','No playlists')}</div>}
         </div>
       </nav>
     </aside>

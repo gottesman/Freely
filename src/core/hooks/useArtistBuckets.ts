@@ -58,14 +58,14 @@ export function useArtistBuckets() {
           try {
             const pl = await w.electron.spotify.searchPlaylists(currentTrack.artists[0].name);
             if (pl && pl.error) throw new Error(pl.error);
-            const plItems = (pl.items || pl.playlists?.items || []);
+            const plItems = (pl.items || pl.playlists?.items || []).filter(Boolean);
             playlists = plItems.slice(0, 6);
           } catch (err) { console.warn('Playlist proxy search failed', err); }
         } else if (currentTrack?.artists?.[0]?.name) {
           try {
             const client = new SpotifyClient();
             const pl = await client.searchPlaylists(currentTrack.artists[0].name);
-            const plItems = (pl.items || (pl as any).playlists?.items || []);
+            const plItems = (pl.items || (pl as any).playlists?.items || []).filter(Boolean);
             playlists = plItems.slice(0, 6) as any;
           } catch (err) { console.warn('Playlist local search failed', err); }
         }
@@ -82,7 +82,9 @@ export function useArtistBuckets() {
     }
     load();
     return () => { cancelled = true; };
-  }, [deferredArtistId]);
+  // Include currentTrack?.id so we refetch when the playing track changes
+  // but the primary artist remains the same (previous implementation stalled in loading state).
+  }, [deferredArtistId, currentTrack?.id]);
 
   return { buckets, currentTrack };
 }

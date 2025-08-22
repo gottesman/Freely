@@ -8,9 +8,9 @@
 
 /* Nav Buttons */
 .titlebar-nav { -webkit-app-region:no-drag; display:flex; align-items:center; gap:4px; padding:0 4px; }
-.tb-nav-btn { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); color:var(--text); width:34px; height:30px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font:inherit; padding:0; line-height:1; transition: background var(--dur-med), border-color var(--dur-med), transform var(--dur-med); }
+.tb-nav-btn { background:var(--surface-2); border:1px solid var(--glass-border); color:var(--text); width:34px; height:30px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font:inherit; padding:0; line-height:1; transition: background var(--dur-med), border-color var(--dur-med), transform var(--dur-med); }
 .tb-nav-btn span { font-size:20px; }
-.tb-nav-btn:hover { background:rgba(255,255,255,0.14); border-color:rgba(255,255,255,0.22); }
+.tb-nav-btn:hover { background:var(--glass-bg-strong); border-color:var(--glass-border-hover); }
 .tb-nav-btn:active { transform:scale(.9); }
 .tb-nav-btn.active { background:var(--accent); color:#021; border-color:var(--accent); box-shadow:0 0 0 1px rgba(0,0,0,.25), 0 4px 12px -4px rgba(0,0,0,.4); }
 .tb-nav-btn.active:hover { background:var(--accent); }

@@ -76,12 +76,31 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
             CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE);
             CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT, played_at INTEGER);
             CREATE TABLE IF NOT EXISTS favorites (id INTEGER PRIMARY KEY, track_id TEXT, title TEXT);
-            CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT);
-            CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, track_id TEXT, title TEXT);
+            CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT, code TEXT UNIQUE, system INTEGER DEFAULT 0, artist_id TEXT, created_at INTEGER, tags TEXT);
+            CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, track_id TEXT, title TEXT, added_at INTEGER);
             CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY, manifest TEXT);
             CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
           `
           dbInstance.exec(schema)
+          // lightweight migrations: attempt to add missing columns (errors ignored)
+          const alters = [
+            "ALTER TABLE playlists ADD COLUMN code TEXT",
+            "ALTER TABLE playlists ADD COLUMN system INTEGER DEFAULT 0",
+            "ALTER TABLE playlists ADD COLUMN artist_id TEXT",
+            "ALTER TABLE playlists ADD COLUMN created_at INTEGER",
+            "ALTER TABLE playlists ADD COLUMN tags TEXT",
+            "ALTER TABLE playlist_items ADD COLUMN added_at INTEGER"
+          ];
+          alters.forEach(sql => { try { dbInstance.exec(sql); } catch(_){} });
+          // ensure default system playlist (favorites) exists with stable code
+          try {
+            const res = dbInstance.exec("SELECT id FROM playlists WHERE code='favorites' LIMIT 1");
+            const exists = res && res[0] && res[0].values && res[0].values.length;
+            if(!exists){
+              const now = Date.now();
+              dbInstance.exec(`INSERT INTO playlists(name, code, system, created_at) VALUES ('Favorites','favorites',1,${now})`);
+            }
+          } catch(_){}
         }
 
         if (isNode) {

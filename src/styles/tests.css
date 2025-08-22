@@ -7,7 +7,7 @@
 .gt-log { background:rgb(0 0 0 / 0.78); border:1px solid rgba(255,255,255,0.06); padding:18px 20px; border-radius:20px; max-height:40vh; overflow:auto; display:flex; flex-direction:column; gap:12px; font-size:12px; }
 .gt-pre { margin:8px 0 0; font-size:11px; line-height:1.4; white-space:pre-wrap; word-break:break-word; }
 .gt-empty { opacity:.6; }
-.multi-select { width:160px; min-height:108px; background:linear-gradient(145deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04)); border:1px solid rgba(255,255,255,0.18); color:var(--text); padding:8px 10px; border-radius:18px; font-size:12px; outline:none; display:flex; flex-direction:column; gap:4px; box-shadow:0 4px 14px -6px rgba(0,0,0,.55), 0 2px 5px rgba(0,0,0,.4); backdrop-filter:blur(8px); }
+.multi-select { width:160px; min-height:108px; background:linear-gradient(145deg, rgba(255,255,255,0.09), var(--surface-2)); border:1px solid rgba(255,255,255,0.18); color:var(--text); padding:8px 10px; border-radius:18px; font-size:12px; outline:none; display:flex; flex-direction:column; gap:4px; box-shadow:0 4px 14px -6px rgba(0,0,0,.55), 0 2px 5px rgba(0,0,0,.4); backdrop-filter:blur(8px); }
 .multi-select option { background:rgba(15,23,36,0.9); padding:6px 8px; border-radius:10px; margin:1px 0; cursor:pointer; transition:background var(--dur-med), color var(--dur-med); }
 .multi-select option:hover { background:rgba(255,255,255,0.16); }
 .multi-select option:checked { background:var(--accent); color:#fff; box-shadow:0 0 0 1px rgba(0,0,0,0.5) inset; }

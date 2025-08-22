@@ -5,7 +5,7 @@ import RightPanel from './components/RightPanel'
 import BottomPlayer from './components/BottomPlayer'
 import LyricsOverlay from './components/LyricsOverlay'
 import { DBProvider, useDB } from './core/db'
-import { PlaybackProvider } from './core/playback'
+import { PlaybackProvider, usePlayback } from './core/playback'
 import TitleBar from './components/TitleBar'
 import { AlertsProvider, AlertsHost } from './core/alerts'
 import { useAppReady } from './core/ready'
@@ -35,6 +35,15 @@ function Main() {
   const [searchQuery, setSearchQuery] = React.useState<string>('')
   const [searchTriggeredAt, setSearchTriggeredAt] = React.useState<number>(0)
   const [activeTab, setActiveTab] = React.useState<string>('home')
+  const [songInfoTrackId, setSongInfoTrackId] = React.useState<string | undefined>(undefined)
+  const [albumInfoAlbumId, setAlbumInfoAlbumId] = React.useState<string | undefined>(undefined)
+  const [playlistInfoPlaylistId, setPlaylistInfoPlaylistId] = React.useState<string | undefined>(undefined)
+  const [artistInfoArtistId, setArtistInfoArtistId] = React.useState<string | undefined>(undefined)
+  const currentTrackIdRef = useRef<string | undefined>(undefined)
+  const { currentTrack: playbackCurrent } = usePlayback();
+  // Attempt to subscribe to playback changes if exposed on window (best-effort)
+  // Keep ref synced with playback hook (simpler than IPC event subscription)
+  useEffect(()=>{ currentTrackIdRef.current = playbackCurrent?.id; }, [playbackCurrent?.id]);
   // track collapsed state for side panels
   const [leftCollapsed, setLeftCollapsed] = React.useState<boolean>(false)
   const [rightCollapsed, setRightCollapsed] = React.useState<boolean>(false)
@@ -203,7 +212,7 @@ function Main() {
   )
 
   return (
-    <div className="app">
+  <div className={"app" + (draggingLeft || draggingRight ? ' is-resizing' : '')}>
         <div className="bg">
         </div>
   <TitleBar
@@ -215,7 +224,15 @@ function Main() {
   />
         <div className="window-body">
           <div className="content layout">
-            <LeftPanel collapsed={leftCollapsed} onToggle={() => setLeftCollapsed(prev => !prev)} width={leftWidth} extraClass={draggingLeft ? `panel-dragging ${collapseIntentLeft ? 'collapse-intent': ''}` : ''} />
+            <LeftPanel
+              collapsed={leftCollapsed}
+              onToggle={() => setLeftCollapsed(prev => !prev)}
+              width={leftWidth}
+              extraClass={draggingLeft ? `panel-dragging ${collapseIntentLeft ? 'collapse-intent': ''}` : ''}
+              activePlaylistId={activeTab==='playlist' ? playlistInfoPlaylistId : undefined}
+              onSelectPlaylist={(pid)=> { setPlaylistInfoPlaylistId(prev => { if(prev===pid) return prev; return pid; }); setActiveTab('playlist'); }}
+              
+            />
             {/* Left resize handle */}
             <div
               className={`resize-handle left ${leftCollapsed ? 'disabled' : ''}`}
@@ -226,7 +243,20 @@ function Main() {
               aria-label="Resize left panel"
             />
             <div className="center-area main-panels">
-              <CenterTabs searchQuery={searchQuery} searchTrigger={searchTriggeredAt} activeTab={activeTab} onTabChange={setActiveTab} />
+              <CenterTabs
+                searchQuery={searchQuery}
+                searchTrigger={searchTriggeredAt}
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+                songTrackId={songInfoTrackId}
+                albumId={albumInfoAlbumId}
+                playlistId={playlistInfoPlaylistId}
+                artistId={artistInfoArtistId}
+                onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
+                onSelectAlbum={(id)=> { setAlbumInfoAlbumId(id); setActiveTab('album'); }}
+                onSelectPlaylist={(id)=> { setPlaylistInfoPlaylistId(prev => { if(prev===id) return prev; return id; }); setActiveTab('playlist'); }}
+                onSelectTrack={(id)=> { setSongInfoTrackId(id); setActiveTab('song'); }}
+              />
               <LyricsOverlay open={lyricsOpen} onClose={() => setLyricsOpen(false)} />
             </div>
             {/* Right resize handle */}
@@ -238,12 +268,21 @@ function Main() {
               aria-hidden={rightCollapsed}
               aria-label="Resize right panel"
             />
-            <RightPanel collapsed={rightCollapsed} onToggle={() => setRightCollapsed(prev => !prev)} width={rightWidth} activeRightTab={rightTab} onRightTabChange={setRightTab} extraClass={draggingRight ? `panel-dragging ${collapseIntentRight ? 'collapse-intent': ''}` : ''} />
+            <RightPanel
+              collapsed={rightCollapsed}
+              onToggle={() => setRightCollapsed(prev => !prev)}
+              width={rightWidth}
+              activeRightTab={rightTab}
+              onRightTabChange={setRightTab}
+              extraClass={draggingRight ? `panel-dragging ${collapseIntentRight ? 'collapse-intent': ''}` : ''}
+              onSelectAlbum={(id) => { setAlbumInfoAlbumId(id); setActiveTab('album'); }}
+              onSelectPlaylist={(id) => { setPlaylistInfoPlaylistId(prev => { if(prev===id) return prev; return id; }); setActiveTab('playlist'); }}
+            />
           </div>
           <BottomPlayer
             lyricsOpen={lyricsOpen}
             onToggleLyrics={() => setLyricsOpen(o => !o)}
-            onActivateNowPlaying={() => setActiveTab('now')}
+            onActivateSongInfo={() => { if(currentTrackIdRef.current){ setSongInfoTrackId(currentTrackIdRef.current); } setActiveTab('song'); }}
             onToggleQueueTab={() => {
               // Toggle between queue and artist tabs without forcing expansion.
               // Previously we auto-expanded the right panel when activating the queue;
@@ -251,6 +290,7 @@ function Main() {
               setRightTab(t => t==='queue' ? 'artist' : 'queue');
             }}
             queueActive={rightTab==='queue'}
+            onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
           />
         </div>
     </div>

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback } from 'react';
+import { setSpotifyLocale } from './spotify';
 
 export interface I18nContextValue {
   lang: string;
@@ -37,6 +38,8 @@ export function I18nProvider({ children, initialLang = 'en' }: { children: React
     let cancelled = false;
     setReady(false);
     loadLocale(lang).then(k => { if(!cancelled){ setKeys(k); setReady(true); } });
+  // Propagate locale to Spotify (map simple lang to regionized form if needed)
+  try { setSpotifyLocale(mapLangToLocale(lang)); } catch {}
     return () => { cancelled = true; };
   }, [lang]);
 
@@ -56,4 +59,12 @@ export function useI18n(): I18nContextValue {
   const ctx = useContext(I18nContext);
   if(!ctx) throw new Error('useI18n must be used within I18nProvider');
   return ctx;
+}
+
+function mapLangToLocale(lang: string){
+  if(!lang) return 'en-US';
+  switch(lang){
+    case 'es': return 'es-ES';
+    case 'en': default: return 'en-US';
+  }
 }

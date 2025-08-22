@@ -15,19 +15,27 @@ interface MoreFromArtistProps {
   buckets: ArtistBuckets;
   currentArtistName?: string;
   collapsed?: boolean;
+  onSelectAlbum?: (albumId: string) => void;
+  onSelectPlaylist?: (playlistId: string) => void;
 }
 
-function listSection(title: string, kind: keyof ArtistBuckets, buckets: ArtistBuckets){
+function listSection(title: string, kind: keyof ArtistBuckets, buckets: ArtistBuckets, handlers: { onSelectAlbum?: (albumId: string)=>void; onSelectPlaylist?: (playlistId: string)=>void }){
   if(kind==='loading' || kind==='error') return null;
   const arr = buckets[kind] as (SpotifyAlbum|SpotifyPlaylist)[];
   if(!arr.length) return null;
   return (
-    <div className="artist-shelf">
+    <div className={`artist-shelf artist-shelf-${kind}`}>
       <h5 className="shelf-title">{title}</h5>
       <ul className="shelf-cards" role="list">
         {arr.map(item => (
           <li key={item.id} className="shelf-card" title={item.name}>
-            <button type="button" className="card-btn">
+            <button
+              type="button"
+              className="card-btn"
+              onClick={() => {
+                if(kind === 'playlists') handlers.onSelectPlaylist?.(item.id); else handlers.onSelectAlbum?.(item.id);
+              }}
+            >
               <div className="card-img-wrap"><img src={(item as any).images?.[0]?.url || '/icon-192.png'} alt={item.name} loading="lazy" /></div>
               <div className="card-meta">
                 <div className="card-name">{item.name}</div>
@@ -40,7 +48,7 @@ function listSection(title: string, kind: keyof ArtistBuckets, buckets: ArtistBu
   );
 }
 
-export const MoreFromArtist: React.FC<MoreFromArtistProps> = ({ buckets, currentArtistName, collapsed }) => {
+export const MoreFromArtist: React.FC<MoreFromArtistProps> = ({ buckets, currentArtistName, collapsed, onSelectAlbum, onSelectPlaylist }) => {
   const { t } = useI18n();
   if(collapsed){
     const map = new Map<string, { id:string; img?:string; name:string }>();
@@ -71,16 +79,15 @@ export const MoreFromArtist: React.FC<MoreFromArtistProps> = ({ buckets, current
   return (
     <div className="rt-panel" role="tabpanel" aria-label={t('artist.suggestions','Artist suggestions')}>
       <div className="rt-header">
-        <h4 className="panel-title">{t('artist.moreFrom')}</h4>
         <div className="rt-subheading">
           <span className="rt-artist-name">{currentArtistName || t('artist.unknown','Artist')}</span>
         </div>
       </div>
       {buckets.loading && <div className="rt-placeholder">{t('artist.loadingReleases')}</div>}
       {buckets.fetched && !buckets.loading && !buckets.error && !buckets.albums.length && !buckets.singles.length && <div className="rt-placeholder">{t('artist.noReleases')}</div>}
-      {listSection(t('artist.singles'), 'singles', buckets)}
-      {listSection(t('artist.albums'), 'albums', buckets)}
-      {listSection(t('artist.playlists'), 'playlists', buckets)}
+  {listSection(t('artist.singles'), 'singles', buckets, { onSelectAlbum, onSelectPlaylist })}
+  {listSection(t('artist.albums'), 'albums', buckets, { onSelectAlbum, onSelectPlaylist })}
+  {listSection(t('artist.playlists'), 'playlists', buckets, { onSelectAlbum, onSelectPlaylist })}
     </div>
   );
 };

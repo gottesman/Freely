@@ -10,8 +10,16 @@
 .center-area .center-tabs { flex:1 1 auto; min-width:0; width:100%; }
 
 /* Panels */
-.left-panel, .right-panel { border-radius: var(--app-border-radius); padding:8px; width:220px; box-sizing:border-box; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
-.main-panels { background: var(--panels-bg); }
+.left-panel, .right-panel { border-radius: var(--app-border-radius); width:220px; box-sizing:border-box; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.rt-header{ margin: 8px 0;}
+.rt-header,.shelf-title,.shelf-cards{padding: 0 var(--padding-md);}
+.main-panels { background: var(--panels-bg); transition: width 0.2s ease; }
+
+/* Disable transition while actively resizing (handle :active or global .is-resizing flag) */
+.is-resizing .main-panels,
+.resize-handle:active + .main-panels,
+.main-panels + .resize-handle:active,
+.resize-handle:active ~ .main-panels { transition: none !important; }
 .main-panels.collapsed { width:56px; overflow-x: hidden; }
 .main-panels .panel-collapse-toggle { cursor:pointer; font-size:12px; padding:4px; }
 

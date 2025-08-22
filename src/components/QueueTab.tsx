@@ -100,15 +100,6 @@ export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
 
   return (
   <div className={`rt-panel ${collapsed ? 'collapsed' : ''}`} role="tabpanel" aria-label={t('queue.title')}>
-    <div className="rt-header">
-        <h4 className="panel-title">
-      {collapsed ? (
-        <span className="material-symbols-rounded" aria-hidden="true">queue_music</span>
-      ) : (
-        t('queue.title')
-      )}
-      </h4>
-      </div>
   <ul className={`np-queue-list ${collapsed ? 'is-collapsed' : ''} ${!transitionsEnabled ? 'no-tx' : ''}`.trim()} role="list" ref={listRef}>
         {queueIds.map((id, i) => {
           const trackData = trackCache[id];

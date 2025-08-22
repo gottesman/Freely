@@ -3,7 +3,7 @@ import { usePlayback } from '../core/playback'
 import { useI18n } from '../core/i18n'
 import { useAlerts } from '../core/alerts'
 
-export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNowPlaying, onToggleQueueTab, queueActive }: { lyricsOpen?: boolean, onToggleLyrics?: () => void, onActivateNowPlaying?: () => void, onToggleQueueTab?: () => void, queueActive?: boolean }){
+export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSongInfo, onToggleQueueTab, queueActive, onSelectArtist }: { lyricsOpen?: boolean, onToggleLyrics?: () => void, onActivateSongInfo?: () => void, onToggleQueueTab?: () => void, queueActive?: boolean, onSelectArtist?: (id: string)=>void }){
   const [volume, setVolume] = useState<number>(40)
   const volRef = useRef<HTMLInputElement | null>(null)
 
@@ -96,14 +96,16 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateNow
           className="meta"
           role="button"
           tabIndex={0}
-          aria-label={t('np.showDetails','Show now playing details')}
-          onClick={() => onActivateNowPlaying && onActivateNowPlaying()}
-          onKeyDown={(e) => { if((e.key === 'Enter' || e.key === ' ') && onActivateNowPlaying){ e.preventDefault(); onActivateNowPlaying(); } }}
+          aria-label={t('np.showDetails','Show song details')}
+          onClick={() => onActivateSongInfo && onActivateSongInfo()}
+          onKeyDown={(e) => { if((e.key === 'Enter' || e.key === ' ') && onActivateSongInfo){ e.preventDefault(); onActivateSongInfo(); } }}
         >
           <img className="album-cover" src={cover} alt={album} />
           <div className="meta-text">
             <div className="song-title">{title}</div>
-            <div className="song-artist">{artist}</div>
+            <div className="song-artist">
+              {currentTrack?.artists?.map((a,i)=>(<React.Fragment key={a.id||a.name}>{i>0?', ':''}<button type="button" className="np-link artist inline" onClick={(e)=>{ e.stopPropagation(); if(onSelectArtist && a.id) onSelectArtist(a.id); else if(a.url) window.open(a.url,'_blank'); }}>{a.name}</button></React.Fragment>))}
+            </div>
             <div className="song-album">{album}</div>
           </div>
         </div>

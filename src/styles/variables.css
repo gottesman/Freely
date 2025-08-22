@@ -5,8 +5,8 @@
   --bg-opacity: 50%;
   --color-bg-solid: rgb(var(--bg));
   --card: #0b122094; /* already has alpha in hex */
-  --accent: hsl(189 94% 43%);
-  --accent-rgb: 0 173 205; /* approx for fallbacks */
+  --accent: rgb(7, 182, 213);
+  --accent-rgb: 7, 182, 213; /* approx for fallbacks */
   --secondary: hsl(34 94% 43%);
   --text: #e6eef6;
   --text-dim: rgb(230 238 246 / 0.7);
@@ -16,9 +16,19 @@
   --surface-1: rgba(255 255 255 / 0.02);
   --surface-2: rgba(255 255 255 / 0.04);
   --surface-3: rgba(255 255 255 / 0.06);
+  --surface-alt: rgb(0 255 175 / 0.14);
   --surface-hover: rgba(255 255 255 / 0.1);
   --surface-active: rgba(255 255 255 / 0.14);
   --panels-bg: rgba(255 255 255 / 0.05);
+
+  /* Consolidated glassy token aliases (deduplicates scattered rgba literals) */
+  --glass-bg: rgba(255 255 255 / 0.05);
+  --glass-bg-hover: rgba(255 255 255 / 0.12);
+  --glass-bg-strong: rgba(255 255 255 / 0.14);
+  --glass-border: var(--border-soft); /* 0.08 */
+  --glass-border-hover: rgba(255 255 255 / 0.2);
+  --glass-border-strong: rgba(255 255 255 / 0.25);
+  --glass-bg-strong2: rgba(255 255 255 / 0.7);
 
   /* Gradients */
   --grad-1: rgba(107 33 168 / 0.12);
@@ -58,4 +68,11 @@
 
   /* Icon fonts */
   --material-opts: 'wght' 200, 'GRAD' 0, 'opsz' 24;
+
+  /* Padding */
+  --padding-xs: 4px;
+  --padding-sm: 8px;
+  --padding-md: 12px;
+  --padding-lg: 16px;
+  --padding-xl: 24px;
 }
