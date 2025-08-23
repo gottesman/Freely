@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
+import { useSpotifyClient } from '../core/spotify-client';
 import GeniusClient from '../core/musicdata';
 import { usePlayback } from '../core/playback';
 import TrackList from './TrackList';
@@ -12,6 +13,7 @@ function fmt(ms?: number){
 
 export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylist, onSelectTrack }: { artistId?: string, onSelectAlbum?: (id: string)=>void, onSelectPlaylist?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
   const { t } = useI18n();
+  const spotifyClient = useSpotifyClient();
   const [artist, setArtist] = useState<SpotifyArtist | undefined>();
   const [topTracks, setTopTracks] = useState<SpotifyTrack[] | undefined>();
   const [recentAlbums, setRecentAlbums] = useState<SpotifyAlbum[] | undefined>();
@@ -37,13 +39,13 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
       try {
         let art: SpotifyArtist | undefined;
         if(w.electron?.spotify?.getArtist){ art = await w.electron.spotify.getArtist(artistId); }
-        else { const client = new SpotifyClient(); art = await client.getArtist(artistId); }
+        else { art = await spotifyClient.getArtist(artistId); }
         if(!cancelled) setArtist(art);
       } catch {}
       finally { if(!cancelled) setLoadingArtist(false); }
     })();
     return ()=>{ cancelled = true; };
-  }, [artistId]);
+  }, [artistId, spotifyClient]);
 
   // Load top tracks (limit 10)
   useEffect(()=>{
@@ -54,12 +56,12 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
       const w:any = window; try {
         let tracks: SpotifyTrack[] | undefined;
         if(w.electron?.spotify?.getArtistTopTracks){ tracks = await w.electron.spotify.getArtistTopTracks(artistId); }
-        else { const client = new SpotifyClient(); tracks = await client.getArtistTopTracks(artistId); }
+        else { tracks = await spotifyClient.getArtistTopTracks(artistId); }
         if(!cancelled && tracks) setTopTracks(tracks.slice(0,10));
       } finally { if(!cancelled) setLoadingTop(false); }
     })();
     return ()=>{ cancelled = true; };
-  }, [artistId]);
+  }, [artistId, spotifyClient]);
 
   // Load recent releases (albums + singles)
   useEffect(()=>{
@@ -70,7 +72,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
       const w:any = window; try {
         let albums: SpotifyAlbum[] | undefined;
         if(w.electron?.spotify?.getArtistAlbums){ const res = await w.electron.spotify.getArtistAlbums(artistId); albums = res.items || []; }
-        else { const client = new SpotifyClient(); const res = await client.getArtistAlbums(artistId, { includeGroups:'album,single', fetchAll:false, limit:20 }); albums = res.items; }
+        else { const res = await spotifyClient.getArtistAlbums(artistId, { includeGroups:'album,single', fetchAll:false, limit:20 }); albums = res.items; }
         if(albums){
           // Sort descending by release date
           albums.sort((a,b)=> (b.releaseDate || '').localeCompare(a.releaseDate || ''));
@@ -83,7 +85,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
       } finally { if(!cancelled) setLoadingAlbums(false); }
     })();
     return ()=>{ cancelled = true; };
-  }, [artistId]);
+  }, [artistId, spotifyClient]);
 
   // Load playlists containing artist (approximation via search, since requires broader user auth for full). We'll do a search by artist name.
   useEffect(()=>{
@@ -95,7 +97,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
       try {
         const w:any = window; let items: SpotifyPlaylist[] | undefined;
         if(w.electron?.spotify?.searchPlaylists){ const res = await w.electron.spotify.searchPlaylists(name); items = res.items || res.playlists?.items || []; }
-        else { const client = new SpotifyClient(); const res = await client.searchPlaylists(name); items = res.items; }
+        else { const res = await spotifyClient.searchPlaylists(name); items = res.items; }
         if(!cancelled && items){
           // Filter those whose name or description mention the artist
           const lower = name.toLowerCase();
@@ -106,7 +108,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
       finally { if(!cancelled) setLoadingPlaylists(false); }
     })();
     return ()=>{ cancelled = true; };
-  }, [artist?.name]);
+  }, [artist?.name, spotifyClient]);
 
   // Load biography via Genius (similar to SongInfoTab)
   useEffect(()=>{

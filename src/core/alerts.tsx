@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useState } from 'react';
 
 export type AlertSeverity = 'info' | 'warn' | 'error';
-export interface AlertItem { id: string; msg: string; severity: AlertSeverity; }
+export interface AlertItem { id: string; msg: string; severity: AlertSeverity; dismissing?: boolean; }
 
 interface AlertsCtxValue {
   alerts: AlertItem[];
@@ -30,10 +30,25 @@ export const AlertsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const id = Date.now().toString(36)+Math.random().toString(36).slice(2,7);
     setAlerts(a => [...a, { id, msg, severity }]);
     emitLog({ ts: Date.now(), source:'alert', msg, severity, meta });
+    
+    // Auto-dismiss after 4 seconds (3s visible + 1s fade out)
+    setTimeout(() => {
+      setAlerts(a => a.map(al => al.id === id ? { ...al, dismissing: true } : al));
+      
+      // Remove from state after fade animation completes
+      setTimeout(() => {
+        setAlerts(a => a.filter(al => al.id !== id));
+      }, 300); // Match the CSS transition duration
+    }, 3000);
   }, [emitLog]);
 
   const dismiss = useCallback((id: string) => {
-    setAlerts(a => a.filter(al => al.id !== id));
+    setAlerts(a => a.map(al => al.id === id ? { ...al, dismissing: true } : al));
+    
+    // Remove from state after fade animation completes
+    setTimeout(() => {
+      setAlerts(a => a.filter(al => al.id !== id));
+    }, 300); // Match the CSS transition duration
   }, []);
 
   const clear = useCallback(() => setAlerts([]), []);
@@ -62,7 +77,11 @@ export const AlertsHost: React.FC = () => {
   return (
     <div className="player-alerts" role="region" aria-label="Notifications">
       {alerts.map(al => (
-        <div key={al.id} className={`player-alert severity-${al.severity}`} role="alert">
+        <div 
+          key={al.id} 
+          className={`player-alert severity-${al.severity} ${al.dismissing ? 'dismissing' : ''}`} 
+          role="alert"
+        >
           <div className="icon" aria-hidden="true">
             <span className="material-symbols-rounded">{al.severity === 'error' ? 'error' : (al.severity === 'warn' ? 'warning' : 'info')}</span>
           </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
+import { useSpotifyClient } from '../core/spotify-client';
 import { usePlayback } from '../core/playback';
 import TrackList from './TrackList';
 
@@ -11,6 +12,7 @@ function fmt(ms?: number){
 
 export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }: { albumId?: string, onSelectArtist?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
   const { t } = useI18n();
+  const spotifyClient = useSpotifyClient();
   const [album, setAlbum] = useState<SpotifyAlbum|undefined>();
   const [tracks, setTracks] = useState<SpotifyTrack[]|undefined>();
   const [primaryArtist, setPrimaryArtist] = useState<SpotifyArtist|undefined>();
@@ -30,14 +32,14 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
         let alb: SpotifyAlbum | undefined;
     if(!albumId) return; // safety
     if(w.electron?.spotify?.getAlbum){ alb = await w.electron.spotify.getAlbum(albumId); }
-    else { const client = new SpotifyClient(); alb = await client.getAlbum(albumId); }
+    else { alb = await spotifyClient.getAlbum(albumId); }
         if(cancelled) return; setAlbum(alb);
       } catch { /* ignore */ }
       finally { if(!cancelled) setLoadingAlbum(false); }
     }
     run();
     return ()=>{ cancelled = true; };
-  }, [albumId]);
+  }, [albumId, spotifyClient]);
 
   // Load tracks
   useEffect(()=>{
@@ -51,14 +53,13 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
         if(w.electron?.spotify?.getAlbumTracks){
           const res = await w.electron.spotify.getAlbumTracks(albumId); if(!cancelled) setTracks(res.items || []);
         } else {
-          const client = new SpotifyClient();
-      try { const res = await client.getAlbumTracks(albumId, { fetchAll:false, limit:50 }); if(!cancelled) setTracks(res.items); } catch {}
+      try { const res = await spotifyClient.getAlbumTracks(albumId, { fetchAll:false, limit:50 }); if(!cancelled) setTracks(res.items); } catch {}
         }
       } finally { if(!cancelled) setLoadingTracks(false); }
     }
     run();
     return ()=>{ cancelled = true; };
-  }, [albumId]);
+  }, [albumId, spotifyClient]);
 
   // Load primary artist (first) for extra metadata
   useEffect(()=>{
@@ -71,14 +72,14 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
       try {
         let art: SpotifyArtist | undefined;
         if(w.electron?.spotify?.getArtist){ art = await w.electron.spotify.getArtist(artistId); }
-        else { const client = new SpotifyClient(); art = await client.getArtist(artistId); }
+        else { art = await spotifyClient.getArtist(artistId); }
         if(cancelled) return; setPrimaryArtist(art);
       } catch { }
       finally { if(!cancelled) setLoadingArtist(false); }
     }
     run();
     return ()=>{ cancelled = true; };
-  }, [album?.artists?.[0]?.id]);
+  }, [album?.artists?.[0]?.id, spotifyClient]);
 
   const heroImage = useMemo(()=> album?.images?.[0]?.url || '/icon-192.png', [album]);
   const releaseYear = album?.releaseDate ? album.releaseDate.split('-')[0] : undefined;

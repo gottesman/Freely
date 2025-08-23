@@ -1,6 +1,6 @@
 {
     "name": "freely-player",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "main": "electron/main.js",
     "private": true,
     "scripts": {
@@ -11,7 +11,9 @@
         "preview": "vite preview",
         "start-torrent-server": "node server/torrent-server.js",
         "electron:dev": "npm run build && electron .",
-        "electron:build": "npm run build && electron-builder --win --x64",
+    "electron:build": "npm run build && electron-builder --win --x64",
+    "prune": "npm prune --production",
+    "prune-and-build": "npm run build && npm prune --production && electron-builder --win --x64",
         "smoke": "npm run build && npx electron . --enable-logging",
         "lint:css": "stylelint \"src/**/*.css\""
     },
@@ -43,13 +45,25 @@
     "build": {
         "appId": "com.freely.player",
         "productName": "Freely Player",
+        "asar": true,
+        "asarUnpack": [
+            "server/**"
+        ],
+        "compression": "maximum",
+        "npmRebuild": false,
         "files": [
             "dist/**",
-            "server/**",
             "electron/**",
+            "server/**",
             "config/**",
-            "node_modules/**",
-            "package.json"
+            "package.json",
+            "!**/*.map",
+            "!**/__tests__/**",
+            "!**/tests/**",
+            "!**/*.md",
+            "!**/docs/**",
+            "!**/examples/**",
+            "!**/example/**"
         ],
         "directories": {
             "output": "build"
@@ -60,8 +74,5 @@
             ],
             "icon": "public/icon.ico"
         }
-    },
-    "asarUnpack": [
-        "server/**"
-    ]
+    }
 }

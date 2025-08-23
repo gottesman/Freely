@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import SpotifyClient, { SpotifyTrack } from './spotify';
+import { createCachedSpotifyClient } from './spotify-client';
+import { useDB } from './db';
 
 interface PlaybackContextValue {
   currentTrack?: SpotifyTrack;
@@ -40,6 +42,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [queueIds, setQueueIds] = useState<string[]>(TEST_TRACK_IDS);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [trackCache, setTrackCache] = useState<Record<string, SpotifyTrack | undefined>>({});
+  const { getApiCache, setApiCache, ready } = useDB();
+
+  // Create cached Spotify client
+  const spotifyClient = ready ? createCachedSpotifyClient({ getApiCache, setApiCache }) : new SpotifyClient();
 
   const fetchTrack = async (id: string) => {
     if (!id) return;
@@ -52,8 +58,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (resp && (resp as any).error) throw new Error((resp as any).error);
         track = resp as any;
       } else {
-        const client = new SpotifyClient();
-        track = await client.getTrack(id);
+        track = await spotifyClient.getTrack(id);
       }
       setCurrentTrack(track);
       setTrackCache(c => ({ ...c, [id]: track }));
@@ -101,7 +106,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               const resp = await w.electron.spotify.getTrack(id);
               if (resp && (resp as any).error) throw new Error((resp as any).error);
               t = resp as any;
-            } else { const client = new SpotifyClient(); t = await client.getTrack(id); }
+            } else { t = await spotifyClient.getTrack(id); }
             if(!cancelled) setTrackCache(c => ({ ...c, [id]: t }));
           } catch { /* ignore prefetch errors */ }
         }

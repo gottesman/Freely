@@ -55,6 +55,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+  // Enable Chromium experimental features (flag: --enable-experimental-web-platform-features)
+  experimentalFeatures: true,
     },
   });
 

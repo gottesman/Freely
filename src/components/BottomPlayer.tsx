@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import { usePlayback } from '../core/playback'
 import { useI18n } from '../core/i18n'
 import { useAlerts } from '../core/alerts'
+import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext'
+import { usePlaylists } from '../core/playlists'
 
 export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSongInfo, onToggleQueueTab, queueActive, onSelectArtist }: { lyricsOpen?: boolean, onToggleLyrics?: () => void, onActivateSongInfo?: () => void, onToggleQueueTab?: () => void, queueActive?: boolean, onSelectArtist?: (id: string)=>void }){
   const [volume, setVolume] = useState<number>(40)
@@ -21,6 +23,13 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSon
   const { t } = useI18n();
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [positionMs, setPositionMs] = useState<number>(0);
+  const [isTrackInAnyPlaylist, setIsTrackInAnyPlaylist] = useState<boolean>(false);
+
+  // Add to playlist modal
+  const { openModal: openPlaylistModal } = useGlobalAddToPlaylistModal();
+  
+  // Playlists hook to check if track exists
+  const { playlists, getPlaylistTrackIds } = usePlaylists();
 
   // Global alerts
   const { push: pushAlert, alerts } = useAlerts();
@@ -33,6 +42,32 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSon
 
   // Reset position when track changes
   useEffect(() => { setPositionMs(0); }, [currentTrack?.id]);
+
+  // Check if current track is in any playlist
+  useEffect(() => {
+    if (!currentTrack?.id || !playlists.length) {
+      setIsTrackInAnyPlaylist(false);
+      return;
+    }
+
+    const checkTrackInPlaylists = async () => {
+      try {
+        for (const playlist of playlists) {
+          const trackIds = await getPlaylistTrackIds(playlist.id);
+          if (trackIds.includes(currentTrack.id)) {
+            setIsTrackInAnyPlaylist(true);
+            return;
+          }
+        }
+        setIsTrackInAnyPlaylist(false);
+      } catch (error) {
+        console.warn('Failed to check track in playlists:', error);
+        setIsTrackInAnyPlaylist(false);
+      }
+    };
+
+    checkTrackInPlaylists();
+  }, [currentTrack?.id, playlists, getPlaylistTrackIds]);
 
   // Simulated playback timer (since we don't have audio element yet)
   useEffect(() => {
@@ -95,6 +130,7 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSon
         <div
           className="meta"
           role="button"
+          title={title + (artist ? ` - ${artist}` : '') + (album ? ` (${album})` : '')}
           tabIndex={0}
           aria-label={t('np.showDetails','Show song details')}
           onClick={() => onActivateSongInfo && onActivateSongInfo()}
@@ -109,7 +145,11 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSon
             <div className="song-album">{album}</div>
           </div>
         </div>
-  <button className="small player-icons player-icons-add-playlist" aria-label={t('player.addPlaylist')}><span className="material-symbols-rounded">add_circle</span></button>
+  <button className="small player-icons player-icons-add-playlist" title={t('player.addPlaylist')} aria-label={t('player.addPlaylist')} onClick={() => currentTrack && openPlaylistModal(currentTrack, true)} disabled={!currentTrack}>
+    <span className="material-symbols-rounded" style={{ color: isTrackInAnyPlaylist ? 'var(--accent)' : undefined }}>
+      {isTrackInAnyPlaylist ? 'check_circle' : 'add_circle'}
+    </span>
+  </button>
       </div>
 
       <div className="controls">
@@ -149,7 +189,7 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSon
   <button className='small player-icons player-icons-mini' aria-label={t('player.mini')}><span className="material-symbols-rounded">pip</span></button>
   <button className='small player-icons player-icons-fullscreen' aria-label={t('player.fullscreen')}><span className="material-symbols-rounded filled">pan_zoom</span></button>
       </div>
-    </div>
+      </div>
     </div>
   )
 }

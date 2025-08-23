@@ -4,13 +4,16 @@ import CenterTabs from './components/CenterTabs'
 import RightPanel from './components/RightPanel'
 import BottomPlayer from './components/BottomPlayer'
 import LyricsOverlay from './components/LyricsOverlay'
+import AddToPlaylistModal from './components/AddToPlaylistModal'
 import { DBProvider, useDB } from './core/db'
 import { PlaybackProvider, usePlayback } from './core/playback'
 import TitleBar from './components/TitleBar'
-import { AlertsProvider, AlertsHost } from './core/alerts'
+import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts'
 import { useAppReady } from './core/ready'
 import { useI18n } from './core/i18n'
 import { I18nProvider } from './core/i18n'
+import { AddToPlaylistModalProvider, useGlobalAddToPlaylistModal } from './core/AddToPlaylistModalContext'
+import { search as spotifySearch } from './core/spotify-client'
 
 export default function App() {
   return (
@@ -18,8 +21,11 @@ export default function App() {
       <DBProvider>
         <PlaybackProvider>
           <AlertsProvider>
-            <Main />
-            <AlertsHost />
+            <AddToPlaylistModalProvider>
+              <Main />
+              <AlertsHost />
+              <GlobalAddToPlaylistModal />
+            </AddToPlaylistModalProvider>
           </AlertsProvider>
         </PlaybackProvider>
       </DBProvider>
@@ -34,6 +40,10 @@ function Main() {
   const { getSetting, setSetting } = useDB();
   const [searchQuery, setSearchQuery] = React.useState<string>('')
   const [searchTriggeredAt, setSearchTriggeredAt] = React.useState<number>(0)
+  const [searchResults, setSearchResults] = React.useState<any | undefined>(undefined)
+  const [searchLoading, setSearchLoading] = React.useState(false)
+  const lastQueryRef = React.useRef<string | null>(null)
+  const debounceRef = React.useRef<any>(null)
   const [activeTab, setActiveTab] = React.useState<string>('home')
   const [songInfoTrackId, setSongInfoTrackId] = React.useState<string | undefined>(undefined)
   const [albumInfoAlbumId, setAlbumInfoAlbumId] = React.useState<string | undefined>(undefined)
@@ -112,6 +122,10 @@ function Main() {
     if(typeof window !== 'undefined') persistLocal();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dbReady, leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab]);
+
+  // Wire debounced search to update searchResults. Pass searchTriggeredAt so re-triggering
+  // the same query (e.g. clicking the search icon again) forces a refresh.
+  useDebouncedSearch(searchQuery, searchTriggeredAt, (res:any) => setSearchResults(res), (b:boolean) => setSearchLoading(b));
 
   function persistLocal(){
     try {
@@ -218,7 +232,7 @@ function Main() {
   <TitleBar
     title="Freely"
     icon="icon-192.png"
-    onSearch={(q?: string) => { setSearchQuery(q || ''); setSearchTriggeredAt(Date.now()) }}
+  onSearch={(q?: string) => { setSearchQuery(q || ''); setSearchTriggeredAt(Date.now()) }}
     onNavigate={(dest) => setActiveTab(dest)}
   activeTab={activeTab}
   />
@@ -246,6 +260,8 @@ function Main() {
               <CenterTabs
                 searchQuery={searchQuery}
                 searchTrigger={searchTriggeredAt}
+                searchResults={searchResults}
+                searchLoading={searchLoading}
                 activeTab={activeTab}
                 onTabChange={setActiveTab}
                 songTrackId={songInfoTrackId}
@@ -295,4 +311,70 @@ function Main() {
         </div>
     </div>
   )
+}
+
+// Debounced search effect (placed after Main for clarity)
+function useDebouncedSearch(query: string | undefined, trigger: number | undefined, onUpdate: (res: any) => void, setLoading: (b: boolean) => void){
+  const last = React.useRef<string | null>(null);
+  const lastTrigger = React.useRef<number | null>(null);
+  const timer = React.useRef<any>(null);
+
+  React.useEffect(() => {
+    if (!query || !query.trim()) {
+      // clear results if empty
+      onUpdate(undefined);
+      setLoading(false);
+      last.current = null;
+      lastTrigger.current = null;
+      return;
+    }
+    const q = query.trim();
+    // If same as last requested and same trigger, skip
+    if (last.current === q && lastTrigger.current === (trigger ?? null)) return;
+
+    // Debounce 300ms
+    clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      last.current = q;
+      lastTrigger.current = trigger ?? null;
+      setLoading(true);
+      try {
+        const res = await (await import('./core/spotify-client')).search(q, ['track','artist','album','playlist'], { limit: 50 });
+        console.log('[search] query=', q, 'response=', res);
+        onUpdate(res);
+      } catch (e) {
+        console.warn('search failed', e);
+        onUpdate(undefined);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+
+    return () => { clearTimeout(timer.current); };
+  }, [query, trigger, onUpdate, setLoading]);
+}
+
+
+// Global modal component that renders the AddToPlaylistModal using context
+function GlobalAddToPlaylistModal() {
+  const { isOpen, track, fromBottomPlayer, closeModal } = useGlobalAddToPlaylistModal();
+  const { push: pushAlert } = useAlerts();
+
+  return (
+    <AddToPlaylistModal
+      track={track}
+      isOpen={isOpen}
+      onClose={closeModal}
+      fromBottomPlayer={fromBottomPlayer}
+      onAdded={(playlistId, playlistName) => {
+        // Modal handles its own alerts, no need for duplicate here
+      }}
+      // Easy animation customization - uncomment and modify as needed:
+      animationDurations={{
+        regular: 1.5,        // Very slow to test if it works
+        bottomPlayer: 1.0,   // Slow bottom player modal
+        backdrop: 2.0        // Very slow backdrop fade
+      }}
+    />
+  );
 }

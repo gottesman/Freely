@@ -40,7 +40,16 @@ export class SpotifyClient {
   private cfg: SpotifyConfig;
   private cache = new Map<string, any>();
   private tokenInflight?: Promise<void>; // de-dupe concurrent token fetches
-  constructor(cfg: SpotifyConfig = {}) { this.cfg = { market: env('SPOTIFY_DEFAULT_MARKET') || 'US', ...cfg }; }
+  private db?: { getApiCache: (key: string) => Promise<any | null>; setApiCache: (key: string, data: any) => Promise<void> }; // database cache
+  
+  constructor(cfg: SpotifyConfig = {}) { 
+    this.cfg = { market: env('SPOTIFY_DEFAULT_MARKET') || 'US', ...cfg }; 
+  }
+
+  // Inject database cache functions
+  setDatabaseCache(db: { getApiCache: (key: string) => Promise<any | null>; setApiCache: (key: string, data: any) => Promise<void> }) {
+    this.db = db;
+  }
 
   setCredentials(clientId: string, clientSecret: string){ this.cfg.clientId = clientId; this.cfg.clientSecret = clientSecret; }
   setAccessToken(token: string, expiresInSec = 3600){
@@ -64,17 +73,45 @@ export class SpotifyClient {
       return;
     }
     // Start new fetch
+    console.log('🎫 Fetching Spotify access token...');
     __sharedTokenInflight = this.tokenInflight = (async () => {
       // Support external token endpoint for browser (no secret). Vite exposes only VITE_ prefixed vars.
       const externalEndpoint = env('VITE_SPOTIFY_TOKEN_ENDPOINT') || env('SPOTIFY_TOKEN_ENDPOINT');
+      console.log('🔗 Environment check:', {
+        VITE_SPOTIFY_TOKEN_ENDPOINT: env('VITE_SPOTIFY_TOKEN_ENDPOINT'),
+        SPOTIFY_TOKEN_ENDPOINT: env('SPOTIFY_TOKEN_ENDPOINT'),
+        finalEndpoint: externalEndpoint
+      });
+      console.log('🔗 Checking for external token endpoint:', externalEndpoint);
       if (externalEndpoint){
+        console.log('🌐 Using external token endpoint:', externalEndpoint);
         try {
-          const r = await fetch(String(externalEndpoint), { headers: { 'Accept':'application/json' } });
+          console.log('📞 Making fetch request to token endpoint...');
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+          
+          const r = await fetch(String(externalEndpoint), { 
+            headers: { 'Accept':'application/json' },
+            signal: controller.signal
+          });
+          clearTimeout(timeout);
+          
+          console.log('📨 Got response, status:', r.status, 'content-type:', r.headers.get('content-type'));
           const ct = r.headers.get('content-type')||'';
           let raw = '';
-          if(!r.ok){ raw = await safeReadText(r); throw new Error('token_http_'+r.status); }
-          if(!/json/i.test(ct)){ raw = await safeReadText(r); throw new Error('token_ct:'+ct+' snippet:'+ raw.slice(0,40)); }
+          if(!r.ok){ 
+            raw = await safeReadText(r); 
+            console.error('❌ Token endpoint HTTP error:', r.status, raw);
+            throw new Error('token_http_'+r.status); 
+          }
+          if(!/json/i.test(ct)){ 
+            raw = await safeReadText(r); 
+            console.error('❌ Token endpoint content-type error:', ct, 'body:', raw.slice(0,40));
+            throw new Error('token_ct:'+ct+' snippet:'+ raw.slice(0,40)); 
+          }
+          console.log('🔄 Parsing JSON response...');
           const j = await r.json();
+          console.log('✅ Parsed token response:', { hasToken: !!j.access_token, expiresIn: j.expires_in });
           if(!j.access_token) throw new Error('token_missing_access_token');
           // Prefer absolute unix expiry if provided (seconds). Fallback to expires_in.
           let expiresInSec: number;
@@ -86,10 +123,16 @@ export class SpotifyClient {
             expiresInSec = Number(j.expires_in || 3600);
           }
           this.setAccessToken(j.access_token, expiresInSec);
+          console.log('✅ Successfully got token from external endpoint, expires in', expiresInSec, 'seconds');
           return;
         } catch (e){
+          console.error('❌ External token endpoint failed:', e);
+          if (e instanceof Error && e.name === 'AbortError') {
+            console.error('🕐 Token request timed out after 10 seconds');
+          }
           // Fall through to client credentials attempt only if we actually have credentials
           const hasCreds = (this.cfg.clientId || env('SPOTIFY_CLIENT_ID')) && (this.cfg.clientSecret || env('SPOTIFY_CLIENT_SECRET'));
+          console.log('🔍 Checking for fallback credentials, hasCreds:', hasCreds);
           if(!hasCreds){
             // No credentials to fallback to; propagate a clearer message (handled by callers)
             throw new Error('Spotify token endpoint failed & no credentials: ' + (e as any)?.message);
@@ -122,6 +165,7 @@ export class SpotifyClient {
     })();
 
   try { await this.tokenInflight; } finally { this.tokenInflight = undefined; __sharedTokenInflight = undefined; }
+  console.log('🎫 Token fetch completed successfully');
   }
 
   private async get(path: string, params?: Record<string,string|number|undefined>){
@@ -135,12 +179,53 @@ export class SpotifyClient {
     const search = '?' + new URLSearchParams(Object.entries(merged).filter(([,v])=>v!==undefined) as any);
     const url = API_BASE + path + search;
     const k = 'GET:' + url;
+    
+    // Check database cache first (persistent, indefinite)
+    if (this.db) {
+      try {
+        console.log('🔍 Checking DB cache for:', k);
+        const cachedData = await this.db.getApiCache(k);
+        if (cachedData) {
+          console.log('📋 Cache HIT:', path);
+          return cachedData;
+        } else {
+          console.log('📋 Cache MISS (no data):', path);
+        }
+      } catch (e) {
+        console.log('📋 Cache MISS (error):', path, e);
+        // fallback to in-memory cache if DB fails
+      }
+    } else {
+      console.log('📋 Cache MISS (no DB):', path);
+    }
+    
+    // Fallback to in-memory cache (60 second TTL for current session)
     const cached = this.cache.get(k);
-    if (cached && Date.now() - cached.t < 60_000) return cached.v;
+    if (cached && Date.now() - cached.t < 60_000) {
+      console.log('💾 Memory cache HIT:', path);
+      return cached.v;
+    }
+    
+    // Make API call
+    console.log('🌐 API CALL:', path);
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + this.cfg.accessToken } });
     if (!res.ok) throw new Error('Spotify HTTP ' + res.status);
     const json = await res.json();
+    
+    // Store in both caches
     this.cache.set(k, { v: json, t: Date.now() });
+    console.log('💾 Stored in memory cache:', path);
+    if (this.db) {
+      // Don't await DB cache - it's an optimization, not critical
+      this.db.setApiCache(k, json).then(() => {
+        console.log('💾 Stored in DB cache:', path);
+      }).catch((e) => {
+        console.log('💾 DB cache store failed:', path, e);
+      });
+    } else {
+      console.log('💾 No DB available for caching:', path);
+    }
+    
     return json;
   }
 
@@ -149,23 +234,38 @@ export class SpotifyClient {
     return json;
   }
 
-  async searchTracks(query: string): Promise<SpotifySearchResult<SpotifyTrack>> {
-    const json = await this.get('/search', { q: query, type: 'track', market: this.cfg.market, limit: '20' });
+  /**
+   * Perform a single /search request for multiple types (comma-separated) and map results.
+   * Returns an object with mapped arrays under keys: track, album, artist, playlist when present.
+   */
+  async searchMulti(query: string, types: Array<'track'|'album'|'artist'|'playlist'> = ['track','album','artist','playlist'], limit: number = 20){
+    // limit is applied per-type by the Spotify API (max 50)
+    const json = await this.get('/search', { q: query, type: types.join(','), market: this.cfg.market, limit: String(limit) });
+    const results: Record<string, any[]> = {};
+    if (json.tracks && Array.isArray(json.tracks.items)) results.track = (json.tracks.items || []).map(mapTrack);
+    if (json.albums && Array.isArray(json.albums.items)) results.album = (json.albums.items || []).map(mapAlbum);
+    if (json.artists && Array.isArray(json.artists.items)) results.artist = (json.artists.items || []).map(mapArtist);
+    if (json.playlists && Array.isArray(json.playlists.items)) results.playlist = (json.playlists.items || []).filter(Boolean).map(mapPlaylist);
+    return { query, types, results, raw: json };
+  }
+
+  async searchTracks(query: string, limit: number = 20): Promise<SpotifySearchResult<SpotifyTrack>> {
+    const json = await this.get('/search', { q: query, type: 'track', market: this.cfg.market, limit: String(limit) });
     const items = (json.tracks?.items || []).map(mapTrack);
     return { query, type: 'track', items, raw: json };
   }
-  async searchAlbums(query: string): Promise<SpotifySearchResult<SpotifyAlbum>> {
-    const json = await this.get('/search', { q: query, type: 'album', market: this.cfg.market, limit: '20' });
+  async searchAlbums(query: string, limit: number = 20): Promise<SpotifySearchResult<SpotifyAlbum>> {
+    const json = await this.get('/search', { q: query, type: 'album', market: this.cfg.market, limit: String(limit) });
     const items = (json.albums?.items || []).map(mapAlbum);
     return { query, type: 'album', items, raw: json };
   }
-  async searchArtists(query: string): Promise<SpotifySearchResult<SpotifyArtist>> {
-    const json = await this.get('/search', { q: query, type: 'artist', market: this.cfg.market, limit: '20' });
+  async searchArtists(query: string, limit: number = 20): Promise<SpotifySearchResult<SpotifyArtist>> {
+    const json = await this.get('/search', { q: query, type: 'artist', market: this.cfg.market, limit: String(limit) });
     const items = (json.artists?.items || []).map(mapArtist);
     return { query, type: 'artist', items, raw: json };
   }
-  async searchPlaylists(query: string): Promise<SpotifySearchResult<SpotifyPlaylist>> {
-    const json = await this.get('/search', { q: query, type: 'playlist', market: this.cfg.market, limit: '20' });
+  async searchPlaylists(query: string, limit: number = 20): Promise<SpotifySearchResult<SpotifyPlaylist>> {
+    const json = await this.get('/search', { q: query, type: 'playlist', market: this.cfg.market, limit: String(limit) });
   // Some playlist items can sporadically be null (API glitch); filter falsy before mapping.
   const items = (json.playlists?.items || []).filter(Boolean).map(mapPlaylist);
     return { query, type: 'playlist', items, raw: json } as any;

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../core/i18n';
-import SpotifyClient, { type SpotifyPlaylist, type SpotifyTrack } from '../core/spotify';
+import SpotifyClient, { SpotifyTrack, SpotifyPlaylist } from '../core/spotify'
+import { useSpotifyClient } from '../core/spotify-client'
 import { usePlaylists } from '../core/playlists';
 import { useDB } from '../core/db';
 import { usePlayback } from '../core/playback';
@@ -20,14 +21,15 @@ function fmtTotal(ms?: number){ // playlist-level formatting per spec
   return `${m}m ${s}s`;
 }
 
-export default function PlaylistInfoTab({ playlistId }: { playlistId?: string }){
+export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelectTrack }: { playlistId?: string; onSelectPlaylist?: (id: string) => void; onSelectTrack?: (id: string) => void }){
   const { t } = useI18n();
   const [playlist, setPlaylist] = useState<SpotifyPlaylist|undefined>();
   const [tracks, setTracks] = useState<SpotifyTrack[]|undefined>();
   const [loading, setLoading] = useState(false);
   const { queueIds, setQueue, enqueue, currentIndex } = usePlayback();
-  const { playlists, getPlaylistTrackIds, updatePlaylist, deletePlaylist, refresh } = usePlaylists();
+  const { playlists, getPlaylistTracks, getPlaylistTrackIds, updatePlaylist, deletePlaylist, removeTrack, refresh, createPlaylistWithTracks } = usePlaylists();
   const { db } = useDB();
+  const spotifyClient = useSpotifyClient(); // Cached client with DB caching
 
   // Determine if current playlist is a local (favorites or user-created) playlist so we can adjust UI (e.g., hide add button)
   const isLocalPlaylist = useMemo(()=>{
@@ -59,8 +61,11 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
   const canModify = !!localPlaylistRecord && !localPlaylistRecord.system && !isFavorites;
 
   useEffect(()=>{
-    let cancelled = false; setPlaylist(undefined); setTracks(undefined);
+    let cancelled = false; 
+    
+    setPlaylist(undefined); setTracks(undefined);
   if(!playlistId){ setLoading(false); return; }
+  
     async function run(){
       setLoading(true);
       try {
@@ -76,11 +81,38 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
                 ? ('local:'+p.id) === lookupId
                 : String(p.id) === lookupId
           ));
-          if(!localRec){ setLoading(false); return; }
+          
+          if(!localRec){ 
+            setLoading(false); 
+            return; 
+          }
           // Minimal playlist object shim
           const shim: SpotifyPlaylist = { id: playlistId, name: localRec.code==='favorites' ? t('pl.favorites','Favorites') : localRec.name, images: [], totalTracks: localRec.track_count || 0 } as any;
-          // Fetch track metadata for stored ids
+          
+          // Get stored tracks with metadata (no API calls needed!)
+          const storedTracks = getPlaylistTracks(localRec.id);
+          
+          // Check if we have stored metadata or need to fetch from API (legacy support)
+          if(storedTracks.length > 0 && storedTracks[0]?.name) {
+            // We have stored metadata, use it directly
+            if(cancelled) return; 
+            setPlaylist(shim); 
+            setTracks(storedTracks); 
+            setLoading(false); 
+            return;
+          }
+          
+          // Legacy fallback: fetch track metadata for stored ids (for old playlists without stored metadata)
           const ids = getPlaylistTrackIds(localRec.id);
+          if(ids.length === 0) {
+            // Empty playlist
+            if(cancelled) return; 
+            setPlaylist(shim); 
+            setTracks([]); 
+            setLoading(false); 
+            return;
+          }
+          
           const w:any = window;
           const out: SpotifyTrack[] = [];
           for(const id of ids){
@@ -90,8 +122,7 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
               if(w.electron?.spotify?.getTrack){
                 tr = await w.electron.spotify.getTrack(id);
               } else {
-                const client = new SpotifyClient();
-                tr = await client.getTrack(id);
+                tr = await spotifyClient.getTrack(id);
               }
               if(tr) out.push(tr);
             } catch { /* ignore individual */ }
@@ -104,8 +135,7 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
           const pll = await w.electron.spotify.getPlaylist(playlistId!);
           if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
         } else {
-          const client = new SpotifyClient();
-          const pll = await client.getPlaylist(playlistId!);
+          const pll = await spotifyClient.getPlaylist(playlistId!);
           if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
         }
       } catch { /* ignore */ }
@@ -113,11 +143,37 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
     }
     run();
     return ()=>{ cancelled = true; };
-  }, [playlistId, playlists, getPlaylistTrackIds, t]);
+  }, [playlistId, playlists, getPlaylistTracks, getPlaylistTrackIds, t]);
 
   const heroImage = useMemo(()=> playlist?.images?.[0]?.url || '', [playlist]);
   const totalDuration = useMemo(()=> tracks?.reduce((a,b)=> a + (b.durationMs||0),0) || 0, [tracks]);
   // artist col width handled by TrackList
+
+  // Delete track handler for local playlists
+  const handleDeleteTrack = React.useCallback(async (trackId: string) => {
+    if (!isLocalPlaylist || !localPlaylistRecord) {
+      console.log('❌ Delete track failed: not a local playlist or no record', { isLocalPlaylist, localPlaylistRecord });
+      return;
+    }
+    
+    console.log('🗑️ Delete track called:', trackId, 'from playlist:', localPlaylistRecord.id);
+    
+    // Confirm deletion
+    if (confirm(t('pl.removeTrackConfirm', 'Remove track from playlist?'))) {
+      console.log('🗑️ User confirmed deletion, calling removeTrack');
+      
+      try {
+        // Call the database operation
+        await removeTrack(localPlaylistRecord.id, trackId);
+        console.log('🗑️ Track successfully removed from database');
+        
+      } catch (error) {
+        console.error('🗑️ Failed to remove track:', error);
+        // Show error to user or refresh to show current state
+        refresh();
+      }
+    }
+  }, [isLocalPlaylist, localPlaylistRecord, removeTrack, t, refresh]);
 
   return (
     <section className="now-playing" aria-labelledby="playlist-heading">
@@ -145,8 +201,34 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
           <div className="np-extras">
             <div className="np-tags disabled" aria-label={t('pl.playlistType','Playlist Type')}>{playlist && <span className="tag">{ isLocalPlaylist ? t('pl.local','Local playlist') : t('pl.remote','Remote playlist')}</span>}</div>
             <div className="np-actions" aria-label={t('np.playlistActions','Playlist actions')}>
-              {!isLocalPlaylist && (
-                <button className="np-icon" aria-label={t('player.addPlaylist')} disabled>
+      {!isLocalPlaylist && (
+                <button
+                  className="np-icon"
+                  aria-label={t('player.addPlaylist')}
+                  disabled={!playlist || !tracks?.length}
+                  onClick={async ()=>{
+                    if(isLocalPlaylist || !playlist) return;
+                    const defaultName = playlist.name || t('pl.new.item','New Playlist');
+                    const name = prompt(t('pl.clonePrompt','Save playlist as'), defaultName)?.trim();
+                    if(!name) return;
+                    
+                    // Pass the full track objects instead of just IDs
+                    const trackObjects = tracks || [];
+                    
+                    try {
+                      const newId = await createPlaylistWithTracks(name, trackObjects);
+                      
+                      // Navigate to the newly created playlist after a short delay to ensure refresh completed
+                      if(newId && onSelectPlaylist) {
+                        setTimeout(() => {
+                          onSelectPlaylist(`local:${newId}`);
+                        }, 50); // Reduced delay for better responsiveness
+                      }
+                    } catch(error) {
+                      console.error('Error during playlist cloning:', error);
+                    }
+                  }}
+                >
                   <span className="material-symbols-rounded">add_circle</span>
                 </button>
               )}
@@ -223,7 +305,13 @@ export default function PlaylistInfoTab({ playlistId }: { playlistId?: string })
         {loading && <p className="np-hint">{t('np.loadingTracks')}</p>}
         {!loading && !tracks && playlistId && <p className="np-hint">{t('np.loading')}</p>}
         {!loading && tracks && (
-          <TrackList tracks={tracks} playingTrackId={queueIds[currentIndex]} />
+          <TrackList 
+            tracks={tracks} 
+            playingTrackId={queueIds[currentIndex]} 
+            showPlayButton
+            onSelectTrack={onSelectTrack}
+            onDeleteTrack={isLocalPlaylist ? handleDeleteTrack : undefined}
+          />
         )}
       </div>
     </section>

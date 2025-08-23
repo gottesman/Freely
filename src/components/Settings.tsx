@@ -1,13 +1,14 @@
 import React, { useState } from 'react'
 import { useI18n } from '../core/i18n'
 import { useDB } from '../core/db'
+import { usePlaylists, broadcastPlaylistsChanged } from '../core/playlists'
 
 export default function Settings(){
-  const { db, exportJSON, importJSON } = useDB()
-  const [text, setText] = useState('')
-  const { getSetting, setSetting } = useDB()
+  const { exportJSON, importJSON, clearCache, clearLocalData, getSetting, setSetting } = useDB()
   const [accent, setAccent] = useState('#6b21a8')
   const { lang, setLang, t } = useI18n();
+  const [importFileName, setImportFileName] = useState<string>('')
+  const { refresh: refreshPlaylists } = usePlaylists();
 
   React.useEffect(()=>{
     let mounted = true
@@ -36,56 +37,148 @@ export default function Settings(){
 
   async function onImportUpload(e:React.ChangeEvent<HTMLInputElement>){
     const f = e.target.files?.[0]; if(!f) return
+    setImportFileName(f.name)
     const s = await f.text()
     await importJSON(s)
-  alert(t('settings.imported'))
+    alert(t('settings.imported'))
+  }
+
+  async function onClearCache() {
+    if (!confirm(t('settings.data.confirm'))) return;
+    try { await clearCache(); alert(t('settings.data.cache.cleared')); }
+    catch (error) { console.error('Failed to clear cache:', error); alert('Failed to clear cache. Check console for details.'); }
+  }
+
+  async function onClearLocalData() {
+    if (!confirm(t('settings.data.confirm'))) return;
+    try {
+      await clearLocalData();
+      try { refreshPlaylists(); } catch(_) {}
+      try { broadcastPlaylistsChanged(); } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
+      try { if(location.hash) location.hash = ''; } catch(_) {}
+      alert(t('settings.data.local.cleared'));
+    } catch (error) { console.error('Failed to clear local data:', error); alert('Failed to clear local data. Check console for details.'); }
   }
 
   return (
-    <div>
-      <h4>{t('settings.appearance')}</h4>
-      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
-        <label style={{fontSize:13}}>{t('settings.accent')}</label>
-        <input type="color" value={accent} onChange={e=>setAccent(e.target.value)} />
-        <button className="btn" onClick={saveAccent}>{t('settings.save')}</button>
+    <div className="settings-page">
+      <div className="settings-sections">
+        {/* Appearance */}
+        <section className="settings-section" aria-labelledby="appearance-header">
+          <div className="settings-section-header">
+            <span className="material-symbols-rounded settings-icon" aria-hidden="true">palette</span>
+            <h3 id="appearance-header" className="settings-section-title">{t('settings.appearance')}</h3>
+          </div>
+          <div className="settings-card">
+            <div className="settings-fields">
+              <div className="settings-field inline">
+                <label className="settings-field-label" htmlFor="accent-color">{t('settings.accent')}</label>
+                <div className="settings-color-wrap">
+                  <input id="accent-color" type="color" value={accent} onChange={e=>setAccent(e.target.value)} className="settings-color-input" aria-label={t('settings.accent')} />
+                  <button className="btn btn-subtle" onClick={saveAccent}>{t('settings.save')}</button>
+                </div>
+              </div>
+              <div className="settings-field inline">
+                <label className="settings-field-label" htmlFor="language-select">{t('settings.language')}</label>
+                <select id="language-select" value={lang} onChange={e=>setLang(e.target.value)} className="settings-control-select" aria-label={t('settings.language')}>
+                  <option value="en">English</option>
+                  <option value="es">Español</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Import / Export */}
+        <section className="settings-section" aria-labelledby="import-export-header">
+          <div className="settings-section-header">
+            <span className="material-symbols-rounded settings-icon" aria-hidden="true">file_upload</span>
+            <h3 id="import-export-header" className="settings-section-title">Import & Export</h3>
+          </div>
+          <div className="settings-card">
+            <div className="btn-row">
+              <button className="btn" onClick={onExport}>
+                <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>upload</span>
+                {t('settings.export')}
+              </button>
+              <div className="file-input-wrap">
+                <input id="import-file" className="file-input-hidden" type="file" accept="application/json" onChange={onImportUpload} aria-label={t('settings.import.placeholder')} />
+                <label htmlFor="import-file" className="file-input-visual">
+                  <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>download</span>
+                  {t('settings.import') || 'Import'}
+                  {importFileName && <span className="file-input-filename" title={importFileName}>{importFileName}</span>}
+                </label>
+              </div>
+            </div>
+            <p className="settings-field-hint">{t('settings.import.placeholder')}</p>
+          </div>
+        </section>
+
+        {/* Plugins */}
+        <section className="settings-section" aria-labelledby="plugins-header">
+          <div className="settings-section-header">
+            <span className="material-symbols-rounded settings-icon" aria-hidden="true">extension</span>
+            <h3 id="plugins-header" className="settings-section-title">{t('plugins.detected')}</h3>
+          </div>
+          <div className="settings-card">
+            <PluginList />
+          </div>
+        </section>
+
+        {/* Data Management */}
+        <section className="settings-section" aria-labelledby="data-header">
+          <div className="settings-section-header">
+            <span className="material-symbols-rounded settings-icon" aria-hidden="true">database</span>
+            <h3 id="data-header" className="settings-section-title">{t('settings.data')}</h3>
+          </div>
+          <div className="settings-warning" role="note">
+            <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:20}}>warning</span>
+            <div>{t('settings.data.warning')}</div>
+          </div>
+          <div className="settings-card tight" aria-live="polite">
+            <div className="settings-fields">
+              <div className="settings-field">
+                <div className="btn-row">
+                  <button className="btn btn-danger" onClick={onClearCache}>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>delete</span>
+                    {t('settings.data.cache.clear')}
+                  </button>
+                </div>
+                <p className="settings-field-hint">{t('settings.data.cache.description')}</p>
+              </div>
+              <div className="settings-field">
+                <div className="btn-row">
+                  <button className="btn btn-danger" onClick={onClearLocalData}>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>delete_forever</span>
+                    {t('settings.data.local.clear')}
+                  </button>
+                </div>
+                <p className="settings-field-hint">{t('settings.data.local.description')}</p>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
-      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:20}}>
-        <label style={{fontSize:13}}>{t('settings.language')}</label>
-        <select value={lang} onChange={e=>setLang(e.target.value)}>
-          <option value="en">English</option>
-          <option value="es">Español</option>
-        </select>
-      </div>
-      <div style={{marginBottom:12}}>
-        <button className="btn" onClick={onExport}>{t('settings.export')}</button>
-      </div>
-      <div style={{marginBottom:12}}>
-        <input type="file" accept="application/json" onChange={onImportUpload} aria-label={t('settings.import.placeholder')} />
-      </div>
-      <PluginList />
     </div>
   )
 }
 
 function PluginList(){
-  // Discover local plugins in /plugins folder (development)
   const [plugins, setPlugins] = React.useState<any[]>([])
   const { t } = useI18n();
   React.useEffect(()=>{
     fetch('/plugins/index.json').then(r=>r.json()).then(setPlugins).catch(()=>setPlugins([]))
   },[])
+  if(plugins.length === 0) return <div className="plugin-empty">{t('plugins.none')}</div>
   return (
-    <div>
-  <h4>{t('plugins.detected')}</h4>
-      <div className="list">
-        {plugins.map((p:any)=> (
-          <div className="item" key={p.name}>
-            <div>{p.name}</div>
-            <div style={{fontSize:12}}>{p.version}</div>
-          </div>
-        ))}
-  {plugins.length===0 && <div style={{opacity:0.7}}>{t('plugins.none')}</div>}
-      </div>
+    <div className="plugin-grid">
+      {plugins.map((p:any)=> (
+        <div className="plugin-card" key={p.name}>
+          <div className="title">{p.name}</div>
+          <div className="meta">v{p.version}</div>
+        </div>
+      ))}
     </div>
   )
 }

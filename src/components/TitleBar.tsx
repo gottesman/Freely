@@ -66,7 +66,12 @@ export default function TitleBar({ title, icon, onSearch, onNavigate, activeTab 
             value={query}
                 onChange={(e) => { setQuery(e.target.value); if (onSearch) onSearch(e.target.value) }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && onSearch) onSearch(query) }}
-                onFocus={() => { if (onSearch) onSearch('') }}
+                onFocus={() => {
+                  // Don't clear results on focus. Instead, activate the Search tab and
+                  // re-trigger the current query so results repopulate if they were cleared.
+                  if (onNavigate) onNavigate('search');
+                  if (query && onSearch) onSearch(query);
+                }}
             aria-label={t('search.action','Search')}
           />
         </div>

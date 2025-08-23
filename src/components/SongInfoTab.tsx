@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../core/i18n';
 import { usePlayback } from '../core/playback';
 import SpotifyClient, { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
+import { useSpotifyClient } from '../core/spotify-client';
 import TrackList from './TrackList';
 import GeniusClient from '../core/musicdata';
 
@@ -12,8 +13,9 @@ function fmt(ms?: number){
 
 export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, onSelectTrack }: { trackId?: string, onSelectArtist?: (id: string)=>void, onSelectAlbum?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
   const { t } = useI18n();
+  const spotifyClient = useSpotifyClient();
   // Playback context (avoid calling hook inside handlers)
-  const { currentTrack: playbackTrack, queueIds, setQueue, enqueue, currentIndex } = usePlayback();
+  const { currentTrack: playbackTrack, trackId: playingTrackId, queueIds, setQueue, enqueue, currentIndex } = usePlayback();
   const [track, setTrack] = useState<SpotifyTrack | undefined>();
   const [album, setAlbum] = useState<SpotifyAlbum|undefined>();
   const [primaryArtist, setPrimaryArtist] = useState<SpotifyArtist|undefined>();
@@ -22,66 +24,173 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
   // (Removed artist biography display; we now show track credits instead.)
   const [writers, setWriters] = useState<string[]|undefined>();
   const [writersLoading, setWritersLoading] = useState(false);
-  const effectiveTrackId = trackId || playbackTrack?.id;
+  const effectiveTrackId = trackId || playingTrackId;
+  
+  // Scroll position preservation
+  const containerRef = useRef<HTMLElement>(null);
+  const scrollPositionRef = useRef<number>(0);
 
   // Load (or reuse) track details
   useEffect(()=>{
     let cancelled = false;
     async function load(){
+      console.log('🎵 SongInfoTab: Track loading started for ID:', effectiveTrackId);
       setTrack(undefined);
-      if(!effectiveTrackId) return;
-      if(playbackTrack && playbackTrack.id === effectiveTrackId){ setTrack(playbackTrack); return; }
+      if(!effectiveTrackId) {
+        console.log('🎵 SongInfoTab: No effective track ID, skipping track load');
+        return;
+      }
+      if(playbackTrack && playbackTrack.id === effectiveTrackId){ 
+        console.log('🎵 SongInfoTab: Using playback track:', playbackTrack.name);
+        setTrack(playbackTrack); 
+        return; 
+      }
       const w:any = window;
       try {
         if(w.electron?.spotify?.getTrack){
+          console.log('🎵 SongInfoTab: Loading track via Electron API');
           const tr: SpotifyTrack = await w.electron.spotify.getTrack(effectiveTrackId);
-          if(!cancelled) setTrack(tr);
+          if(!cancelled) {
+            console.log('🎵 SongInfoTab: Track loaded via Electron:', tr?.name);
+            setTrack(tr);
+          }
         } else {
-          const client = new SpotifyClient();
-          const tr = await client.getTrack(effectiveTrackId);
-          if(!cancelled) setTrack(tr);
+          console.log('🎵 SongInfoTab: Loading track via Spotify Client');
+          try {
+            console.log('🎵 SongInfoTab: About to call spotifyClient.getTrack()');
+            const tr = await spotifyClient.getTrack(effectiveTrackId);
+            console.log('🎵 SongInfoTab: spotifyClient.getTrack() completed:', tr?.name);
+            if(!cancelled) {
+              console.log('🎵 SongInfoTab: Track loaded via Client:', tr?.name);
+              setTrack(tr);
+            } else {
+              console.log('🎵 SongInfoTab: Track load cancelled, not setting track');
+            }
+          } catch (error) {
+            console.log('🎵 SongInfoTab: spotifyClient.getTrack() threw error:', error);
+          }
         }
-      } catch { /* ignore */ }
+      } catch (error) { 
+        console.log('🎵 SongInfoTab: Track loading failed:', error);
+      }
     }
     load();
     return ()=> { cancelled = true; };
-  }, [effectiveTrackId, playbackTrack?.id]);
+  }, [effectiveTrackId, playbackTrack?.id, spotifyClient]);
+
+  // Preserve scroll position during track transitions
+  useEffect(() => {
+    // Save current scroll position before track changes
+    if (containerRef.current) {
+      scrollPositionRef.current = containerRef.current.scrollTop;
+    }
+  }, [effectiveTrackId]);
+
+  // Restore scroll position after content loads
+  useEffect(() => {
+    if (containerRef.current && track) {
+      // Use requestAnimationFrame to ensure DOM has updated
+      requestAnimationFrame(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = scrollPositionRef.current;
+        }
+      });
+    }
+  }, [track, albumTracks]);
 
   // Album + primary artist
   useEffect(()=>{
     let cancelled = false;
     async function run(){
-      setAlbum(undefined); setPrimaryArtist(undefined); setAlbumTracks(undefined);
-      if(!track) return;
+      console.log('🎵 SongInfoTab: Album/Artist loading started for track:', track?.id);
+      if(!track?.id || !track.album?.id || !track.artists?.[0]?.id) {
+        console.log('🎵 SongInfoTab: No track data available, skipping album/artist load');
+        return;
+      }
+      
+      // Only clear state when we have a valid track to load
+      setAlbum(undefined); setPrimaryArtist(undefined);
+      
       const w:any = window;
-      const client = (!w.electron?.spotify?.getAlbum || !w.electron?.spotify?.getArtist) ? new SpotifyClient() : null;
       const albumId = track.album?.id; const artistId = track.artists?.[0]?.id;
-      const albumPromise = (async()=>{ if(!albumId) return; try { if(w.electron?.spotify?.getAlbum) return await w.electron.spotify.getAlbum(albumId); if(client) return await client.getAlbum(albumId);} catch{} })();
-      const artistPromise = (async()=>{ if(!artistId) return; try { if(w.electron?.spotify?.getArtist) return await w.electron.spotify.getArtist(artistId); if(client) return await client.getArtist(artistId);} catch{} })();
+      console.log('🎵 SongInfoTab: Loading album:', albumId, 'artist:', artistId);
+      
+      const albumPromise = (async()=>{ 
+        if(!albumId) return; 
+        try { 
+          if(w.electron?.spotify?.getAlbum) return await w.electron.spotify.getAlbum(albumId); 
+          return await spotifyClient.getAlbum(albumId);
+        } catch{} 
+      })();
+      const artistPromise = (async()=>{ 
+        if(!artistId) return; 
+        try { 
+          if(w.electron?.spotify?.getArtist) return await w.electron.spotify.getArtist(artistId); 
+          return await spotifyClient.getArtist(artistId);
+        } catch{} 
+      })();
       const [alb, art] = await Promise.all([albumPromise, artistPromise]);
-      if(cancelled) return; if(alb) setAlbum(alb); if(art) setPrimaryArtist(art);
+      console.log('🎵 SongInfoTab: Album/Artist loaded:', !!alb, !!art);
+      if(cancelled) {
+        console.log('🎵 SongInfoTab: Album/Artist load cancelled');
+        return;
+      }
+      if(alb) {
+        console.log('🎵 SongInfoTab: Setting album:', alb.name);
+        setAlbum(alb);
+      }
+      if(art) {
+        console.log('🎵 SongInfoTab: Setting primary artist:', art.name);
+        setPrimaryArtist(art);
+      }
     }
     run();
     return ()=>{ cancelled = true; };
-  }, [track?.id]);
+  }, [track?.album?.id, track?.artists?.[0]?.id, spotifyClient]);
 
   // Album tracks
   useEffect(()=>{
     let cancelled = false;
     async function loadTracks(){
+      console.log('🎵 SongInfoTab: Album tracks loading started for album:', track?.album?.id);
+      if(!track?.album?.id) {
+        console.log('🎵 SongInfoTab: No album ID, skipping tracks load');
+        return;
+      }
+      
+      // Only clear album tracks state when we have a valid album to load
       setAlbumTracks(undefined);
-      if(!track?.album?.id) return;
       const w:any = window; setTracksLoading(true);
       try {
         let items: SpotifyTrack[] | undefined;
-        if(w.electron?.spotify?.getAlbumTracks){ const res = await w.electron.spotify.getAlbumTracks(track.album.id); items = res.items || []; }
-        else { try { const client = new SpotifyClient(); const res = await client.getAlbumTracks(track.album.id, { fetchAll:false, limit:50 }); items = res.items; } catch{} }
-        if(!cancelled && items) setAlbumTracks(items);
-      } finally { if(!cancelled) setTracksLoading(false); }
+        if(w.electron?.spotify?.getAlbumTracks){ 
+          const res = await w.electron.spotify.getAlbumTracks(track.album.id); 
+          items = res.items || []; 
+          console.log('🎵 SongInfoTab: Album tracks loaded via Electron:', items?.length);
+        }
+        else { 
+          try { 
+            const res = await spotifyClient.getAlbumTracks(track.album.id, { fetchAll:false, limit:50 }); 
+            items = res.items; 
+            console.log('🎵 SongInfoTab: Album tracks loaded via API:', items?.length);
+          } catch{
+            console.log('🎵 SongInfoTab: Album tracks API call failed');
+          } 
+        }
+        if(!cancelled && items) {
+          console.log('🎵 SongInfoTab: Setting album tracks:', items.length);
+          setAlbumTracks(items);
+        }
+      } finally { 
+        if(!cancelled) {
+          console.log('🎵 SongInfoTab: Setting tracks loading false');
+          setTracksLoading(false); 
+        }
+      }
     }
     loadTracks();
     return ()=>{ cancelled = true; };
-  }, [track?.album?.id]);
+  }, [track?.id, spotifyClient]);
 
   // Credits: no extra async call needed; we derive from existing track/album/artist data.
   // Add writers via Genius (best-effort)
@@ -123,7 +232,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
   const artistColWidth = useMemo(()=>{ if(!albumTracks?.length) return undefined; const names = albumTracks.map(t=> t.artists?.[0]?.name || ''); const longest = names.reduce((a,b)=> b.length>a.length? b:a,''); if(!longest) return undefined; const avgCharPx=7.2; const padding=28; return Math.min(240, Math.max(80, Math.round(longest.length*avgCharPx+padding))); }, [albumTracks]);
 
   return (
-    <section className="now-playing" aria-labelledby="np-heading">
+    <section ref={containerRef} className="now-playing" aria-labelledby="np-heading">
       <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
         <div className="np-hero-inner">
           <h1 id="np-heading" className="np-title">{ track ? track.name : (effectiveTrackId ? t('np.loading') : t('np.noTrack')) }</h1>
@@ -188,14 +297,14 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
       <div className="np-section np-album-tracks" aria-label={t('np.albumTrackList','Album track list')}>
         <h4 className="np-sec-title">{t('np.fromSameAlbum')}</h4>
         {album && (<div className="np-album-heading"><span className="np-album-name" title={album.name}>{album.name}</span><span className="np-album-trackcount">{t('np.tracks', undefined, { count: album.totalTracks })}</span></div>)}
-        {!track && effectiveTrackId && <p className="np-hint">{t('np.loading')}</p>}
+        {!track && effectiveTrackId && !albumTracks && <p className="np-hint">{t('np.loading')}</p>}
         {!effectiveTrackId && <p className="np-hint">{t('np.selectTrackHint')}</p>}
         {tracksLoading && <p className="np-hint">{t('np.loadingTracks')}</p>}
         {albumTracks && (
           <TrackList
             tracks={albumTracks}
             selectedTrackId={track?.id}
-            playingTrackId={playbackTrack?.id}
+            playingTrackId={playingTrackId}
             showPlayButton
             onSelectTrack={onSelectTrack}
           />

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { SpotifyAlbum, SpotifyPlaylist } from '../../core/spotify';
 import SpotifyClient from '../../core/spotify';
+import { useSpotifyClient } from '../spotify-client';
 import { useAlerts } from '../../core/alerts';
 import { ArtistBuckets } from '../../components/MoreFromArtist';
 import { usePlayback } from '../../core/playback';
@@ -11,6 +12,7 @@ export function useArtistBuckets() {
   const [deferredArtistId, setDeferredArtistId] = useState<string | undefined>();
   const [buckets, setBuckets] = useState<ArtistBuckets>({ singles: [], albums: [], playlists: [], loading: false, fetched: false });
   const { push: pushAlert, alerts } = useAlerts();
+  const spotifyClient = useSpotifyClient(); // Cached client with DB caching
 
   // Defer setting artist id slightly to allow track metadata to settle
   useEffect(() => {
@@ -29,19 +31,25 @@ export function useArtistBuckets() {
     let cancelled = false;
     async function load() {
       if (!deferredArtistId) { return; }
+      console.log('🎵 useArtistBuckets: Loading data for artist ID:', deferredArtistId);
       const w: any = window;
       setBuckets(b => ({ ...b, loading: true, error: undefined, fetched: false }));
       try {
         let albumsResp: any;
         if (w.electron?.spotify?.getArtistAlbums) {
+          console.log('🖥️ Using Electron Spotify API');
           const resp = await w.electron.spotify.getArtistAlbums(deferredArtistId, { includeGroups: 'album,single', fetchAll: false, limit: 20 });
           if (resp && resp.error) throw new Error(resp.error);
           albumsResp = resp;
         } else {
+          console.log('🌐 Using SpotifyClient for albums');
           try {
-            const client = new SpotifyClient();
-            albumsResp = await client.getArtistAlbums(deferredArtistId, { includeGroups: 'album,single', fetchAll: false, limit: 20 });
-          } catch (e) { /* fallback failed */ }
+            albumsResp = await spotifyClient.getArtistAlbums(deferredArtistId, { includeGroups: 'album,single', fetchAll: false, limit: 20 });
+            console.log('✅ Albums response:', albumsResp);
+          } catch (e) { 
+            console.error('❌ Albums request failed:', e);
+            /* fallback failed */ 
+          }
         }
         if (!albumsResp) { throw new Error('Artist albums unavailable'); }
         const rawAlbums: any[] = albumsResp.items || [];
@@ -55,6 +63,7 @@ export function useArtistBuckets() {
         const realAlbums = albumsAll.slice(0, 6);
         let playlists: SpotifyPlaylist[] = [];
         if (w.electron?.spotify?.searchPlaylists && currentTrack?.artists?.[0]?.name) {
+          console.log('🖥️ Using Electron for playlist search');
           try {
             const pl = await w.electron.spotify.searchPlaylists(currentTrack.artists[0].name);
             if (pl && pl.error) throw new Error(pl.error);
@@ -62,16 +71,22 @@ export function useArtistBuckets() {
             playlists = plItems.slice(0, 6);
           } catch (err) { console.warn('Playlist proxy search failed', err); }
         } else if (currentTrack?.artists?.[0]?.name) {
+          console.log('🌐 Using SpotifyClient for playlist search, artist:', currentTrack.artists[0].name);
           try {
-            const client = new SpotifyClient();
-            const pl = await client.searchPlaylists(currentTrack.artists[0].name);
+            const pl = await spotifyClient.searchPlaylists(currentTrack.artists[0].name);
+            console.log('✅ Playlists response:', pl);
             const plItems = (pl.items || (pl as any).playlists?.items || []).filter(Boolean);
             playlists = plItems.slice(0, 6) as any;
-          } catch (err) { console.warn('Playlist local search failed', err); }
+          } catch (err) { 
+            console.error('❌ Playlist search failed:', err);
+            console.warn('Playlist local search failed', err); 
+          }
         }
         if (cancelled) return;
+        console.log('🎯 Setting buckets - Singles:', singles.length, 'Albums:', realAlbums.length, 'Playlists:', playlists.length);
         setBuckets({ singles, albums: realAlbums, playlists, loading: false, fetched: true });
       } catch (e: any) {
+        console.error('❌ useArtistBuckets error:', e);
         if (!cancelled) {
           const msg = e?.message || 'Failed to load artist releases';
             setBuckets({ singles: [], albums: [], playlists: [], loading: false, fetched: true, error: msg });

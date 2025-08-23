@@ -1,10 +1,10 @@
 import React from 'react'
 import { useI18n } from '../core/i18n'
-import { usePlaylists } from '../core/playlists'
+import { usePlaylists, broadcastPlaylistsChanged } from '../core/playlists'
 
 export default function LeftPanel({ collapsed, onToggle, width, extraClass, onSelectPlaylist, activePlaylistId }: { collapsed: boolean, onToggle: () => void, width?: number, extraClass?: string, onSelectPlaylist?: (id: string)=>void, activePlaylistId?: string }){
   const { t } = useI18n();
-  const { playlists, createPlaylist, deletePlaylist } = usePlaylists();
+  const { playlists, createPlaylist, deletePlaylist, refresh: refreshPlaylists } = usePlaylists();
   const [query, setQuery] = React.useState('');
   const [tagFilter, setTagFilter] = React.useState<string>('');
   const [order, setOrder] = React.useState<'name'|'created'|'tracks'>('name');
@@ -36,7 +36,20 @@ export default function LeftPanel({ collapsed, onToggle, width, extraClass, onSe
       else if(order==='tracks') cmp = (a.track_count||0) - (b.track_count||0);
       return orderDir==='asc' ? cmp : -cmp;
     });
-  const onCreate = ()=>{ if(newName.trim()) { createPlaylist(newName.trim()); setNewName(''); } };
+  const onCreate = async ()=>{
+    const name = newName.trim();
+    if(!name) return;
+    const id = await createPlaylist(name);
+    // Clear filters that could hide the new playlist
+    setTagFilter('');
+    setQuery(q=> q ? '' : q);
+    // Immediate refresh + broadcast (defensive in case subscriber timing varies)
+    try { refreshPlaylists(); } catch(_) {}
+    try { broadcastPlaylistsChanged(); } catch(_) {}
+    // Fallback delayed refresh to catch async DB commit edge cases
+    setTimeout(()=> { try { refreshPlaylists(); } catch(_) {} }, 30);
+    setNewName('');
+  };
   const gridClass = view==='sm-grid' ? 'pl-grid sm' : view==='lg-grid' ? 'pl-grid lg' : view==='compact' ? 'pl-list compact' : 'pl-list';
   const hasActiveFilters = !!tagFilter || order !== 'name' || orderDir !== 'asc' || view !== 'list';
 
@@ -165,7 +178,23 @@ export default function LeftPanel({ collapsed, onToggle, width, extraClass, onSe
         )}
   <div className={`pl-container ${gridClass}`} style={{ position:'relative' }}>
           {/* New playlist pseudo-item */}
-          <div className="pl-item" onClick={()=>{ if(!newName.trim()){ setNewName(''); const name = prompt(t('pl.new.placeholder','New playlist name')) || ''; if(name.trim()){ createPlaylist(name.trim()); } } else { onCreate(); } }} style={{cursor:'pointer', opacity:.9, borderStyle:'dashed'}}>
+          <div className="pl-item" onClick={async ()=>{
+            if(!newName.trim()){
+              setNewName('');
+              const name = prompt(t('pl.new.placeholder','New playlist name')) || '';
+              const trimmed = name.trim();
+              if(trimmed){
+                await createPlaylist(trimmed);
+                setTagFilter('');
+                setQuery('');
+                try { refreshPlaylists(); } catch(_) {}
+                try { broadcastPlaylistsChanged(); } catch(_) {}
+                setTimeout(()=> { try { refreshPlaylists(); } catch(_) {} }, 30);
+              }
+            } else {
+              await onCreate();
+            }
+          }} style={{cursor:'pointer', opacity:.9, borderStyle:'dashed'}}>
             <div className="pl-thumb" aria-hidden="true" style={{background:'rgba(255,255,255,0.08)', color:'var(--text)', fontWeight:400, display:'flex', alignItems:'center', justifyContent:'center'}}>
               <span className="material-symbols-rounded" style={{fontSize:22}}>add</span>
             </div>

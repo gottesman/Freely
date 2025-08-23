@@ -10,7 +10,7 @@
 .track-player .meta-block { display:flex; align-items:center; gap: var(--padding-xs); margin-right:12px; }
 .track-player .album-cover { width:48px; height:48px; border-radius:6px; object-fit:cover; }
 .track-player .meta-text { display:flex; flex-direction:column; overflow: hidden; }
-.track-player .song-title { font-weight:600; font-size:14px; }
+.track-player .song-title { font-weight:600; font-size:14px; overflow: clip; white-space: nowrap; text-overflow: ellipsis; }
 .track-player .song-artist { font-size:12px; opacity:.85; }
 .track-player .song-album { font-size:11px; opacity:.6; overflow: clip; white-space: nowrap; text-overflow: ellipsis; }
 .track-player .add-playlist { padding:6px 8px; border-radius:6px; margin-left:auto; }

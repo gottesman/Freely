@@ -15,10 +15,11 @@ export interface TrackListProps {
   playingTrackId?: string; // currently playing track
   showPlayButton?: boolean;
   onSelectTrack?: (id: string)=>void;
+  onDeleteTrack?: (id: string)=>void; // for local playlists
   className?: string;
 }
 
-export default function TrackList({ tracks, selectedTrackId, playingTrackId, showPlayButton = false, onSelectTrack, className }: TrackListProps){
+export default function TrackList({ tracks, selectedTrackId, playingTrackId, showPlayButton = false, onSelectTrack, onDeleteTrack, className }: TrackListProps){
   const { t } = useI18n();
   const { queueIds, setQueue, currentIndex, enqueue } = usePlayback();
 
@@ -33,7 +34,7 @@ export default function TrackList({ tracks, selectedTrackId, playingTrackId, sho
         const isPlaying = tr.id === playingTrackId;
         return (
           <li
-            key={tr.id}
+            key={`${tr.id}-${i}`}
             onClick={(e)=> { if((e.target as HTMLElement).closest('.track-action')) return; if(tr.id && onSelectTrack) onSelectTrack(tr.id); }}
             onKeyDown={(e)=> { if((e.target as HTMLElement).closest('.track-action')) return; if((e.key==='Enter' || e.key===' ') && tr.id && onSelectTrack){ e.preventDefault(); onSelectTrack(tr.id); } }}
             role={onSelectTrack ? 'button' : undefined}
@@ -79,6 +80,18 @@ export default function TrackList({ tracks, selectedTrackId, playingTrackId, sho
               >
                 <span className="material-symbols-rounded" style={{ fontSize: '20px' }}>queue</span>
               </button>
+              {onDeleteTrack && (
+                <button
+                  type="button"
+                  className="delete-track-btn track-action"
+                  aria-label={t('player.removeFromPlaylist','Remove from playlist')}
+                  title={t('player.removeFromPlaylist','Remove from playlist')}
+                  onClick={(e)=>{ e.stopPropagation(); if(tr.id) onDeleteTrack(tr.id); }}
+                  onKeyDown={(e)=>{ e.stopPropagation(); }}
+                >
+                  <span className="material-symbols-rounded" style={{ fontSize: '20px' }}>delete</span>
+                </button>
+              )}
             </div>
           </li>
         );

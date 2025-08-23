@@ -3,6 +3,8 @@ import { useI18n } from '../core/i18n';
 import GeniusClient, { SongDetails } from '../core/musicdata';
 import SpotifyClient from '../core/spotify';
 import { useAlerts, LogEntry as AlertLogEntry } from '../core/alerts';
+import ApiCacheTest from './ApiCacheTest';
+import AddToPlaylistDemo from './AddToPlaylistDemo';
 
 function useApis(){
   const win: any = typeof window !== 'undefined' ? window : {};
@@ -221,6 +223,14 @@ export default function APIsTests(){
           <button className="np-pill" disabled={loading} onClick={sGetAlbum}>Get Album</button>
         </div>
       </div>
+
+      {/* API Cache Test Section */}
+      <h3 className="mini-title" style={{margin:'28px 0 4px'}}>API Cache Test</h3>
+      <ApiCacheTest />
+
+      {/* Add to Playlist Demo Section */}
+      <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Add to Playlist Modal Demo</h3>
+      <AddToPlaylistDemo />
 
     </section>
   );
