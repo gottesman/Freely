@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import LeftPanel from './components/LeftPanel'
 import CenterTabs from './components/CenterTabs'
 import RightPanel from './components/RightPanel'
@@ -13,7 +13,7 @@ import { useAppReady } from './core/ready'
 import { useI18n } from './core/i18n'
 import { I18nProvider } from './core/i18n'
 import { AddToPlaylistModalProvider, useGlobalAddToPlaylistModal } from './core/AddToPlaylistModalContext'
-import { search as spotifySearch } from './core/spotify-client'
+import { PromptProvider } from './core/PromptContext'
 
 export default function App() {
   return (
@@ -22,54 +22,50 @@ export default function App() {
         <PlaybackProvider>
           <AlertsProvider>
             <AddToPlaylistModalProvider>
-              <Main />
-              <AlertsHost />
-              <GlobalAddToPlaylistModal />
-            </AddToPlaylistModalProvider>
+                <Main />
+              </AddToPlaylistModalProvider>
           </AlertsProvider>
         </PlaybackProvider>
-      </DBProvider>
+  </DBProvider>
     </I18nProvider>
   )
 }
 
+
 function Main() {
-  const { ready: dbReady } = useDB()
+  const { ready: dbReady, getSetting, setSetting } = useDB()
   const { ready, states } = useAppReady(dbReady)
   const { t } = useI18n();
-  const { getSetting, setSetting } = useDB();
-  const [searchQuery, setSearchQuery] = React.useState<string>('')
-  const [searchTriggeredAt, setSearchTriggeredAt] = React.useState<number>(0)
-  const [searchResults, setSearchResults] = React.useState<any | undefined>(undefined)
-  const [searchLoading, setSearchLoading] = React.useState(false)
-  const lastQueryRef = React.useRef<string | null>(null)
-  const debounceRef = React.useRef<any>(null)
-  const [activeTab, setActiveTab] = React.useState<string>('home')
-  const [songInfoTrackId, setSongInfoTrackId] = React.useState<string | undefined>(undefined)
-  const [albumInfoAlbumId, setAlbumInfoAlbumId] = React.useState<string | undefined>(undefined)
-  const [playlistInfoPlaylistId, setPlaylistInfoPlaylistId] = React.useState<string | undefined>(undefined)
-  const [artistInfoArtistId, setArtistInfoArtistId] = React.useState<string | undefined>(undefined)
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [searchTriggeredAt, setSearchTriggeredAt] = useState<number>(0)
+  const [searchResults, setSearchResults] = useState<any | undefined>(undefined)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState<string>('home')
+  const [songInfoTrackId, setSongInfoTrackId] = useState<string | undefined>(undefined)
+  const [albumInfoAlbumId, setAlbumInfoAlbumId] = useState<string | undefined>(undefined)
+  const [playlistInfoPlaylistId, setPlaylistInfoPlaylistId] = useState<string | undefined>(undefined)
+  const [artistInfoArtistId, setArtistInfoArtistId] = useState<string | undefined>(undefined)
   const currentTrackIdRef = useRef<string | undefined>(undefined)
   const { currentTrack: playbackCurrent } = usePlayback();
   // Attempt to subscribe to playback changes if exposed on window (best-effort)
   // Keep ref synced with playback hook (simpler than IPC event subscription)
   useEffect(()=>{ currentTrackIdRef.current = playbackCurrent?.id; }, [playbackCurrent?.id]);
   // track collapsed state for side panels
-  const [leftCollapsed, setLeftCollapsed] = React.useState<boolean>(false)
-  const [rightCollapsed, setRightCollapsed] = React.useState<boolean>(false)
-  const [lyricsOpen, setLyricsOpen] = React.useState<boolean>(false)
-  const [rightTab, setRightTab] = React.useState<string>('artist')
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false)
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(false)
+  const [lyricsOpen, setLyricsOpen] = useState<boolean>(false)
+  const [rightTab, setRightTab] = useState<string>('artist')
   // resizable panel widths
-  const [leftWidth, setLeftWidth] = React.useState<number>(220)
-  const [rightWidth, setRightWidth] = React.useState<number>(220)
+  const [leftWidth, setLeftWidth] = useState<number>(220)
+  const [rightWidth, setRightWidth] = useState<number>(220)
   const minPanel = 220; // minimum visible width
   const maxPanel = 480
   const collapseThreshold = 200;
   const collapseIntentThreshold = collapseThreshold;
-  const [draggingLeft, setDraggingLeft] = React.useState(false);
-  const [draggingRight, setDraggingRight] = React.useState(false);
-  const [collapseIntentLeft, setCollapseIntentLeft] = React.useState(false);
-  const [collapseIntentRight, setCollapseIntentRight] = React.useState(false);
+  const [draggingLeft, setDraggingLeft] = useState(false);
+  const [draggingRight, setDraggingRight] = useState(false);
+  const [collapseIntentLeft, setCollapseIntentLeft] = useState(false);
+  const [collapseIntentRight, setCollapseIntentRight] = useState(false);
 
   const loadedRef = useRef(false);
   // Load persisted UI state once DB is ready (with localStorage fallback)
@@ -126,6 +122,27 @@ function Main() {
   // Wire debounced search to update searchResults. Pass searchTriggeredAt so re-triggering
   // the same query (e.g. clicking the search icon again) forces a refresh.
   useDebouncedSearch(searchQuery, searchTriggeredAt, (res:any) => setSearchResults(res), (b:boolean) => setSearchLoading(b));
+
+  // Fallback global listener: in case some consumers dispatch a global event when
+  // selecting an artist (legacy code), respond by opening the artist tab.
+  React.useEffect(() => {
+    function onGlobalSelect(e: any) {
+      const id = e?.detail;
+      if (!id) return;
+      setArtistInfoArtistId(String(id));
+      setActiveTab('artist');
+    }
+    window.addEventListener('freely:select-artist', onGlobalSelect as EventListener);
+    return () => window.removeEventListener('freely:select-artist', onGlobalSelect as EventListener);
+  }, []);
+
+  // Memoize handlers that are passed down to avoid unnecessary re-renders
+  const handleSearch = useCallback((q?: string) => {
+    setSearchQuery(q || '');
+    setSearchTriggeredAt(Date.now());
+  }, []);
+
+  const handleNavigate = useCallback((dest: string) => setActiveTab(dest), []);
 
   function persistLocal(){
     try {
@@ -226,16 +243,16 @@ function Main() {
   )
 
   return (
-  <div className={"app" + (draggingLeft || draggingRight ? ' is-resizing' : '')}>
-        <div className="bg">
-        </div>
-  <TitleBar
-    title="Freely"
-    icon="icon-192.png"
-  onSearch={(q?: string) => { setSearchQuery(q || ''); setSearchTriggeredAt(Date.now()) }}
-    onNavigate={(dest) => setActiveTab(dest)}
-  activeTab={activeTab}
-  />
+      <div className={"app" + (draggingLeft || draggingRight ? ' is-resizing' : '')}>
+      <PromptProvider>
+        <div className="bg" />
+        <TitleBar
+          title="Freely"
+          icon="icon-192.png"
+          onSearch={handleSearch}
+          onNavigate={handleNavigate}
+          activeTab={activeTab}
+        />
         <div className="window-body">
           <div className="content layout">
             <LeftPanel
@@ -245,7 +262,10 @@ function Main() {
               extraClass={draggingLeft ? `panel-dragging ${collapseIntentLeft ? 'collapse-intent': ''}` : ''}
               activePlaylistId={activeTab==='playlist' ? playlistInfoPlaylistId : undefined}
               onSelectPlaylist={(pid)=> { setPlaylistInfoPlaylistId(prev => { if(prev===pid) return prev; return pid; }); setActiveTab('playlist'); }}
-              
+              onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
+              // Provide currently active artist id so the left panel can highlight it
+              onSelectArtistActiveId={artistInfoArtistId}
+              activeArtistVisible={activeTab === 'artist'}
             />
             {/* Left resize handle */}
             <div
@@ -309,6 +329,9 @@ function Main() {
             onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
           />
         </div>
+  <AlertsHost />
+  <GlobalAddToPlaylistModal />
+  </PromptProvider>
     </div>
   )
 }

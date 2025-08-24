@@ -234,11 +234,12 @@ export default function AddToPlaylistModal({
   if (!isOpen) return null;
 
   return (
-    <div style={customDurations}>
+    <>
       <div 
         className={`add-to-playlist-backdrop ${fromBottomPlayer ? 'from-bottom-player' : ''} ${isClosing ? 'closing' : ''}`} 
         onClick={handleClose}
-        style={getAnimationStyle('backdrop', isClosing)} 
+        style={getAnimationStyle('backdrop', isClosing)}
+         
       />
 
       {/* Modal */}
@@ -403,6 +404,6 @@ export default function AddToPlaylistModal({
           )}
         </div>
       </div>
-    </div>
+    </>
   );
 }

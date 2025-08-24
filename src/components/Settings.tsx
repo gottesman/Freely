@@ -2,6 +2,8 @@ import React, { useState } from 'react'
 import { useI18n } from '../core/i18n'
 import { useDB } from '../core/db'
 import { usePlaylists, broadcastPlaylistsChanged } from '../core/playlists'
+import { usePrompt } from '../core/PromptContext'
+import { useAlerts } from '../core/alerts'
 
 export default function Settings(){
   const { exportJSON, importJSON, clearCache, clearLocalData, getSetting, setSetting } = useDB()
@@ -9,6 +11,8 @@ export default function Settings(){
   const { lang, setLang, t } = useI18n();
   const [importFileName, setImportFileName] = useState<string>('')
   const { refresh: refreshPlaylists } = usePlaylists();
+  const prompt = usePrompt();
+  const { push: pushAlert } = useAlerts();
 
   React.useEffect(()=>{
     let mounted = true
@@ -39,26 +43,28 @@ export default function Settings(){
     const f = e.target.files?.[0]; if(!f) return
     setImportFileName(f.name)
     const s = await f.text()
-    await importJSON(s)
-    alert(t('settings.imported'))
+  await importJSON(s)
+  pushAlert(t('settings.imported'), 'info')
   }
 
   async function onClearCache() {
-    if (!confirm(t('settings.data.confirm'))) return;
-    try { await clearCache(); alert(t('settings.data.cache.cleared')); }
-    catch (error) { console.error('Failed to clear cache:', error); alert('Failed to clear cache. Check console for details.'); }
+    const ok = await prompt.confirm(t('settings.data.confirm'));
+    if(!ok) return;
+    try { await clearCache(); pushAlert(t('settings.data.cache.cleared'), 'info'); }
+    catch (error) { console.error('Failed to clear cache:', error); pushAlert('Failed to clear cache. Check console for details.', 'error'); }
   }
 
   async function onClearLocalData() {
-    if (!confirm(t('settings.data.confirm'))) return;
+    const ok = await prompt.confirm(t('settings.data.confirm'));
+    if(!ok) return;
     try {
       await clearLocalData();
       try { refreshPlaylists(); } catch(_) {}
       try { broadcastPlaylistsChanged(); } catch(_) {}
       try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
       try { if(location.hash) location.hash = ''; } catch(_) {}
-      alert(t('settings.data.local.cleared'));
-    } catch (error) { console.error('Failed to clear local data:', error); alert('Failed to clear local data. Check console for details.'); }
+      pushAlert(t('settings.data.local.cleared'), 'info');
+    } catch (error) { console.error('Failed to clear local data:', error); pushAlert('Failed to clear local data. Check console for details.', 'error'); }
   }
 
   return (

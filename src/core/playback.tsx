@@ -19,6 +19,8 @@ interface PlaybackContextValue {
   prev: () => void;
   playAt: (index: number) => void;
   playTrack: (id: string) => void;
+  // Prepend a track to the front of the queue (deduplicated) and play it
+  playNow: (id: string | string[]) => void;
   trackCache: Record<string, SpotifyTrack | undefined>;
   reorderQueue: (nextIds: string[]) => void;
 }
@@ -146,6 +148,23 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     setTrackId(id);
   }
 
+  /**
+   * Prepend the given track id to the front of the queue (remove any existing
+   * occurrences) and start playback at index 0.
+   */
+  function playNow(ids: string | string[]){
+    const idsArr = Array.isArray(ids) ? ids.filter(Boolean) : (ids ? [ids] : []);
+    if(!idsArr.length) return;
+    setQueueIds(prev => {
+      // remove any occurrences of the incoming ids from previous queue
+      const filtered = prev.filter(p => !idsArr.includes(p));
+      return [...idsArr, ...filtered];
+    });
+    // Ensure playback starts at the new head (first id)
+    setCurrentIndex(0);
+    setTrackId(idsArr[0]);
+  }
+
   function next(){
     if(!queueIds.length) return;
     const nextIndex = (currentIndex + 1) % queueIds.length;
@@ -180,7 +199,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     next,
     prev,
     playAt,
-    playTrack,
+  playTrack,
+  playNow,
     trackCache
   ,reorderQueue
   };

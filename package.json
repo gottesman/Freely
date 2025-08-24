@@ -1,13 +1,20 @@
 {
     "name": "freely-player",
-    "version": "0.5.0",
+    "version": "0.5.5",
+    "author": {
+        "name": "Gottesman",
+        "email": "gottesman@example.com"
+    },
+    "description": "A local music player with torrent streaming support.",
     "main": "electron/main.js",
     "private": true,
     "scripts": {
         "fetch-wasm": "node scripts/copy-sql-wasm.js",
         "postinstall": "npm run fetch-wasm",
         "dev": "vite",
-        "build": "vite build",
+        "prebuild": "node -e \"const f=require('fs'); if(f.existsSync('dist')){ const rimraf=(p)=>{ require('child_process').execSync(process.platform === 'win32' ? `rmdir /s /q \"${p}\"` : `rm -rf \"${p}\"`); }; rimraf('dist'); }\"",
+        "build": "npm run prebuild && vite build",
+        "build:ci": "set NODE_ENV=production && npm run build",
         "preview": "vite preview",
         "start-torrent-server": "node server/torrent-server.js",
         "electron:dev": "npm run build && electron .",

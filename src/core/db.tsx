@@ -152,135 +152,205 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
             if (mounted) { setDb(database); setReady(true) }
           }
         } else {
-          // Browser: attempt persistence via Cache Storage API
-          sqlRef.current = SQL
-          let loadedFromCache = false;
-          const cacheDBKey = 'freely.db';
-          const cacheName = 'freely-db-v1';
-          async function loadFromCache(){
-            if(typeof caches === 'undefined') return;
+          // Browser/Electron renderer: Prefer Electron preload persistence when available
+            sqlRef.current = SQL
+            let databaseLoaded = false;
+            // If running inside Electron renderer and preload exposes freelyDB, use it to read/write the file in app userData
             try {
-              console.log('💾 Loading database from cache...');
-              const cache = await caches.open(cacheName);
-              const resp = await cache.match(cacheDBKey);
-              if(resp){
-                const buf = await resp.arrayBuffer();
-                const uint = new Uint8Array(buf);
-                database = new SQL.Database(uint);
-                loadedFromCache = true;
-                console.log('💾 Database loaded from cache successfully');
-              } else {
-                console.log('💾 No cached database found, creating new one');
+              // @ts-ignore - window.freelyDB injected by preload
+              const hasFreely = typeof window !== 'undefined' && (window as any).freelyDB && typeof (window as any).freelyDB.read === 'function'
+              if (hasFreely) {
+                try {
+                  console.log('💾 Electron renderer detected: loading DB via preload');
+                  // read returns a Buffer-like (Uint8Array) or null
+                  // @ts-ignore
+                  const raw = await (window as any).freelyDB.read();
+                  if (raw) {
+                    // raw may be a Node Buffer or an ArrayBuffer depending on electron version/IPC serialization
+                    let arr: Uint8Array | null = null
+                    if (raw instanceof Uint8Array) arr = raw
+                    else if (raw && raw.data && raw.data instanceof Array) arr = new Uint8Array(raw.data)
+                    else if (raw && raw.buffer && raw.buffer instanceof ArrayBuffer) arr = new Uint8Array(raw.buffer)
+                    else if (raw && raw instanceof ArrayBuffer) arr = new Uint8Array(raw)
+                    if (arr) {
+                      database = new SQL.Database(arr)
+                      databaseLoaded = true
+                      console.log('💾 DB loaded from userData via preload')
+                      try { const p = await (window as any).freelyDB.path(); pathRef.current = p; } catch(_){}
+                    }
+                  }
+                } catch (e) {
+                  console.warn('💾 preload read failed:', e)
+                }
               }
-            } catch(e){
-              console.warn('💾 Failed to load database from cache:', e);
+            } catch (e) { /* ignore */ }
+
+            // If preload is available but no DB file existed, ensure we create one so later Node-style saves can update it
+            try {
+              // @ts-ignore
+              const hasFreely2 = typeof window !== 'undefined' && (window as any).freelyDB && typeof (window as any).freelyDB.write === 'function'
+              if (hasFreely2 && !databaseLoaded) {
+                database = new SQL.Database()
+                ensureSchema(database)
+                databaseLoaded = true
+                try { const p = await (window as any).freelyDB.path(); pathRef.current = p; } catch(_){}
+                // write initial empty DB to disk
+                try { const data = database.export(); await (window as any).freelyDB.write(data); console.log('💾 Created initial DB file via preload'); } catch(_){}
+              }
+            } catch (_) {}
+
+            // Fallback to Cache Storage if no Electron preload available or read failed
+            if (!databaseLoaded) {
+              let loadedFromCache = false;
+              const cacheDBKey = 'freely.db';
+              const cacheName = 'freely-db-v1';
+              async function loadFromCache(){
+                if(typeof caches === 'undefined') return;
+                try {
+                  console.log('💾 Loading database from cache...');
+                  const cache = await caches.open(cacheName);
+                  const resp = await cache.match(cacheDBKey);
+                  if(resp){
+                    const buf = await resp.arrayBuffer();
+                    const uint = new Uint8Array(buf);
+                    database = new SQL.Database(uint);
+                    loadedFromCache = true;
+                    console.log('💾 Database loaded from cache successfully');
+                  } else {
+                    console.log('💾 No cached database found, creating new one');
+                  }
+                } catch(e){
+                  console.warn('💾 Failed to load database from cache:', e);
+                }
+              }
+              await loadFromCache();
+              if(!loadedFromCache){
+                database = new SQL.Database();
+              }
             }
-          }
-          await loadFromCache();
-          if(!loadedFromCache){
-            database = new SQL.Database();
-          }
-          ensureSchema(database);
+            ensureSchema(database);
 
-          // Persistence helpers
-            let saveTimer: any = null;
-            const scheduleSave = () => {
-              if(typeof caches === 'undefined') return; // no-op
-              if(saveTimer) clearTimeout(saveTimer);
-              saveTimer = setTimeout(()=>{ saveNow(); }, 500); // Reduced from 1200ms to 500ms for more responsive saves
-            };
-            const saveNow = async () => {
-              if(!database) return;
-              if(typeof caches === 'undefined') return;
-              try {
-                console.log('💾 Saving database to cache...');
-                const data = database.export();
-                const cache = await caches.open(cacheName);
-                const blob = new Blob([data], { type: 'application/octet-stream' });
-                const resp = new Response(blob, { 
-                  headers: { 
-                    'Content-Type':'application/octet-stream', 
-                    'X-DB-Version':'1',
-                    'X-Saved-At': Date.now().toString()
-                  }
-                });
-                await cache.put(cacheDBKey, resp);
-                console.log('💾 Database saved to cache successfully');
-              } catch(e){
-                console.warn('💾 Failed to save database to cache:', e);
-              }
-            };
-
-            // Monkey-patch mutating methods to schedule saves (best-effort)
-            try {
-              const mutating = /^(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|REPLACE|BEGIN|COMMIT)/i;
-              const origExec = database.exec.bind(database);
-              database.exec = (sql: string, params?: any) => { 
-                const result = origExec(sql, params);
-                try { 
-                  if(mutating.test(sql.trim())) {
-                    console.log('💾 DB mutation detected via exec:', sql.substring(0, 50) + (sql.length > 50 ? '...' : ''));
-                    scheduleSave(); 
-                  }
-                } catch(_){}
-                return result;
+            // Persistence helpers
+              let saveTimer: any = null;
+              const scheduleSave = () => {
+                if (typeof window !== 'undefined' && (window as any).freelyDB && typeof (window as any).freelyDB.write === 'function') {
+                  // Use preload write via IPC
+                  if(saveTimer) clearTimeout(saveTimer);
+                  saveTimer = setTimeout(async () => {
+                    try {
+                      const data = database.export();
+                      // @ts-ignore
+                      await (window as any).freelyDB.write(data);
+                      console.log('💾 DB written to userData via preload');
+                    } catch (e) { console.warn('💾 preload write failed:', e) }
+                  }, 500);
+                  return;
+                }
+                if(typeof caches === 'undefined') return; // no-op
+                if(saveTimer) clearTimeout(saveTimer);
+                saveTimer = setTimeout(()=>{ saveNow(); }, 500);
               };
-              const origRun = database.run?.bind(database);
-              if(origRun){
-                database.run = (sql: string, params?: any, callback?: any) => { 
-                  const result = origRun(sql, params, callback);
+              const saveNow = async () => {
+                if(!database) return;
+                // If preload available, do a direct write
+                try {
+                  if (typeof window !== 'undefined' && (window as any).freelyDB && typeof (window as any).freelyDB.write === 'function') {
+                    const data = database.export();
+                    // @ts-ignore
+                    await (window as any).freelyDB.write(data);
+                    return;
+                  }
+                } catch (e) { console.warn('💾 preload saveNow failed:', e) }
+
+                if(typeof caches === 'undefined') return;
+                try {
+                  console.log('💾 Saving database to cache...');
+                  const data = database.export();
+                  const cache = await caches.open('freely-db-v1');
+                  const blob = new Blob([data], { type: 'application/octet-stream' });
+                  const resp = new Response(blob, { 
+                    headers: { 
+                      'Content-Type':'application/octet-stream', 
+                      'X-DB-Version':'1',
+                      'X-Saved-At': Date.now().toString()
+                    }
+                  });
+                  await cache.put('freely.db', resp);
+                  console.log('💾 Database saved to cache successfully');
+                } catch(e){
+                  console.warn('💾 Failed to save database to cache:', e);
+                }
+              };
+
+              // Monkey-patch mutating methods to schedule saves (best-effort)
+              try {
+                const mutating = /^(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|REPLACE|BEGIN|COMMIT)/i;
+                const origExec = database.exec.bind(database);
+                database.exec = (sql: string, params?: any) => { 
+                  const result = origExec(sql, params);
                   try { 
                     if(mutating.test(sql.trim())) {
-                      console.log('💾 DB mutation detected via run:', sql.substring(0, 50) + (sql.length > 50 ? '...' : ''));
+                      console.log('💾 DB mutation detected via exec:', sql.substring(0, 50) + (sql.length > 50 ? '...' : ''));
                       scheduleSave(); 
                     }
                   } catch(_){}
                   return result;
                 };
+                const origRun = database.run?.bind(database);
+                if(origRun){
+                  database.run = (sql: string, params?: any, callback?: any) => { 
+                    const result = origRun(sql, params, callback);
+                    try { 
+                      if(mutating.test(sql.trim())) {
+                        console.log('💾 DB mutation detected via run:', sql.substring(0, 50) + (sql.length > 50 ? '...' : ''));
+                        scheduleSave(); 
+                      }
+                    } catch(_){}
+                    return result;
+                  };
+                }
+                // Add scheduleSave as a property so other methods can access it
+                (database as any)._scheduleSave = scheduleSave;
+                (database as any)._saveNow = saveNow;
+              } catch(_){ 
+                console.warn('💾 Failed to monkey-patch database methods for auto-save');
               }
-              
-              // Add scheduleSave as a property so other methods can access it
-              (database as any)._scheduleSave = scheduleSave;
-              (database as any)._saveNow = saveNow;
-            } catch(_){ 
-              console.warn('💾 Failed to monkey-patch database methods for auto-save');
-            }
 
-            // Save on visibility change/unload and periodically
-            let periodicTimer: any = null;
-            try {
-              const saveOnHide = () => { 
-                console.log('💾 Saving database due to visibility change/unload'); 
-                saveNow(); 
-              };
-              document.addEventListener('visibilitychange', () => { 
-                if(document.visibilityState === 'hidden') saveOnHide(); 
-              });
-              window.addEventListener('beforeunload', saveOnHide);
-              window.addEventListener('pagehide', saveOnHide);
+              // Save on visibility change/unload and periodically
+              let periodicTimer: any = null;
+              try {
+                const saveOnHide = () => { 
+                  console.log('💾 Saving database due to visibility change/unload'); 
+                  saveNow(); 
+                };
+                document.addEventListener('visibilitychange', () => { 
+                  if(document.visibilityState === 'hidden') saveOnHide(); 
+                });
+                window.addEventListener('beforeunload', saveOnHide);
+                window.addEventListener('pagehide', saveOnHide);
               
-              // Also save periodically as a backup (every 30 seconds) - only one timer
-              if (periodicTimer) clearInterval(periodicTimer);
-              periodicTimer = setInterval(() => {
-                if(database && mounted) {
-                  console.log('💾 Periodic database save');
-                  saveNow();
-                }
-              }, 30000);
+                // Also save periodically as a backup (every 30 seconds) - only one timer
+                if (periodicTimer) clearInterval(periodicTimer);
+                periodicTimer = setInterval(() => {
+                  if(database && mounted) {
+                    console.log('💾 Periodic database save');
+                    saveNow();
+                  }
+                }, 30000);
               
-              // Clean up timer when component unmounts
-              const cleanup = () => {
-                if (periodicTimer) {
-                  clearInterval(periodicTimer);
-                  periodicTimer = null;
-                }
-              };
-              cleanupFunctions.push(cleanup);
-            } catch(_){ 
-              console.warn('💾 Failed to set up auto-save event listeners');
-            }
+                // Clean up timer when component unmounts
+                const cleanup = () => {
+                  if (periodicTimer) {
+                    clearInterval(periodicTimer);
+                    periodicTimer = null;
+                  }
+                };
+                cleanupFunctions.push(cleanup);
+              } catch(_){ 
+                console.warn('💾 Failed to set up auto-save event listeners');
+              }
 
-          if (mounted) { setDb(database); setReady(true) }
+            if (mounted) { setDb(database); setReady(true) }
         }
       } catch (err) {
         // If loading sql-wasm fails, leave db null

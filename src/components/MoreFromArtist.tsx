@@ -36,7 +36,7 @@ function listSection(title: string, kind: keyof ArtistBuckets, buckets: ArtistBu
                 if(kind === 'playlists') handlers.onSelectPlaylist?.(item.id); else handlers.onSelectAlbum?.(item.id);
               }}
             >
-              <div className="card-img-wrap"><img src={(item as any).images?.[0]?.url || '/icon-192.png'} alt={item.name} loading="lazy" /></div>
+              <div className="card-img-wrap"><img src={(item as any).images?.[0]?.url || ''} alt={item.name} loading="lazy" /></div>
               <div className="card-meta">
                 <div className="card-name">{item.name}</div>
               </div>

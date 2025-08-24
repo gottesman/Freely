@@ -88,7 +88,7 @@ input:not([type]),
 	font-family: Material Symbols Rounded, sans-serif;
 	font-weight: normal;
 	font-style: normal;
-	font-size: 20px;
+	font-size: var(--size);
 	line-height: 1;
 	letter-spacing: normal;
 	text-transform: none;
@@ -105,4 +105,7 @@ input:not([type]),
 
 	/* Use swap for better icon visibility */
 	font-display: swap;
+}
+.material-symbols-rounded.bold{
+	--material-opts: 'wght' 300, 'GRAD' 0, 'opsz' 24;
 }

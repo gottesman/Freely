@@ -81,7 +81,7 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
     return ()=>{ cancelled = true; };
   }, [album?.artists?.[0]?.id, spotifyClient]);
 
-  const heroImage = useMemo(()=> album?.images?.[0]?.url || '/icon-192.png', [album]);
+  const heroImage = useMemo(()=> album?.images?.[0]?.url || '', [album]);
   const releaseYear = album?.releaseDate ? album.releaseDate.split('-')[0] : undefined;
   const genres = primaryArtist?.genres?.slice(0,3) || [];
   // artist col width handled by TrackList

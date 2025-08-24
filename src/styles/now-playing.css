@@ -34,7 +34,7 @@
 
 /* Hover play button overlay */
 .queue-play-btn { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); color:#fff; border:none; cursor:pointer; opacity:0; transition: opacity var(--dur-med); font-size:18px; margin:0; padding:0; }
-.queue-play-btn .material-symbols-rounded { font-size:22px; }
+.queue-play-btn .material-symbols-rounded { --size:22px; }
 .np-queue-list li:not(.active):hover .queue-play-btn { opacity:1; }
 
 /* Suppress play overlay while hovering drag handle (browsers supporting :has) */
@@ -77,7 +77,7 @@
 .np-tracklist li .tl-actions { position:relative; display:flex; align-items:center; justify-content:flex-end; min-width:0; }
 .np-tracklist li .duration { font-variant-numeric:tabular-nums; opacity:.55; font-size:12px; margin-right:4px; transition: opacity var(--dur-med); }
 .np-tracklist li.selected .duration { opacity:.9; }
-.np-tracklist li .playing-icon .material-symbols-rounded { font-size:20px; color:#fff; }
+.np-tracklist li .playing-icon .material-symbols-rounded { --size:20px; color:#fff; }
 .np-tracklist li.selected .playing-icon .material-symbols-rounded { color:#021; }
 @media (max-width:900px){ .np-tracklist li { grid-template-columns:28px 1fr 60px; } .np-tracklist li .t-artist-col { display:none; } .np-title { font-size:32px; } .np-hero-inner { padding:28px 24px 24px; } }
 @media (max-width:600px){ .np-title { font-size:26px; } .np-hero { min-height:240px; } .np-hero-inner { padding:24px 20px 20px; } }

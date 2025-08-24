@@ -226,7 +226,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     return ()=> { cancelled = true; };
   }, [track?.name, primaryArtist?.name]);
 
-  const heroImage = useMemo(()=> album?.images?.[0]?.url || track?.album?.images?.[0]?.url || '/icon-192.png', [album, track?.album?.images]);
+  const heroImage = useMemo(()=> album?.images?.[0]?.url || track?.album?.images?.[0]?.url || '', [album, track?.album?.images]);
   const releaseYear = album?.releaseDate ? (album.releaseDate.split('-')[0]) : undefined;
   const genres = primaryArtist?.genres?.slice(0,3) || [];
   const artistColWidth = useMemo(()=>{ if(!albumTracks?.length) return undefined; const names = albumTracks.map(t=> t.artists?.[0]?.name || ''); const longest = names.reduce((a,b)=> b.length>a.length? b:a,''); if(!longest) return undefined; const avgCharPx=7.2; const padding=28; return Math.min(240, Math.max(80, Math.round(longest.length*avgCharPx+padding))); }, [albumTracks]);

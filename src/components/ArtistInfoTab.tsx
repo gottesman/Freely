@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import GeniusClient from '../core/musicdata';
 import { usePlayback } from '../core/playback';
 import TrackList from './TrackList';
+import useFollowedArtists from '../core/artists';
 
 function fmt(ms?: number){
   if(!ms && ms!==0) return '--:--';
@@ -28,6 +29,10 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
   const [bioExpanded, setBioExpanded] = useState(false);
   const [lastBioArtist, setLastBioArtist] = useState<string | undefined>();
   const { enqueue, setQueue, queueIds, currentIndex, currentTrack } = usePlayback();
+  const { followArtist, unfollowArtist, isFollowing, artists: followedArtists } = useFollowedArtists();
+  const [localFollowing, setLocalFollowing] = useState<boolean>(false);
+  const optimisticUpdateRef = useRef<{ id: string; following: boolean } | null>(null);
+  const legacyEventHandledRef = useRef<boolean>(false); // Track if legacy event has handled the state
 
   // Load artist core info
   useEffect(()=>{
@@ -131,7 +136,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
     return ()=> { cancelled = true; };
   }, [artist?.name, lastBioArtist]);
 
-  const heroImage = useMemo(()=> artist?.images?.[0]?.url || '/icon-192.png', [artist?.images]);
+  const heroImage = useMemo(()=> artist?.images?.[0]?.url || '', [artist?.images]);
   // Column width handled within TrackList
 
   const playTopTracksNow = () => {
@@ -151,6 +156,104 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
     if(toAppend.length) enqueue(toAppend);
   };
 
+  // Keep a local optimistic state so the UI updates immediately when toggling follow/unfollow.
+  useEffect(() => {
+    console.log('[artists-debug] ArtistInfoTab useEffect triggered - artist?.id=', artist?.id, 'followedArtists.length=', followedArtists.length, 'legacyEventHandled=', legacyEventHandledRef.current);
+    if (artist?.id) {
+      // Check if we have an optimistic update for this artist
+      const optimistic = optimisticUpdateRef.current;
+      if (optimistic && optimistic.id === artist.id) {
+        console.log('[artists-debug] Using optimistic state:', optimistic.following, '(ignoring actual state)');
+        // Don't override optimistic updates from useEffect
+        return;
+      } 
+      // Don't override if legacy event has already handled this
+      else if (legacyEventHandledRef.current) {
+        console.log('[artists-debug] Skipping useEffect update - legacy event already handled');
+        return;
+      } 
+      else {
+        const actualFollowing = isFollowing(artist.id);
+        console.log('[artists-debug] Using actual following state:', actualFollowing);
+        setLocalFollowing(actualFollowing);
+      }
+    } else {
+      setLocalFollowing(false);
+      legacyEventHandledRef.current = false; // Reset when no artist
+    }
+  }, [artist?.id, isFollowing]); // Removed followedArtists dependency
+
+  // Listen to legacy global artist change event to refresh localFollowing immediately when other components trigger changes
+  useEffect(()=>{
+    const handler = (event: any) => { 
+      console.log('[artists-debug] ArtistInfoTab legacy event handler triggered for artist:', artist?.id);
+      if(artist?.id) {
+        // Use the event detail if available, otherwise fall back to isFollowing
+        const eventArtists = event?.detail?.artists;
+        if(eventArtists && Array.isArray(eventArtists)) {
+          const isInEventList = eventArtists.some((a: any) => a.id === artist.id);
+          console.log('[artists-debug] Using event detail, isInEventList:', isInEventList);
+          setLocalFollowing(isInEventList);
+          
+          // Mark that legacy event has handled the state
+          legacyEventHandledRef.current = true;
+          
+          // Clear optimistic update only after we've set the new state from event detail
+          if (optimisticUpdateRef.current?.id === artist.id) {
+            console.log('[artists-debug] Clearing optimistic update for artist:', artist.id);
+            optimisticUpdateRef.current = null;
+          }
+        } else {
+          // Only use isFollowing fallback if no optimistic update is active
+          if (!optimisticUpdateRef.current || optimisticUpdateRef.current.id !== artist.id) {
+            const actualFollowing = isFollowing(artist.id);
+            console.log('[artists-debug] Using isFollowing fallback:', actualFollowing);
+            setLocalFollowing(actualFollowing);
+            legacyEventHandledRef.current = true;
+          } else {
+            console.log('[artists-debug] Skipping isFollowing fallback due to active optimistic update');
+          }
+        }
+      }
+    };
+    window.addEventListener('freely:followed-artists-changed', handler);
+    return () => window.removeEventListener('freely:followed-artists-changed', handler);
+  }, [artist?.id, isFollowing]);
+
+  const onToggleFollow = async () => {
+    if(!artist) return;
+    const id = artist.id;
+    // Use localFollowing instead of isFollowing to get the current UI state
+    const currently = localFollowing;
+    console.log('[artists-debug] onToggleFollow clicked id=', id, 'currentlyFollowing=', currently, 'localFollowing=', localFollowing, 'isFollowing=', isFollowing(id));
+    
+    // Reset legacy event flag when starting new operation
+    legacyEventHandledRef.current = false;
+    
+    // Set optimistic update
+    const newFollowingState = !currently;
+    console.log('[artists-debug] Setting optimistic state to:', newFollowingState);
+    optimisticUpdateRef.current = { id, following: newFollowingState };
+    setLocalFollowing(newFollowingState);
+    
+    try{
+      if(currently) {
+        console.log('[artists-debug] Calling unfollowArtist');
+        await unfollowArtist(id);
+      } else {
+        console.log('[artists-debug] Calling followArtist');
+        await followArtist(artist);
+      }
+      console.log('[artists-debug] Follow/unfollow operation completed');
+    }catch(e){
+      console.warn('follow toggle failed', e);
+      // revert optimistic change on error
+      optimisticUpdateRef.current = null;
+      legacyEventHandledRef.current = false;
+      setLocalFollowing(currently);
+    }
+  };
+
   return (
     <section className="now-playing" aria-labelledby="artist-heading">
       <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
@@ -164,7 +267,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
           <div className="np-extras">
             <div className="np-tags" aria-label={t('np.genresTags')}>{artist?.genres?.length? artist.genres.slice(0,5).map(g=> <span key={g} className="tag">{g}</span>) : <span className="tag">—</span>}</div>
             <div className="np-actions" aria-label={t('np.artistActions','Artist actions')}>
-              <button className="np-icon" aria-label={t('np.like','Like')} disabled><span className="material-symbols-rounded">favorite</span></button>
+              <button className={`np-icon ${artist && localFollowing ? 'active' : ''}`} aria-pressed={artist ? localFollowing : false} aria-label={t('np.like','Like')} onClick={onToggleFollow}><span className={`material-symbols-rounded${artist && localFollowing ? ' filled' : ''}`}>favorite</span></button>
             </div>
           </div>
         </div>
@@ -200,7 +303,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
             {recentAlbums.map(alb=>(
               <li key={alb.id} className="artist-grid-item" title={alb.name}>
                 <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> onSelectAlbum && onSelectAlbum(alb.id)}>
-                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${alb.images?.[0]?.url || '/icon-192.png'})`}} />
+                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${alb.images?.[0]?.url || ''})`}} />
                   <div className="info" style={{marginTop:'6px'}}><div className="name ellipsis" title={alb.name} style={{fontSize:'0.85rem', fontWeight:500}}>{alb.name}</div><div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{alb.releaseDate?.split('-')[0] || ''}</div></div>
                 </button>
               </li>
@@ -219,7 +322,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
             {playlists.map(pl=>(
               <li key={pl.id} className="artist-grid-item" title={pl.name}>
                 <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> onSelectPlaylist && onSelectPlaylist(pl.id)}>
-                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${pl.images?.[0]?.url || '/icon-192.png'})`}} />
+                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${pl.images?.[0]?.url || ''})`}} />
                   <div className="info" style={{marginTop:'6px'}}>
                     <div className="name ellipsis" title={pl.name} style={{fontSize:'0.85rem', fontWeight:500}}>{pl.name}</div>
                     <div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{typeof pl.totalTracks === 'number' ? t('np.tracks', undefined, { count: pl.totalTracks }) : ''}</div>

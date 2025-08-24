@@ -1,5 +1,10 @@
 import React, { useState } from 'react'
+import '../styles/search-results.css'
 import { useI18n } from '../core/i18n'
+import { usePlayback } from '../core/playback'
+import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext'
+import useArtistBuckets from '../core/hooks/useArtistBuckets'
+import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers'
 
 type Song = { id: string | number; name: string; artists?: { name: string }[]; album?: { name: string; images?: { url: string }[] } }
 type Artist = { id: string | number; name: string; images?: { url: string }[] }
@@ -12,7 +17,8 @@ export default function SearchResults({
   onSelectArtist,
   onSelectAlbum,
   onSelectPlaylist,
-  onSelectTrack
+  onSelectTrack,
+  onMoreClick
 }: {
   query?: string
   results?: {
@@ -25,8 +31,11 @@ export default function SearchResults({
   onSelectAlbum?: (id: string)=>void
   onSelectPlaylist?: (id: string)=>void
   onSelectTrack?: (id: string)=>void
+  onMoreClick?: (id: string)=>void
 }){
   const { t } = useI18n();
+  const { playNow } = usePlayback();
+  const { openModal } = useGlobalAddToPlaylistModal();
 
   const songs = results?.songs || []
   const artists = results?.artists || []
@@ -36,7 +45,7 @@ export default function SearchResults({
   // Only display a small subset of the returned items per type
   const displayedSongs = songs.slice(0, 4)
   const displayedArtists = artists.slice(0, 6)
-  const displayedAlbums = albums.slice(0, 3)
+  const displayedAlbums = albums.slice(0, 4)
   const displayedPlaylists = playlists.slice(0, 6)
 
   const hasAny = !!query && (songs.length || artists.length || albums.length || playlists.length)
@@ -71,6 +80,75 @@ export default function SearchResults({
     } catch (e) {
       return text
     }
+  }
+
+  // Lazy-loading cache for fetched collections (artist/album/playlist -> simple track array)
+  const [collectionCache, setCollectionCache] = React.useState<Record<string, Song[] | undefined>>({});
+
+  function addPlayButton(tracks: Song[] | undefined) {
+    if (!tracks || tracks.length === 0) return null;
+    const ids = tracks.map(t => String(t.id)).filter(Boolean);
+    if (!ids.length) return null;
+    return (
+      <div
+        className='media-play-overlay'
+        role="button"
+        aria-label={t('player.play','Play')}
+        onClick={(e) => { e.stopPropagation(); playNow(ids); }}
+      >
+        <span className="material-symbols-rounded filled">play_arrow</span>
+      </div>
+    );
+  }
+
+  const loadCollection = async (kind: 'album' | 'artist' | 'playlist', id?: string | number) => {
+    if (!id) return;
+    const key = `${kind}:${id}`;
+    if (collectionCache[key] !== undefined) return; // already loaded (could be undefined if failed)
+    try {
+      let tracks: Song[] | undefined;
+      if (kind === 'album') tracks = await fetchAlbumTracks(id, { limit: 10 }) as any;
+      else if (kind === 'artist') tracks = await fetchArtistTracks(id, { limit: 10 }) as any;
+      else tracks = await fetchPlaylistTracks(id, { limit: 10 }) as any;
+      setCollectionCache(prev => ({ ...prev, [key]: tracks }));
+    } catch (e) {
+      setCollectionCache(prev => ({ ...prev, [key]: undefined }));
+    }
+  }
+
+  const renderCollectionPlay = (kind: 'album' | 'artist' | 'playlist', id?: string | number) => {
+    if (!id) return null;
+    const key = `${kind}:${id}`;
+    const cached = collectionCache[key];
+    // If cached tracks available, render real play button
+    if (cached && cached.length) return addPlayButton(cached as any);
+
+    // Otherwise render a lazy play button: preload on hover, fetch+play on click
+    return (
+      <div
+        className='media-play-overlay'
+        role="button"
+        aria-label={t('player.play','Play')}
+        onMouseEnter={() => loadCollection(kind, id)}
+        onClick={async (e) => {
+          e.stopPropagation();
+          try {
+            let res: Song[] | undefined;
+            if (kind === 'album') res = await fetchAlbumTracks(id as any, { limit: 50 }) as any;
+            else if (kind === 'artist') res = await fetchArtistTracks(id as any, { limit: 50 }) as any;
+            else res = await fetchPlaylistTracks(id as any, { limit: 50 }) as any;
+            if (res && res.length) {
+              playNow(res.map(r => String((r as any).id)));
+              setCollectionCache(prev => ({ ...prev, [key]: res }));
+            }
+          } catch (err) {
+            console.warn('play collection failed', err);
+          }
+        }}
+      >
+        <span className="material-symbols-rounded filled">play_arrow</span>
+      </div>
+    );
   }
 
   if (!query) {
@@ -109,17 +187,27 @@ export default function SearchResults({
                 </div>
                 <ul className="sr-list">
                   {displayedSongs.map(s => (
-                    <li key={s.id} className="sr-item">
-                      <button type="button" className="sr-card" onClick={() => onSelectTrack && onSelectTrack(String(s.id))}>
+                      <li key={String(s.id)} className="sr-item" onClick={() => onSelectTrack && onSelectTrack(String(s.id))}>
                         <div className="sr-thumb">
-                          {s.album?.images?.[0]?.url ? <img src={s.album.images[0].url} alt=""/> : <span className="material-symbols-rounded">music_note</span>}
+                          {s.album?.images?.[s.album?.images?.length - 1]?.url ? <img src={s.album.images[s.album.images.length - 1].url} alt=""/> : <span className="material-symbols-rounded">music_note</span>}
+                          <div className='play-button' onClick={(e)=>{ e.stopPropagation(); playNow(String(s.id)); }}>
+                            <span className="material-symbols-rounded filled">play_arrow</span>
+                          </div>
                         </div>
-                        <div className="sr-meta">
-                          <div className="sr-name">{highlight(s.name, query)}</div>
-                          <div className="sr-sub">{s.artists?.map(a => a.name).join(', ')}</div>
+                        <div className="sr-main">
+                          <div className="sr-meta">
+                            <div className="sr-name">{highlight(s.name, query)}</div>
+                            <div className="sr-sub">{s.artists?.map(a => a.name).join(', ')}</div>
+                          </div>
+                          <div className="sr-controls">
+                            <button type="button" className="player-icons add-to-playlist" title={"Add to playlist"} onClick={(e)=>{ e.stopPropagation(); openModal && openModal(s); }}><span className="material-symbols-rounded">add_circle</span></button>
+                            <div className="sr-time">{fmtLength((s as any).durationMs || (s as any).duration)}</div>
+                            <button type="button" className="player-icons sr-more" title={"More"} onClick={(e)=>{ e.stopPropagation(); onMoreClick && onMoreClick(String(s.id)); }}>
+                              <span className="material-symbols-rounded bold">more_horiz</span>
+                            </button>
+                          </div>
                         </div>
-                      </button>
-                    </li>
+                      </li>
                   ))}
                 </ul>
               </div>
@@ -130,20 +218,23 @@ export default function SearchResults({
                 <div className="sr-section-header">
                   <h2>{t('search.artists', 'Artists')}</h2>
                 </div>
-                <ul className="sr-list sr-grid">
+                <div className="sr-list sr-grid">
                   {displayedArtists.map(a => (
-                    <li key={a.id} className="sr-item sr-compact">
-                      <button type="button" className="sr-card sr-card-compact" onClick={() => onSelectArtist && onSelectArtist(String(a.id))}>
-                        <div className="sr-thumb">
-                          {a.images?.[0]?.url ? <img src={a.images[0].url} alt=""/> : <span className="material-symbols-rounded">person</span>}
+                      <div className="media-card compact" role="button" onClick={() => onSelectArtist && onSelectArtist(String(a.id))}>
+                        <div className="media-cover circle">
+                          <div className="media-cover-inner">
+                            {a.images?.[a.images?.length - 1]?.url ? (
+                              <img src={a.images[a.images.length - 1].url} alt="" />
+                            ) : (
+                              <span className="material-symbols-rounded">person</span>
+                            )}
+                          </div>
+                          {renderCollectionPlay('artist', a.id)}
                         </div>
-                        <div className="sr-meta">
-                          <div className="sr-name">{highlight(a.name, query)}</div>
-                        </div>
-                      </button>
-                    </li>
+                        <h3 className="media-title">{highlight(a.name, query)}</h3>
+                      </div>
                   ))}
-                </ul>
+                </div>
               </div>
             )}
 
@@ -152,21 +243,24 @@ export default function SearchResults({
                 <div className="sr-section-header">
                   <h2>{t('search.albums', 'Albums')}</h2>
                 </div>
-                <ul className="sr-list sr-grid">
+                <div className="sr-list sr-grid">
                   {displayedAlbums.map(al => (
-                    <li key={al.id} className="sr-item sr-compact">
-                      <button type="button" className="sr-card sr-card-compact" onClick={() => onSelectAlbum && onSelectAlbum(String(al.id))}>
-                        <div className="sr-thumb">
-                          {al.images?.[0]?.url ? <img src={al.images[0].url} alt=""/> : <span className="material-symbols-rounded">album</span>}
+                      <div className="media-card compact" role="button" onClick={() => onSelectAlbum && onSelectAlbum(String(al.id))}>
+                        <div className="media-cover square">
+                          <div className="media-cover-inner">
+                            {al.images?.[al.images.length - 1]?.url ? (
+                              <img src={al.images[al.images.length - 1].url} alt="" />
+                            ) : (
+                              <span className="material-symbols-rounded">album</span>
+                            )}
+                          </div>
+                          {renderCollectionPlay('album', al.id)}
                         </div>
-                              <div className="sr-meta">
-                                <div className="sr-name">{highlight(al.name, query)}</div>
-                                <div className="sr-sub">{(al.artists?.map(a => a.name).join(', ')) || al.artist}</div>
-                              </div>
-                      </button>
-                    </li>
+                        <h3 className="media-title">{highlight(al.name, query)}</h3>
+                        <div className="media-meta">{(al.artists?.map(a => a.name).join(', ')) || al.artist}</div>
+                      </div>
                   ))}
-                </ul>
+                </div>
               </div>
             )}
 
@@ -175,21 +269,24 @@ export default function SearchResults({
                 <div className="sr-section-header">
                   <h2>{t('search.playlists', 'Playlists')}</h2>
                 </div>
-                <ul className="sr-list">
+                <div className="sr-list sr-grid">
                   {displayedPlaylists.map(p => (
-                    <li key={p.id} className="sr-item">
-                      <button type="button" className="sr-card" onClick={() => onSelectPlaylist && onSelectPlaylist(String(p.id))}>
-                        <div className="sr-thumb">
-                          {p.images?.[0]?.url ? <img src={p.images[0].url} alt=""/> : <span className="material-symbols-rounded">queue_music</span>}
+                      <div className="media-card compact" role="button" onClick={() => onSelectPlaylist && onSelectPlaylist(String(p.id))}>
+                        <div className="media-cover square">
+                          <div className="media-cover-inner">
+                            {p.images?.[p.images.length - 1]?.url ? (
+                              <img src={p.images[p.images.length - 1].url} alt="" />
+                            ) : (
+                              <span className="material-symbols-rounded">queue_music</span>
+                            )}
+                          </div>
+                          {renderCollectionPlay('playlist', p.id)}
                         </div>
-                        <div className="sr-meta">
-                          <div className="sr-name">{highlight(p.name, query)}</div>
-                          <div className="sr-sub">{(p.totalTracks || 0) + ' ' + t('pl.tracks', 'tracks')}</div>
-                        </div>
-                      </button>
-                    </li>
+                        <h3 className="media-title">{highlight(p.name, query)}</h3>
+                        <div className="media-meta">{(p.totalTracks || 0) + ' ' + t('pl.tracks','tracks')}</div>
+                      </div>
                   ))}
-                </ul>
+                </div>
               </div>
             )}
           </>
@@ -200,7 +297,6 @@ export default function SearchResults({
             <table className="sr-table sr-table-compact">
               <thead>
                 <tr>
-                  <th>#</th>
                   <th>{t('search.title','Title')}</th>
                   <th>{t('search.album','Album')}</th>
                   <th>{t('search.length','Length')}</th>
@@ -209,11 +305,10 @@ export default function SearchResults({
               <tbody>
                 {songs.map((s, i) => (
                   <tr key={String(s.id)} className="sr-table-row" onClick={() => onSelectTrack && onSelectTrack(String(s.id))}>
-                    <td className="sr-td-index">{i+1}</td>
                     <td>
                       <div className="sr-title-with-thumb">
                         <div className="sr-thumb-inline" aria-hidden>
-                          {s.album?.images?.[0]?.url ? <img src={s.album.images[0].url} alt="" /> : <span className="material-symbols-rounded">music_note</span>}
+                          {s.album?.images?.[s.album?.images?.length - 1]?.url ? <img src={s.album.images[s.album.images.length - 1].url} alt="" /> : <span className="material-symbols-rounded">music_note</span>}
                         </div>
                         <div className="sr-title-meta">
                           <div className="sr-table-title">{highlight(s.name, query)}</div>
@@ -233,8 +328,8 @@ export default function SearchResults({
         {tab === 'artists' && (
             <div className="sr-grid-vertical">
               {(artists||[]).map(a => (
-                <div key={String(a.id)} className="media-card compact" onClick={() => onSelectArtist && onSelectArtist(String(a.id))}>
-                  <div className="media-cover circle">{a.images?.[0]?.url ? <img src={a.images[0].url} alt=""/> : <span className="material-symbols-rounded">person</span>}</div>
+                <div key={String(a.id)} className="media-card" onClick={() => onSelectArtist && onSelectArtist(String(a.id))}>
+                  <div className="media-cover circle"><div className="media-cover-inner">{a.images?.[0]?.url ? <img src={a.images[0].url} alt=""/> : <span className="material-symbols-rounded">person</span>}</div>{renderCollectionPlay('artist', a.id)}</div>
                   <h3 className="media-title">{a.name}</h3>
                 </div>
               ))}
@@ -244,8 +339,8 @@ export default function SearchResults({
         {tab === 'albums' && (
             <div className="sr-grid-vertical">
               {(albums||[]).map(al => (
-                <div key={String(al.id)} className="media-card compact" onClick={() => onSelectAlbum && onSelectAlbum(String(al.id))}>
-                  <div className="media-cover square">{al.images?.[0]?.url ? <img src={al.images[0].url} alt=""/> : <span className="material-symbols-rounded">album</span>}</div>
+                <div key={String(al.id)} className="media-card" onClick={() => onSelectAlbum && onSelectAlbum(String(al.id))}>
+                  <div className="media-cover square"><div className="media-cover-inner">{al.images?.[0]?.url ? <img src={al.images[0].url} alt=""/> : <span className="material-symbols-rounded">album</span>}</div>{renderCollectionPlay('album', al.id)}</div>
                   <h3 className="media-title">{highlight(al.name, query)}</h3>
                   {((al.artists && al.artists.length) || al.artist) ? (
                     <div className="media-meta">{highlight((al.artists?.map(a => a.name).join(', ')) || al.artist || '', query)}</div>
@@ -258,8 +353,8 @@ export default function SearchResults({
         {tab === 'playlists' && (
             <div className="sr-grid-vertical">
               {(playlists||[]).map(p => (
-                <div key={String(p.id)} className="media-card compact" onClick={() => onSelectPlaylist && onSelectPlaylist(String(p.id))}>
-                  <div className="media-cover square">{p.images?.[0]?.url ? <img src={p.images[0].url} alt=""/> : <span className="material-symbols-rounded">queue_music</span>}</div>
+                <div key={String(p.id)} className="media-card" onClick={() => onSelectPlaylist && onSelectPlaylist(String(p.id))}>
+                  <div className="media-cover square"><div className="media-cover-inner">{p.images?.[0]?.url ? <img src={p.images[0].url} alt=""/> : <span className="material-symbols-rounded">queue_music</span>}</div>{renderCollectionPlay('playlist', p.id)}</div>
                   <h3 className="media-title">{p.name}</h3>
                   <div className="media-meta">{(p.totalTracks || 0) + ' ' + t('pl.tracks','tracks')}</div>
                 </div>

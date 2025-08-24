@@ -6,6 +6,8 @@ import { usePlaylists } from '../core/playlists';
 import { useDB } from '../core/db';
 import { usePlayback } from '../core/playback';
 import TrackList from './TrackList';
+import { usePrompt } from '../core/PromptContext';
+import { useAlerts } from '../core/alerts';
 
 function fmt(ms?: number){ // track-level mm:ss
   if(ms === undefined) return '--:--';
@@ -30,6 +32,8 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
   const { playlists, getPlaylistTracks, getPlaylistTrackIds, updatePlaylist, deletePlaylist, removeTrack, refresh, createPlaylistWithTracks } = usePlaylists();
   const { db } = useDB();
   const spotifyClient = useSpotifyClient(); // Cached client with DB caching
+  const prompt = usePrompt();
+  const { push: pushAlert } = useAlerts();
 
   // Determine if current playlist is a local (favorites or user-created) playlist so we can adjust UI (e.g., hide add button)
   const isLocalPlaylist = useMemo(()=>{
@@ -129,14 +133,57 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
           }
           if(cancelled) return; setPlaylist(shim); setTracks(out); setLoading(false); return;
         }
-        // Spotify remote playlist
+        // Spotify remote playlist - try to load metadata first so header (title + cover) can render
         const w:any = window;
-        if(w.electron?.spotify?.getPlaylist){
-          const pll = await w.electron.spotify.getPlaylist(playlistId!);
-          if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
-        } else {
-          const pll = await spotifyClient.getPlaylist(playlistId!);
-          if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
+        try {
+          // Electron helpers (prefer metadata + tracks split if available)
+          if (w.electron?.spotify?.getPlaylistMetadata) {
+            const meta = await w.electron.spotify.getPlaylistMetadata(playlistId!);
+            if (cancelled) return;
+            setPlaylist(meta);
+            // Now fetch tracks (try electron helper or fallback to full getPlaylist)
+            let tr: any[] = [];
+            if (w.electron?.spotify?.getPlaylistTracks) {
+              tr = await w.electron.spotify.getPlaylistTracks(playlistId!);
+            } else if (w.electron?.spotify?.getPlaylist) {
+              const pll = await w.electron.spotify.getPlaylist(playlistId!);
+              tr = pll.tracks || [];
+            }
+            if (cancelled) return; setTracks(tr);
+          } else if ((spotifyClient as any).getPlaylistMetadata) {
+            // spotifyClient helpers (metadata then tracks)
+            const meta = await (spotifyClient as any).getPlaylistMetadata(playlistId!);
+            if (cancelled) return;
+            setPlaylist(meta);
+            let tr: any[] = [];
+            if ((spotifyClient as any).getPlaylistTracks) {
+              tr = await (spotifyClient as any).getPlaylistTracks(playlistId!);
+            } else {
+              const pll = await spotifyClient.getPlaylist(playlistId!);
+              tr = pll.tracks || [];
+            }
+            if (cancelled) return; setTracks(tr);
+          } else {
+            // Fallback to existing combined call
+            if(w.electron?.spotify?.getPlaylist){
+              const pll = await w.electron.spotify.getPlaylist(playlistId!);
+              if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
+            } else {
+              const pll = await spotifyClient.getPlaylist(playlistId!);
+              if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
+            }
+          }
+        } catch (e) {
+          // If any of the split calls fail, fallback to the combined fetch
+          try {
+            if(w.electron?.spotify?.getPlaylist){
+              const pll = await w.electron.spotify.getPlaylist(playlistId!);
+              if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
+            } else {
+              const pll = await spotifyClient.getPlaylist(playlistId!);
+              if(cancelled) return; setPlaylist(pll.playlist); setTracks(pll.tracks);
+            }
+          } catch (_) { /* ignore */ }
         }
       } catch { /* ignore */ }
       finally { if(!cancelled) setLoading(false); }
@@ -206,26 +253,22 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
                   className="np-icon"
                   aria-label={t('player.addPlaylist')}
                   disabled={!playlist || !tracks?.length}
-                  onClick={async ()=>{
+                    onClick={async ()=>{
                     if(isLocalPlaylist || !playlist) return;
                     const defaultName = playlist.name || t('pl.new.item','New Playlist');
-                    const name = prompt(t('pl.clonePrompt','Save playlist as'), defaultName)?.trim();
+                    const name = (await prompt.prompt(t('pl.clonePrompt','Save playlist as'), defaultName))?.trim();
                     if(!name) return;
-                    
                     // Pass the full track objects instead of just IDs
                     const trackObjects = tracks || [];
-                    
                     try {
                       const newId = await createPlaylistWithTracks(name, trackObjects);
-                      
-                      // Navigate to the newly created playlist after a short delay to ensure refresh completed
                       if(newId && onSelectPlaylist) {
-                        setTimeout(() => {
-                          onSelectPlaylist(`local:${newId}`);
-                        }, 50); // Reduced delay for better responsiveness
+                        setTimeout(() => { onSelectPlaylist(`local:${newId}`); }, 50);
                       }
+                      pushAlert(t('pl.created','Playlist created'), 'info');
                     } catch(error) {
                       console.error('Error during playlist cloning:', error);
+                      pushAlert(t('pl.createFailed','Failed to create playlist'), 'error');
                     }
                   }}
                 >
@@ -237,13 +280,14 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
                   <button
                     className="np-icon"
                     aria-label={t('pl.editPlaylist','Edit playlist')}
-                    onClick={()=>{
+                    onClick={async ()=>{
                       if(!localPlaylistRecord) return;
-                      const newName = prompt(t('pl.renamePlaylist','Rename playlist'), localPlaylistRecord.name || '');
+                      const newName = await prompt.prompt(t('pl.renamePlaylist','Rename playlist'), localPlaylistRecord.name || '');
                       if(!newName) return;
                       const trimmed = newName.trim();
                       if(trimmed && trimmed !== localPlaylistRecord.name){
-                        updatePlaylist(localPlaylistRecord.id, { name: trimmed });
+                        await updatePlaylist(localPlaylistRecord.id, { name: trimmed });
+                        pushAlert(t('pl.updated','Playlist renamed'), 'info');
                       }
                     }}
                   >
@@ -252,13 +296,16 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
                   <button
                     className="np-icon"
                     aria-label={t('pl.deletePlaylist','Delete playlist')}
-                    onClick={()=>{
+                    onClick={async ()=>{
                       if(!localPlaylistRecord) return;
-                      if(confirm(t('pl.deleteConfirm','Delete playlist?'))){
-                        deletePlaylist(localPlaylistRecord.id);
-                        // Clear current view since playlist is gone
-                        setPlaylist(undefined); setTracks(undefined); refresh();
-                      }
+                      const ok = await prompt.confirm(t('pl.deleteConfirm','Delete playlist?'));
+                      if(!ok) return;
+                      try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
+                      try {
+                        await deletePlaylist(localPlaylistRecord.id);
+                        pushAlert(t('pl.deleted','Playlist deleted'), 'info');
+                      } catch(e) { console.warn('deletePlaylist failed', e); pushAlert(t('pl.deleteFailed','Failed to delete playlist'), 'error'); }
+                      setPlaylist(undefined); setTracks(undefined); refresh();
                     }}
                   >
                     <span className="material-symbols-rounded filled" aria-hidden="true">delete</span>

@@ -13,6 +13,22 @@ try {
   console.warn('[env] Could not load .env file:', e?.message || e);
 }
 
+// Ensure only a single instance runs. If a second instance is launched,
+// focus the existing window and exit the new instance early.
+const gotSingleInstanceLock = app.requestSingleInstanceLock && app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  // Quit early if another instance is running.
+  setImmediate(() => app.quit && app.quit());
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    try {
+      if (mainWindow.isMinimized && mainWindow.isMinimized()) mainWindow.restore();
+      if (mainWindow.focus) mainWindow.focus();
+    } catch (e) { /* ignore focus errors */ }
+  });
+}
+
 let mainWindow;
 let serverProcess;
 
@@ -20,24 +36,17 @@ function createWindow() {
   // Resolve window icon depending on environment (dev vs packaged)
   const resolveIcon = () => {
     const iconFile = 'icon.ico';
+    const candidates = [];
     if (app.isPackaged) {
-      // Prefer icon inside asar/dist (vite copies public assets to dist)
-      const distAsar = path.join(process.resourcesPath, 'app.asar', 'dist', iconFile);
-      if (fs.existsSync(distAsar)) return distAsar;
-      const distUnpacked = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', iconFile);
-      if (fs.existsSync(distUnpacked)) return distUnpacked;
-      // Fallback: root of resources
-      const rootIcon = path.join(process.resourcesPath, iconFile);
-      if (fs.existsSync(rootIcon)) return rootIcon;
-      return undefined; // let Electron fallback to default icon
+      const res = process.resourcesPath || '';
+      candidates.push(path.join(res, 'app.asar', 'dist', iconFile));
+      candidates.push(path.join(res, 'app.asar.unpacked', 'dist', iconFile));
+      candidates.push(path.join(res, iconFile));
     } else {
-      // In dev: use public/icon.ico if present, else attempt dist copy
-      const publicIcon = path.join(__dirname, '..', 'public', iconFile);
-      if (fs.existsSync(publicIcon)) return publicIcon;
-      const distIcon = path.join(__dirname, '..', 'dist', iconFile);
-      if (fs.existsSync(distIcon)) return distIcon;
-      return undefined;
+      candidates.push(path.join(__dirname, '..', 'public', iconFile));
+      candidates.push(path.join(__dirname, '..', 'dist', iconFile));
     }
+    return candidates.find(p => p && fs.existsSync(p));
   };
 
   mainWindow = new BrowserWindow({
@@ -45,47 +54,49 @@ function createWindow() {
     height: 800,
     minWidth: 755,
     minHeight: 136,
-  frame: false, // we'll draw our own titlebar
-  transparent: true,
+    frame: false, // we'll draw our own titlebar
+    transparent: true,
     resizable: true,
-  // use fully transparent background so CSS rounded corners render as transparent
-  backgroundColor: '#00000000',
+    // use fully transparent background so CSS rounded corners render as transparent
+    backgroundColor: '#00000000',
     icon: resolveIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-  // Enable Chromium experimental features (flag: --enable-experimental-web-platform-features)
-  experimentalFeatures: true,
     },
   });
 
   // Resolve index.html differently when packaged vs dev
-  let indexHtml;
-  if (app.isPackaged) {
-    // packaged resources live in process.resourcesPath
-    indexHtml = path.join(process.resourcesPath, 'app.asar', 'dist', 'index.html');
-    if (!fs.existsSync(indexHtml)) {
-      // fallback to unpacked area if present
-      indexHtml = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'index.html');
+  const resolveIndexHtml = () => {
+    const candidates = [];
+    if (app.isPackaged) {
+      const res = process.resourcesPath || '';
+      candidates.push(path.join(res, 'app.asar', 'dist', 'index.html'));
+      candidates.push(path.join(res, 'app.asar.unpacked', 'dist', 'index.html'));
+    } else {
+      candidates.push(path.join(__dirname, '..', 'dist', 'index.html'));
     }
-  } else {
-    indexHtml = path.join(__dirname, '..', 'dist', 'index.html');
-  }
+    return candidates.find(p => p && fs.existsSync(p));
+  };
 
   const { pathToFileURL } = require('url');
-  mainWindow.loadURL(pathToFileURL(indexHtml).href);
+  mainWindow.loadURL(pathToFileURL(resolveIndexHtml()).href);
 
-  mainWindow.on('closed', () => {
+  // Cleanup when window is closed
+  const cleanupWindowResources = () => {
+    try { if (_dragPoll) { clearInterval(_dragPoll); _dragPoll = null; } } catch (_) {}
+    try { if (_maxNotifyTimer) { clearTimeout(_maxNotifyTimer); _maxNotifyTimer = null; } } catch (_) {}
     mainWindow = null;
-  });
+  };
+  mainWindow.on('closed', cleanupWindowResources);
 
   // forward maximize/unmaximize events to renderer so UI can update
   mainWindow.on('maximize', () => {
-    try { mainWindow.webContents.send('window:maximized', true) } catch (e) {}
+    try { mainWindow.webContents.send('window:maximized', true) } catch (e) { }
   });
   mainWindow.on('unmaximize', () => {
-    try { mainWindow.webContents.send('window:maximized', false) } catch (e) {}
+    try { mainWindow.webContents.send('window:maximized', false) } catch (e) { }
   });
 
   // Also monitor resize to detect user dragging to restore from snapped/maximized states.
@@ -94,7 +105,7 @@ function createWindow() {
     try {
       const isMax = mainWindow.isMaximized();
       mainWindow.webContents.send('window:maximized', !!isMax);
-    } catch (e) {}
+    } catch (e) { }
   };
   const scheduleNotify = () => {
     if (_maxNotifyTimer) clearTimeout(_maxNotifyTimer);
@@ -114,38 +125,31 @@ function createWindow() {
     if (_dragPoll) return;
     _dragPoll = setInterval(() => {
       const now = Date.now();
-        // stop polling after a short idle period -> consider this the "drop" / mouse-up
-        if (_lastMoveAt && (now - _lastMoveAt) > 300) {
-          clearInterval(_dragPoll);
-          _dragPoll = null;
-          _lastMoveAt = 0;
-          try {
-            if (_pendingEdgeMax && mainWindow && typeof mainWindow.maximize === 'function' && !mainWindow.isMaximized()) {
-              _pendingEdgeMax = false;
-              mainWindow.maximize();
-            } else {
-              _pendingEdgeMax = false;
-              notifyMaxState();
-            }
-          } catch (e) {}
-          return;
-        }
+      // stop polling after a short idle period -> consider this the "drop" / mouse-up
+      if (_lastMoveAt && (now - _lastMoveAt) > 300) {
+        clearInterval(_dragPoll);
+        _dragPoll = null;
+        _lastMoveAt = 0;
+        try {
+          if (_pendingEdgeMax && mainWindow && typeof mainWindow.maximize === 'function' && !mainWindow.isMaximized()) {
+            _pendingEdgeMax = false;
+            mainWindow.maximize();
+          } else {
+            _pendingEdgeMax = false;
+            notifyMaxState();
+          }
+        } catch (e) { }
+        return;
+      }
       try {
         const isMax = mainWindow.isMaximized();
         mainWindow.webContents.send('window:maximized', !!isMax);
-        // detect if the user has dragged to the top edge; set a pending flag
-        // and only maximize when the drag finishes (on idle). If the window
-        // moves away from the top edge, clear the pending flag.
         const bounds = mainWindow.getBounds();
         if (!isMax && bounds && typeof bounds.y === 'number') {
-          if (bounds.y <= 0) {
-            _pendingEdgeMax = true;
-          } else {
-            _pendingEdgeMax = false;
-          }
+          _pendingEdgeMax = bounds.y <= 0;
         }
-      } catch (e) {}
-    }, 50); // poll at 50ms for responsive UI updates
+      } catch (e) { }
+    }, 50);
   };
 
   mainWindow.on('move', () => {
@@ -192,9 +196,9 @@ app.whenReady().then(() => {
   createWindow();
 
   app.on('activate', function () {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
 
 ipcMain.handle('window:isMaximized', () => {
   return mainWindow ? mainWindow.isMaximized() : false;
@@ -269,14 +273,14 @@ function mapSong(s) {
   };
 }
 
-function mapArtist(a){
+function mapArtist(a) {
   let plain = a.description?.plain || (a.description?.dom ? flattenGeniusDescriptionDom(a.description.dom) : undefined);
   // Build minimal HTML without anchor tags
   let html = undefined;
   try {
     if (a.description?.dom) html = buildDescriptionHtml(a.description.dom);
-    else if (plain) html = plain.split(/\n{2,}/).map(p=>`<p>${escapeHtml(p.trim())}</p>`).join('');
-  } catch(_) { /* ignore */ }
+    else if (plain) html = plain.split(/\n{2,}/).map(p => `<p>${escapeHtml(p.trim())}</p>`).join('');
+  } catch (_) { /* ignore */ }
   return {
     id: a.id,
     name: a.name,
@@ -286,39 +290,39 @@ function mapArtist(a){
   };
 }
 
-function buildDescriptionHtml(root){
-  if(root == null) return '';
-  if(typeof root === 'string') return escapeHtml(root);
-  const tag = (root.tag||'').toLowerCase();
-  const voidTags = new Set(['br','hr']);
-  const blockLike = ['p','div','section','h1','h2','h3','h4','h5','h6','ul','ol','li'];
+function buildDescriptionHtml(root) {
+  if (root == null) return '';
+  if (typeof root === 'string') return escapeHtml(root);
+  const tag = (root.tag || '').toLowerCase();
+  const voidTags = new Set(['br', 'hr']);
+  const blockLike = ['p', 'div', 'section', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li'];
   let childrenHtml = '';
-  if(Array.isArray(root.children)) childrenHtml = root.children.map(c=> buildDescriptionHtml(c)).join('');
-  if(tag === 'a') return childrenHtml; // strip link wrapper
-  if(!tag) return childrenHtml;
-  if(voidTags.has(tag)) return `<${tag}>`;
-  const allowed = new Set([...blockLike,'strong','em','i','b','u','span','br','ul','ol','li']);
+  if (Array.isArray(root.children)) childrenHtml = root.children.map(c => buildDescriptionHtml(c)).join('');
+  if (tag === 'a') return childrenHtml; // strip link wrapper
+  if (!tag) return childrenHtml;
+  if (voidTags.has(tag)) return `<${tag}>`;
+  const allowed = new Set([...blockLike, 'strong', 'em', 'i', 'b', 'u', 'span', 'br', 'ul', 'ol', 'li']);
   const safeTag = allowed.has(tag) ? tag : 'span';
   return `<${safeTag}>${childrenHtml}</${safeTag}>`;
 }
-function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
 // Flatten Genius description DOM tree to plain text (fallback when plain missing)
-function flattenGeniusDescriptionDom(node, acc = []){
+function flattenGeniusDescriptionDom(node, acc = []) {
   if (!node) return acc.join('').trim();
   if (typeof node === 'string') { acc.push(node); return acc.join(''); }
-  const tag = (node.tag||'').toLowerCase();
-  const isBlock = ['p','div','section','br','h1','h2','h3','h4','h5','h6','ul','ol','li'].includes(tag);
+  const tag = (node.tag || '').toLowerCase();
+  const isBlock = ['p', 'div', 'section', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li'].includes(tag);
   if (tag === 'br') acc.push('\n');
   if (Array.isArray(node.children)) {
     for (const c of node.children) flattenGeniusDescriptionDom(c, acc);
   }
   if (isBlock) acc.push('\n\n');
   // Collapse stray tabs / returns
-  return acc.join('').replace(/[\t\r]+/g,'').replace(/\n{3,}/g,'\n\n').trim();
+  return acc.join('').replace(/[\t\r]+/g, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function mapAlbum(a){
+function mapAlbum(a) {
   return {
     id: a.id,
     name: a.name,
@@ -336,7 +340,7 @@ const LYRICS_SELECTORS = [
   /<div[^>]+data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/gi,
   /<div class="lyrics"[^>]*>([\s\S]*?)<\/div>/i
 ];
-function stripTags(html){
+function stripTags(html) {
   return html
     .replace(/<br\s*\/?>(?=\n?)/gi, '\n')
     .replace(/<p[^>]*>/gi, '')
@@ -350,12 +354,12 @@ function stripTags(html){
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
-function parseLyrics(html){
-  for (const re of LYRICS_SELECTORS){
+function parseLyrics(html) {
+  for (const re of LYRICS_SELECTORS) {
     const parts = [];
     let m; re.lastIndex = 0;
-    while ((m = re.exec(html)) !== null){ parts.push(m[1]); }
-    if (parts.length){
+    while ((m = re.exec(html)) !== null) { parts.push(m[1]); }
+    if (parts.length) {
       const text = stripTags(parts.join('\n'));
       if (text) return text;
     }
@@ -365,27 +369,27 @@ function parseLyrics(html){
 
 ipcMain.handle('genius:getSong', async (_ev, id) => {
   const json = await geniusGet(`/songs/${id}`);
-  const s = json.response?.song; if(!s) throw new Error('Not found');
+  const s = json.response?.song; if (!s) throw new Error('Not found');
   return mapSong(s);
 });
 
 ipcMain.handle('genius:getArtist', async (_ev, id) => {
   const json = await geniusGet(`/artists/${id}`);
-  const a = json.response?.artist; if(!a) throw new Error('Not found');
+  const a = json.response?.artist; if (!a) throw new Error('Not found');
   return mapArtist(a);
 });
 
 ipcMain.handle('genius:getAlbum', async (_ev, id) => {
   const json = await geniusGet(`/albums/${id}`);
-  const a = json.response?.album; if(!a) throw new Error('Not found');
+  const a = json.response?.album; if (!a) throw new Error('Not found');
   return mapAlbum(a);
 });
 
 ipcMain.handle('genius:getLyrics', async (_ev, id) => {
   const json = await geniusGet(`/songs/${id}`);
-  const s = json.response?.song; if(!s) throw new Error('Not found');
+  const s = json.response?.song; if (!s) throw new Error('Not found');
   const pageRes = await fetch(s.url, { headers: { 'User-Agent': 'FreelyPlayer/0.1' } });
-  if(!pageRes.ok) throw new Error(`Lyrics page HTTP ${pageRes.status}`);
+  if (!pageRes.ok) throw new Error(`Lyrics page HTTP ${pageRes.status}`);
   const html = await pageRes.text();
   const lyrics = parseLyrics(html);
   return { songId: s.id, url: s.url, lyrics, source: lyrics ? 'parsed-html' : 'unavailable', fetchedAt: Date.now() };
@@ -413,67 +417,67 @@ const SPOTIFY_TOKEN_ENDPOINT = (() => {
         candidates.push(path.join(process.resourcesPath, 'config', 'spotify-token-endpoint.txt'));
         candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'config', 'spotify-token-endpoint.txt'));
       }
-    } catch(_) {}
+    } catch (_) { }
     for (const file of candidates) {
       try {
         if (fs.existsSync(file)) {
           const v = fs.readFileSync(file, 'utf8').trim();
-          if (v) { SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'file:'+file; return v; }
+          if (v) { SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'file:' + file; return v; }
         }
-      } catch(_) { /* ignore individual file errors */ }
+      } catch (_) { /* ignore individual file errors */ }
     }
-  } catch(_) {}
+  } catch (_) { }
   SPOTIFY_TOKEN_ENDPOINT_SOURCE = 'missing';
   return null;
 })();
 let spotifyToken = null; // { access_token, expires_at }
 let spotifyTokenDebug = { lastFetchAt: null, lastError: null, lastBodySnippet: null, lastContentType: null, lastStatus: null, lastLength: null, lastClassified: null };
 // Lightweight classifier to label common HTML error/challenge pages so UI can surface clearer guidance.
-function classifyBodySnippet(snippet){
-  if(!snippet) return null;
+function classifyBodySnippet(snippet) {
+  if (!snippet) return null;
   const lower = snippet.toLowerCase();
-  if(lower.includes('<html') && lower.includes('cloudflare')) return 'cloudflare_challenge_or_block';
-  if(lower.includes('captcha')) return 'captcha_challenge';
-  if(lower.includes('404') && lower.includes('<html')) return 'not_found_html';
-  if(lower.includes('error') && lower.includes('<html')) return 'html_error_page';
-  if(lower.includes('aes.js')) return 'host_injected_script';
+  if (lower.includes('<html') && lower.includes('cloudflare')) return 'cloudflare_challenge_or_block';
+  if (lower.includes('captcha')) return 'captcha_challenge';
+  if (lower.includes('404') && lower.includes('<html')) return 'not_found_html';
+  if (lower.includes('error') && lower.includes('<html')) return 'html_error_page';
+  if (lower.includes('aes.js')) return 'host_injected_script';
   return null;
 }
 
-async function getSpotifyToken(){
+async function getSpotifyToken() {
   if (!SPOTIFY_TOKEN_ENDPOINT) throw new Error('Spotify disabled (no SPOTIFY_TOKEN_ENDPOINT)');
   if (spotifyToken && spotifyToken.expires_at > Date.now() + 60_000) return spotifyToken.access_token;
-  const res = await fetch(SPOTIFY_TOKEN_ENDPOINT, { method:'GET', headers: { 'Accept':'application/json,text/plain,*/*' } });
+  const res = await fetch(SPOTIFY_TOKEN_ENDPOINT, { method: 'GET', headers: { 'Accept': 'application/json,text/plain,*/*' } });
   spotifyTokenDebug.lastFetchAt = Date.now();
   spotifyTokenDebug.lastStatus = res.status;
-  spotifyTokenDebug.lastContentType = res.headers.get('content-type')||null;
-  if(!res.ok){
+  spotifyTokenDebug.lastContentType = res.headers.get('content-type') || null;
+  if (!res.ok) {
     let bodyTxt = '';
-    try { bodyTxt = await res.text(); } catch(_){}
+    try { bodyTxt = await res.text(); } catch (_) { }
     spotifyTokenDebug.lastError = 'HTTP ' + res.status;
-    spotifyTokenDebug.lastBodySnippet = bodyTxt.slice(0,300);
+    spotifyTokenDebug.lastBodySnippet = bodyTxt.slice(0, 300);
     spotifyTokenDebug.lastLength = bodyTxt.length || null;
     spotifyTokenDebug.lastClassified = classifyBodySnippet(spotifyTokenDebug.lastBodySnippet);
-    throw new Error('Token endpoint HTTP ' + res.status + (bodyTxt ? ' body: ' + bodyTxt.slice(0,80) : ''));
+    throw new Error('Token endpoint HTTP ' + res.status + (bodyTxt ? ' body: ' + bodyTxt.slice(0, 80) : ''));
   }
   let json;
-  const ct = res.headers.get('content-type')||'';
+  const ct = res.headers.get('content-type') || '';
   let rawTxt = '';
   try {
-    if(!/json/i.test(ct)) { rawTxt = await res.text(); throw new Error('Unexpected content-type '+ct+' body starts '+rawTxt.slice(0,60)); }
+    if (!/json/i.test(ct)) { rawTxt = await res.text(); throw new Error('Unexpected content-type ' + ct + ' body starts ' + rawTxt.slice(0, 60)); }
     json = await res.json();
-  } catch(parseErr){
-    if(!rawTxt){ try { rawTxt = await res.text(); } catch(_){} }
-    spotifyTokenDebug.lastError = 'parse_error:' + (parseErr?.message||parseErr);
-    spotifyTokenDebug.lastBodySnippet = rawTxt.slice(0,300);
+  } catch (parseErr) {
+    if (!rawTxt) { try { rawTxt = await res.text(); } catch (_) { } }
+    spotifyTokenDebug.lastError = 'parse_error:' + (parseErr?.message || parseErr);
+    spotifyTokenDebug.lastBodySnippet = rawTxt.slice(0, 300);
     spotifyTokenDebug.lastLength = rawTxt.length || null;
     spotifyTokenDebug.lastClassified = classifyBodySnippet(spotifyTokenDebug.lastBodySnippet);
     console.error('[spotify-token] Parse error. Snippet:', spotifyTokenDebug.lastBodySnippet);
-    throw new Error('Token parse failed: ' + (parseErr?.message||parseErr));
+    throw new Error('Token parse failed: ' + (parseErr?.message || parseErr));
   }
-  if(!json.access_token){
+  if (!json.access_token) {
     spotifyTokenDebug.lastError = 'missing_access_token';
-    spotifyTokenDebug.lastBodySnippet = JSON.stringify(json).slice(0,300);
+    spotifyTokenDebug.lastBodySnippet = JSON.stringify(json).slice(0, 300);
     spotifyTokenDebug.lastLength = spotifyTokenDebug.lastBodySnippet.length;
     spotifyTokenDebug.lastClassified = classifyBodySnippet(spotifyTokenDebug.lastBodySnippet);
     throw new Error('Token endpoint missing access_token');
@@ -492,7 +496,7 @@ ipcMain.handle('spotify:tokenStatus', () => {
   return {
     configured: !!SPOTIFY_TOKEN_ENDPOINT,
     endpoint: SPOTIFY_TOKEN_ENDPOINT,
-  source: SPOTIFY_TOKEN_ENDPOINT_SOURCE,
+    source: SPOTIFY_TOKEN_ENDPOINT_SOURCE,
     cached: !!spotifyToken,
     expiresAt: spotifyToken?.expires_at || null,
     now: Date.now(),
@@ -506,44 +510,97 @@ ipcMain.handle('spotify:tokenStatus', () => {
   };
 });
 
-async function spotifyGet(path, params){
-  if(!SPOTIFY_TOKEN_ENDPOINT) throw new Error('Spotify disabled');
+// ---------------- Database persistence IPC ----------------
+// Allow the renderer (via preload) to read/write the sqlite DB to a
+// writable location on the host (app.getPath('userData')). This keeps
+// packaged app data outside the asar and available across restarts.
+ipcMain.handle('db:read', async () => {
+  try {
+    const userPath = app.getPath && app.getPath('userData') ? app.getPath('userData') : process.cwd();
+    const dbFile = path.join(userPath, 'freely.db');
+    if (fs.existsSync(dbFile)) {
+      const buf = fs.readFileSync(dbFile);
+      return buf;
+    }
+    return null;
+  } catch (e) {
+    console.warn('[db] read error', e && e.message);
+    return null;
+  }
+});
+
+ipcMain.handle('db:write', async (_ev, data) => {
+  try {
+    const userPath = app.getPath && app.getPath('userData') ? app.getPath('userData') : process.cwd();
+    const dbFile = path.join(userPath, 'freely.db');
+    // Normalize various shapes that may arrive over IPC
+    let buffer = null;
+    if (Buffer.isBuffer(data)) buffer = data;
+    else if (data instanceof Uint8Array) buffer = Buffer.from(data);
+    else if (data && data.buffer instanceof ArrayBuffer) buffer = Buffer.from(new Uint8Array(data.buffer));
+    else if (data && Array.isArray(data.data)) buffer = Buffer.from(data.data);
+    else if (data && Array.isArray(data)) buffer = Buffer.from(data);
+    else if (typeof data === 'string') buffer = Buffer.from(data, 'utf8');
+    else buffer = Buffer.from([]);
+
+    // Atomic write: write to temp then rename
+    const tmp = dbFile + '.tmp'
+    fs.writeFileSync(tmp, buffer)
+    try { fs.renameSync(tmp, dbFile) } catch (e) { fs.writeFileSync(dbFile, buffer) }
+    return { path: dbFile };
+  } catch (e) {
+    console.warn('[db] write error', e && e.message);
+    throw e;
+  }
+});
+
+ipcMain.handle('db:path', async () => {
+  try {
+    const userPath = app.getPath && app.getPath('userData') ? app.getPath('userData') : process.cwd();
+    return path.join(userPath, 'freely.db');
+  } catch (e) {
+    return path.join(process.cwd(), 'freely.db');
+  }
+});
+
+async function spotifyGet(path, params) {
+  if (!SPOTIFY_TOKEN_ENDPOINT) throw new Error('Spotify disabled');
   const token = await getSpotifyToken();
-  const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v])=>v!==undefined)) : '';
+  const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined)) : '';
   const url = 'https://api.spotify.com/v1' + path + search;
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
   if (!res.ok) throw new Error('Spotify HTTP ' + res.status);
   return res.json();
 }
 
-ipcMain.handle('spotify:search', async (_ev, query, typeOrTypes='track') => { // typeOrTypes: string | string[]
+ipcMain.handle('spotify:search', async (_ev, query, typeOrTypes = 'track') => { // typeOrTypes: string | string[]
   try {
     if (!query || !query.trim()) return { query, types: [], results: {} };
-    const types = Array.isArray(typeOrTypes) ? typeOrTypes : String(typeOrTypes).split(',').map(s=>s.trim()).filter(Boolean);
+    const types = Array.isArray(typeOrTypes) ? typeOrTypes : String(typeOrTypes).split(',').map(s => s.trim()).filter(Boolean);
     const typeParam = types.join(',');
     const json = await spotifyGet('/search', { q: query.trim(), type: typeParam, limit: '20', market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' });
     const results = {};
-    if (types.includes('track')) results.track = (json.tracks?.items||[]).map(mapSpotifyTrack);
-    if (types.includes('album')) results.album = (json.albums?.items||[]).map(mapSpotifyAlbum);
-    if (types.includes('artist')) results.artist = (json.artists?.items||[]).map(mapSpotifyArtist);
+    if (types.includes('track')) results.track = (json.tracks?.items || []).map(mapSpotifyTrack);
+    if (types.includes('album')) results.album = (json.albums?.items || []).map(mapSpotifyAlbum);
+    if (types.includes('artist')) results.artist = (json.artists?.items || []).map(mapSpotifyArtist);
     return { query, types, results };
-  } catch (e){
+  } catch (e) {
     return { query, types: [], results: {}, error: e?.message || String(e) };
   }
 });
 ipcMain.handle('spotify:getTrack', async (_ev, id) => {
-  try { return mapSpotifyTrack(await spotifyGet('/tracks/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })); } catch(e){ return { error: e?.message||String(e) }; }
+  try { return mapSpotifyTrack(await spotifyGet('/tracks/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })); } catch (e) { return { error: e?.message || String(e) }; }
 });
 ipcMain.handle('spotify:getAlbum', async (_ev, id) => {
-  try { return mapSpotifyAlbum(await spotifyGet('/albums/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })); } catch(e){ return { error: e?.message||String(e) }; }
+  try { return mapSpotifyAlbum(await spotifyGet('/albums/' + id, { market: process.env.SPOTIFY_DEFAULT_MARKET || 'US' })); } catch (e) { return { error: e?.message || String(e) }; }
 });
 ipcMain.handle('spotify:getArtist', async (_ev, id) => {
-  try { return mapSpotifyArtist(await spotifyGet('/artists/' + id)); } catch(e){ return { error: e?.message||String(e) }; }
+  try { return mapSpotifyArtist(await spotifyGet('/artists/' + id)); } catch (e) { return { error: e?.message || String(e) }; }
 });
 // Retrieve album tracks with optional pagination (mirrors renderer SpotifyClient behavior)
-ipcMain.handle('spotify:getAlbumTracks', async (_ev, id, opts={}) => {
-  if(!id) throw new Error('album id required');
-  const limit = Math.min(Math.max(opts.limit ?? 50,1),50);
+ipcMain.handle('spotify:getAlbumTracks', async (_ev, id, opts = {}) => {
+  if (!id) throw new Error('album id required');
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50);
   const fetchAll = opts.fetchAll !== false; // default true
   const maxPages = opts.maxPages ?? 10;
   const market = process.env.SPOTIFY_DEFAULT_MARKET || 'US';
@@ -551,21 +608,21 @@ ipcMain.handle('spotify:getAlbumTracks', async (_ev, id, opts={}) => {
   do {
     const json = await spotifyGet(`/albums/${id}/tracks`, { market, limit: String(limit), offset: String(offset) });
     total = json.total ?? total;
-    const tracks = (json.items||[]).map(t => mapSpotifyTrack(t));
+    const tracks = (json.items || []).map(t => mapSpotifyTrack(t));
     items.push(...tracks);
     raws.push(json);
     offset += tracks.length;
     page++;
-    if(!fetchAll) break;
-  } while(offset < total && page < maxPages);
+    if (!fetchAll) break;
+  } while (offset < total && page < maxPages);
   return { albumId: id, total, items, raw: raws };
 });
 
 // Fetch artist albums (album,single groups by default, similar to renderer client)
-ipcMain.handle('spotify:getArtistAlbums', async (_ev, id, opts={}) => {
-  if(!id) throw new Error('artist id required');
+ipcMain.handle('spotify:getArtistAlbums', async (_ev, id, opts = {}) => {
+  if (!id) throw new Error('artist id required');
   const includeGroups = opts.includeGroups || 'album,single';
-  const limit = Math.min(Math.max(opts.limit ?? 50,1),50);
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50);
   const fetchAll = opts.fetchAll === true; // default first page only unless explicitly true
   const maxPages = opts.maxPages ?? 5;
   const market = process.env.SPOTIFY_DEFAULT_MARKET || 'US';
@@ -573,17 +630,17 @@ ipcMain.handle('spotify:getArtistAlbums', async (_ev, id, opts={}) => {
   do {
     const json = await spotifyGet(`/artists/${id}/albums`, { include_groups: includeGroups, market, limit: String(limit), offset: String(offset) });
     total = json.total ?? total;
-    const albums = (json.items||[]).map(a => mapSpotifyAlbum(a));
+    const albums = (json.items || []).map(a => mapSpotifyAlbum(a));
     items.push(...albums); raws.push(json);
     offset += albums.length; page++;
-    if(!fetchAll) break;
-  } while(offset < total && page < maxPages);
+    if (!fetchAll) break;
+  } while (offset < total && page < maxPages);
   return { artistId: id, total, items, raw: raws };
 });
 
 // Search playlists (simple wrapper; limited fields already mapped by track/album search mapper style if needed)
 ipcMain.handle('spotify:searchPlaylists', async (_ev, query) => {
-  if(!query || !query.trim()) return { query, items: [] };
+  if (!query || !query.trim()) return { query, items: [] };
   const market = process.env.SPOTIFY_DEFAULT_MARKET || 'US';
   const json = await spotifyGet('/search', { q: query.trim(), type: 'playlist', market, limit: '20' });
   const rawItems = Array.isArray(json.playlists?.items) ? json.playlists.items : [];
@@ -599,13 +656,13 @@ ipcMain.handle('spotify:searchPlaylists', async (_ev, query) => {
   return { query, items };
 });
 
-function mapSpotifyArtist(a){ return { id: a.id, name: a.name, url: a.external_urls?.spotify, genres: a.genres||[], images: a.images||[], followers: a.followers?.total, popularity: a.popularity }; }
-function mapSpotifyAlbum(a){ return { id: a.id, name: a.name, url: a.external_urls?.spotify, albumType: a.album_type, releaseDate: a.release_date, totalTracks: a.total_tracks, images: a.images||[], artists: (a.artists||[]).map(ar => ({ id: ar.id, name: ar.name, url: ar.external_urls?.spotify })) }; }
-function mapSpotifyTrack(t){ return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url||undefined, popularity: t.popularity, artists: (t.artists||[]).map(ar => ({ id: ar.id, name: ar.name, url: ar.external_urls?.spotify })), album: t.album ? { id: t.album.id, name: t.album.name, url: t.album.external_urls?.spotify, images: t.album.images||[] } : undefined }; }
+function mapSpotifyArtist(a) { return { id: a.id, name: a.name, url: a.external_urls?.spotify, genres: a.genres || [], images: a.images || [], followers: a.followers?.total, popularity: a.popularity }; }
+function mapSpotifyAlbum(a) { return { id: a.id, name: a.name, url: a.external_urls?.spotify, albumType: a.album_type, releaseDate: a.release_date, totalTracks: a.total_tracks, images: a.images || [], artists: (a.artists || []).map(ar => ({ id: ar.id, name: ar.name, url: ar.external_urls?.spotify })) }; }
+function mapSpotifyTrack(t) { return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url || undefined, popularity: t.popularity, artists: (t.artists || []).map(ar => ({ id: ar.id, name: ar.name, url: ar.external_urls?.spotify })), album: t.album ? { id: t.album.id, name: t.album.name, url: t.album.external_urls?.spotify, images: t.album.images || [] } : undefined }; }
 
 app.on('window-all-closed', () => {
   if (serverProcess) {
-    try { serverProcess.kill(); } catch (e) {}
+    try { serverProcess.kill(); } catch (e) { }
   }
   if (process.platform !== 'darwin') app.quit();
 });

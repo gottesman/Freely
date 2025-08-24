@@ -1,9 +1,29 @@
-import React, { useRef, useEffect } from 'react'
+import React, { useRef, useEffect, useState } from 'react'
 import { useI18n } from '../core/i18n'
+import { getWeeklyTops } from '../core/homeTops';
+
+type TopArtist = { rank?: number | null; id?: string | null; name?: string; image?: string | null };
+type TopAlbum = { rank?: number | null; id?: string | null; name?: string; image?: string | null; artists?: Array<{ name?:string }>; };
+type TopSong = { rank?: number | null; id?: string | null; name?: string; image?: string | null; artists?: Array<{ name?:string }>; };
 
 export default function HomeTab(){
   const { t } = useI18n();
-  const heroImage = '../icon-192.png'
+  const heroImage = '..'
+  const [tops, setTops] = useState<{ songs: TopSong[]; albums: TopAlbum[]; artists: TopArtist[] }>({ songs: [], albums: [], artists: [] });
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await getWeeklyTops({ limit: 20 });
+        if (!alive) return;
+        setTops({ songs: res.songs || [], albums: res.albums || [], artists: res.artists || [] });
+      } catch (e) {
+        console.warn('HomeTab getWeeklyTops failed', e);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
   // generic horizontal scroll helpers
   const makeScroller = (ref: React.RefObject<HTMLDivElement>) => ({
     left: () => {
@@ -107,7 +127,7 @@ export default function HomeTab(){
           <div ref={refContinue} className="media-row scroll-x">
           {Array.from({length:6}).map((_,i)=> (
             <MediaCard key={i} kind="album" progress>
-              <div className="media-cover" aria-hidden="true"><img src="icon-192.png" alt="" /></div>
+              <div className="media-cover" aria-hidden="true"><img src="" alt="" /></div>
               <h3 className="media-title">Album Title {i+1}</h3>
               <p className="media-meta">Artist Name · 2025</p>
               <div className="media-progress" aria-label="Listening progress"><span style={{['--p' as any]: `${(i+1)*10}%`}} /></div>
@@ -125,7 +145,7 @@ export default function HomeTab(){
           <div ref={refLatest} className="media-row scroll-x">
           {Array.from({length:10}).map((_,i)=> (
             <MediaCard key={i} kind="album">
-              <div className="media-cover" aria-hidden="true"><img src="icon-192.png" alt="" /></div>
+              <div className="media-cover" aria-hidden="true"><img src="" alt="" /></div>
               <h3 className="media-title">New Release {i+1}</h3>
               <p className="media-meta">Artist • {(2025)} </p>
             </MediaCard>
@@ -142,7 +162,7 @@ export default function HomeTab(){
           <div ref={refRecommended} className="media-row scroll-x">
           {Array.from({length:8}).map((_,i)=> (
             <MediaCard key={i} kind="playlist">
-              <div className="media-cover square" aria-hidden="true"><img src="icon-192.png" alt="" /></div>
+              <div className="media-cover square" aria-hidden="true"><img src="" alt="" /></div>
               <h3 className="media-title">Mix #{i+1}</h3>
               <p className="media-meta">Eclectic · Auto Mix</p>
             </MediaCard>
@@ -157,11 +177,11 @@ export default function HomeTab(){
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft','Scroll left')} className="np-icon scroll-btn left" onClick={scTrending.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refTrending} className="media-row scroll-x dense">
-          {Array.from({length:12}).map((_,i)=> (
-            <MediaCard key={i} kind="track" compact>
-              <div className="media-cover tiny" aria-hidden="true"><img src="icon-192.png" alt="" /></div>
-              <h3 className="media-title">Hot Track {i+1}</h3>
-              <p className="media-meta">Artist</p>
+          {tops.songs.map((s: TopSong, i) => (
+            <MediaCard key={String(s.id||i)} kind="track" compact>
+              <div className="media-cover tiny" aria-hidden="true"><img src={s.image || ''} alt="" /></div>
+              <h3 className="media-title">{s.name}</h3>
+              <p className="media-meta">{(s.artists && s.artists.map((a:{name?:string})=>a.name).join(', ')) || ''}</p>
             </MediaCard>
           ))}
           </div>
@@ -174,11 +194,11 @@ export default function HomeTab(){
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft','Scroll left')} className="np-icon scroll-btn left" onClick={scArtists.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refArtists} className="media-row scroll-x artists">
-          {Array.from({length:10}).map((_,i)=> (
-            <MediaCard key={i} kind="artist" circle>
-              <div className="media-cover circle" aria-hidden="true"><img src="icon-192.png" alt="" /></div>
-              <h3 className="media-title">Artist {i+1}</h3>
-              <p className="media-meta">2.{i}M listeners</p>
+          {tops.artists.map((a: TopArtist, i) => (
+            <MediaCard key={String(a.id||i)} kind="artist" circle>
+              <div className="media-cover circle" aria-hidden="true"><img src={a.image || ''} alt="" /></div>
+              <h3 className="media-title">{a.name}</h3>
+              <p className="media-meta">{a.rank ? `#${a.rank}` : ''}</p>
             </MediaCard>
           ))}
           </div>

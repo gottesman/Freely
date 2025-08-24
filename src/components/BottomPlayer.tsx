@@ -113,7 +113,7 @@ export default function BottomPlayer({ lyricsOpen, onToggleLyrics, onActivateSon
   const title = currentTrack?.name || (trackLoading ? t('np.loading') : t('np.noTrack'));
   const artist = currentTrack?.artists?.map(a=>a.name).join(', ') || '';
   const album = currentTrack?.album?.name || '';
-  const cover = currentTrack?.album?.images?.[0]?.url || '/icon-192.png';
+  const cover = currentTrack?.album?.images?.[0]?.url || '';
 
   return (
     <div className="bottom-player main-panels">

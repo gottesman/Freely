@@ -31,3 +31,10 @@ contextBridge.exposeInMainWorld('electron', {
   tokenStatus: () => ipcRenderer.invoke('spotify:tokenStatus')
   }
 });
+
+// Database persistence API exposed to renderer
+contextBridge.exposeInMainWorld('freelyDB', {
+  read: () => ipcRenderer.invoke('db:read'),
+  write: (data) => ipcRenderer.invoke('db:write', data),
+  path: () => ipcRenderer.invoke('db:path')
+});
