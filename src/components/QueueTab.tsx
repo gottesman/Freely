@@ -104,8 +104,7 @@ export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
         {queueIds.map((id, i) => {
           const trackData = trackCache[id];
           const isActive = i === currentIndex;
-          const imgs = trackData?.album?.images;
-          const imgUrl = imgs && imgs.length ? (imgs[imgs.length - 1]?.url || imgs[0].url) : undefined;
+          const imgUrl = (window as any).imageRes?.(trackData?.album?.images, 2);
           let transform = '';
           if(dragState){
             const { from, over, dragging, dy, itemHeight } = dragState;

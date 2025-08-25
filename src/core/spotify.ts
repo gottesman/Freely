@@ -27,6 +27,8 @@ const API_BASE = 'https://api.spotify.com/v1';
 let __sharedToken: { accessToken?: string; tokenExpiresAt?: number } = {};
 let __sharedTokenInflight: Promise<void> | undefined;
 let __sharedLocale: string | undefined; // module-level locale propagated from UI
+// Cache ReccoBeats recommendations for the app lifetime to avoid repeated calls
+const __reccoCache = new Map<string, Promise<{ tracks: SpotifyTrack[]; seeds: any[]; raw: any }>>();
 
 function env(name: string){
   // @ts-ignore
@@ -342,6 +344,175 @@ export class SpotifyClient {
       if(!fetchAll) break;
     } while(offset < total && page < maxPages);
     return { artistId: id, total, items, raw: raws };
+  }
+
+  /**
+   * Get recommendations based on seed artists / tracks / genres.
+   * See: https://developer.spotify.com/documentation/web-api/reference/#/operations/get-recommendations
+   * opts:
+   *  - limit (1-100, default 20)
+   *  - market (ISO country code)
+   *  - seed_artists (string or string[])
+   *  - seed_genres (string or string[])
+   *  - seed_tracks (string or string[])
+   */
+  async getRecommendations(opts: { limit?: number; market?: string; seed_artists?: string | string[]; seed_genres?: string | string[]; seed_tracks?: string | string[]; seeds?: string[] } = {}): Promise<{ tracks: SpotifyTrack[]; seeds: any[]; raw: any }> {
+    // Use ReccoBeats API as Spotify /recommendations is deprecated.
+    const RECCO_BASE = 'https://api.reccobeats.com/v1';
+    const size = Math.min(Math.max(opts.limit ?? 20, 1), 100);
+
+    // ReccoBeats expects: seeds = string[] (required, 1..5 Spotify track IDs)
+    // Support legacy opts.seed_tracks and best-effort seed_artists conversion for compatibility.
+    let seedsArray: string[] = [];
+    // Primary: explicit array in opts.seeds
+    if (Array.isArray(opts.seeds) && opts.seeds.length) {
+      seedsArray = opts.seeds.map(String);
+    } else if (opts.seed_tracks) {
+      seedsArray = Array.isArray(opts.seed_tracks) ? opts.seed_tracks.map(String) : String(opts.seed_tracks).split(',').map(s => s.trim()).filter(Boolean);
+    } else if (opts.seed_artists) {
+      const artistIds = Array.isArray(opts.seed_artists) ? opts.seed_artists.map(String) : String(opts.seed_artists).split(',').map(s => s.trim()).filter(Boolean);
+      // Try to get one top track per artist (best-effort)
+      for (const aid of artistIds.slice(0, 5)) {
+        try {
+          const top = await this.get(`/artists/${aid}/top-tracks`, { market: opts.market || this.cfg.market });
+          const first = Array.isArray(top.tracks) && top.tracks.length ? top.tracks[0] : null;
+          if (first && first.id) seedsArray.push(first.id);
+        } catch (e) { /* ignore per-artist failures */ }
+      }
+    }
+
+    // Helper: extract Spotify track id from a href if user passed a url
+    const extractSpotifyId = (href?: string) => {
+      if (!href || typeof href !== 'string') return undefined;
+      const m = href.match(/(?:open\.spotify\.com\/(?:track|tracks)\/|spotify:track:)([A-Za-z0-9]{22})/i);
+      return m ? m[1] : undefined;
+    };
+
+    // Normalize and validate seed IDs: prefer raw id, else try to extract from url-like values
+    seedsArray = seedsArray.map(s => String(s).trim()).filter(Boolean).map(s => {
+      // If looks like a full spotify url or uri, try extract
+      if (!/^[A-Za-z0-9]{22}$/.test(s)) {
+        const ext = extractSpotifyId(s);
+        return ext || s;
+      }
+      return s;
+    }).filter(Boolean);
+
+    // Keep only valid-looking Spotify IDs (22 alnum chars). This enforces the ReccoBeats spec.
+    seedsArray = seedsArray.filter(s => /^[A-Za-z0-9]{22}$/.test(s)).slice(0, 5);
+    if (seedsArray.length < 1 || seedsArray.length > 5) {
+      throw new Error('getRecommendations requires 1 to 5 valid Spotify track IDs in opts.seeds (or seed_tracks)');
+    }
+
+    const key = `${size}|${seedsArray.join(',')}`;
+    // Return cached Promise if present
+    if (__reccoCache.has(key)) return __reccoCache.get(key)!;
+
+    // Store the inflight Promise so concurrent callers get the same result
+    const inflight = (async () => {
+      const params = new URLSearchParams();
+      params.set('size', String(size));
+      for (const s of seedsArray) params.append('seeds', s);
+
+      const url = `${RECCO_BASE}/track/recommendation?${params.toString()}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        let bodyText = '';
+        try { bodyText = await res.text(); } catch(e) { bodyText = String(e); }
+        console.error('ReccoBeats error response:', res.status, bodyText);
+        throw new Error('ReccoBeats recommendation HTTP ' + res.status + (bodyText ? ' - ' + bodyText : ''));
+      }
+      const json = await res.json();
+
+    // Attempt to extract tracks from common shapes (including ReccoBeats `content`)
+    let rawList: any[] = [];
+    if (Array.isArray(json)) rawList = json;
+    else if (Array.isArray((json as any).content)) rawList = (json as any).content;
+    else if (Array.isArray((json as any).tracks)) rawList = (json as any).tracks;
+    else if (Array.isArray((json as any).data)) rawList = (json as any).data;
+    else if (Array.isArray((json as any).items)) rawList = (json as any).items;
+
+    // Helper to extract a Spotify id from an open.spotify.com href (track/artist/album)
+    const extractSpotifyId = (href?: string) => {
+      if (!href || typeof href !== 'string') return undefined;
+      const m = href.match(/open\.spotify\.com\/(?:track|tracks|artist|album)\/(?:embed\/)?([A-Za-z0-9]+)(?:[?\/]|$)/i);
+      return m ? m[1] : undefined;
+    };
+
+    // Map into SpotifyTrack-like objects when possible
+  const mapped: SpotifyTrack[] = rawList.map((it: any) => {
+      // Support different shapes: ReccoBeats uses trackTitle, href, durationMs, popularity, artists[{name, href}]
+      const name = it.name || it.title || it.trackTitle || '';
+      const url = it.external_urls?.spotify || it.href || it.url || undefined;
+      const idFromHref = extractSpotifyId(url);
+      const id = idFromHref;
+      const durationMs = it.duration_ms || it.duration || it.durationMs || undefined;
+      const popularity = it.popularity ?? it.score ?? undefined;
+
+      // Normalize artists
+      let artistsArr: any[] = [];
+      if (Array.isArray(it.artists)) artistsArr = it.artists;
+      else if (Array.isArray(it.artist)) artistsArr = it.artist;
+      else artistsArr = [];
+
+      const mappedArtists: SpotifyArtistRef[] = (artistsArr || []).map((a: any) => {
+        const aUrl = a.external_urls?.spotify || a.href || a.url || undefined;
+        const aId = extractSpotifyId(aUrl);
+        return { id: aId, name: a.name || a.artistName || '', url: aUrl } as SpotifyArtistRef;
+      });
+
+      const album = it.album || it.albumInfo || it.album_ref || undefined;
+      const albumRef = album ? { id: extractSpotifyId(album.external_urls?.spotify || album.href || album.url), name: album.name, url: album.external_urls?.spotify || album.href || album.url, images: album.images || [] } : undefined;
+
+      return {
+        id: id,
+        name: name,
+        url: url,
+        durationMs: durationMs,
+        explicit: !!it.explicit,
+        trackNumber: it.track_number || it.trackNumber || 0,
+        discNumber: it.disc_number || it.discNumber || 0,
+        previewUrl: it.preview_url || it.previewUrl || undefined,
+        popularity: popularity,
+        artists: mappedArtists,
+        album: albumRef
+      } as SpotifyTrack;
+    });
+
+    // Best-effort: enrich mapped tracks by fetching Spotify track details for items
+    // that lack album images. This helps provide cover art when ReccoBeats doesn't include it.
+    try {
+      const idsToFetch = mapped
+        .filter(t => (!!t.id) && (!(t.album && Array.isArray(t.album.images) && t.album.images.length)))
+        .map(t => t.id) as string[];
+      const uniqueIds = Array.from(new Set(idsToFetch)).slice(0, 10); // limit to 10 tracks
+      if (uniqueIds.length) {
+        const fetched = await Promise.all(uniqueIds.map(id => this.getTrack(id).catch(() => null)));
+        const byId = new Map<string, SpotifyTrack>();
+        for (const f of fetched) if (f && f.id) byId.set(f.id, f);
+        for (let i = 0; i < mapped.length; i++) {
+          const t = mapped[i];
+          if (!t || !t.id) continue;
+          const fres = byId.get(t.id);
+          if (!fres) continue;
+          // Merge useful fields, prefer existing data when present
+          if (!(t.album && Array.isArray(t.album.images) && t.album.images.length)) t.album = fres.album;
+          if (!(t.artists && t.artists.length)) t.artists = fres.artists;
+          if (!t.previewUrl && fres.previewUrl) t.previewUrl = fres.previewUrl;
+          if (!t.durationMs && fres.durationMs) t.durationMs = fres.durationMs;
+          if (t.popularity === undefined && fres.popularity !== undefined) t.popularity = fres.popularity;
+        }
+      }
+    } catch (e) {
+      // Enrichment is non-critical; ignore failures
+      console.log('Recommendation enrichment failed:', e);
+    }
+
+      return { tracks: mapped, seeds: seedsArray, raw: json };
+    })();
+
+    __reccoCache.set(key, inflight);
+    return inflight;
   }
 }
 

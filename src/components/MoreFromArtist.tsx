@@ -36,7 +36,7 @@ function listSection(title: string, kind: keyof ArtistBuckets, buckets: ArtistBu
                 if(kind === 'playlists') handlers.onSelectPlaylist?.(item.id); else handlers.onSelectAlbum?.(item.id);
               }}
             >
-              <div className="card-img-wrap"><img src={(item as any).images?.[0]?.url || ''} alt={item.name} loading="lazy" /></div>
+              <div className="card-img-wrap"><img src={(window as any).imageRes?.(item.images, 1) || ''} alt={item.name} loading="lazy" /></div>
               <div className="card-meta">
                 <div className="card-name">{item.name}</div>
               </div>
@@ -54,7 +54,7 @@ export const MoreFromArtist: React.FC<MoreFromArtistProps> = ({ buckets, current
     const map = new Map<string, { id:string; img?:string; name:string }>();
     ['singles','albums','playlists'].forEach((k:any)=>{
       const arr = (buckets as any)[k] as any[]|undefined;
-      if(Array.isArray(arr)) arr.forEach(it=>{ if(!map.has(it.id)){ map.set(it.id,{ id:it.id, img:it.images?.[0]?.url, name:it.name }); } });
+      if(Array.isArray(arr)) arr.forEach(it=>{ if(!map.has(it.id)){ map.set(it.id,{ id:it.id, img:(window as any).imageRes?.(it.images, 3), name:it.name }); } });
     });
     const list = Array.from(map.values());
     return (

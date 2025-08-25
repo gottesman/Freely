@@ -151,6 +151,39 @@ function Main() {
     } catch(e){}
   }
 
+  // Resolve a preferred image URL from an array of image URLs.
+  // - imagesUrls: array of image URL strings (may contain falsy values)
+  // - preferred: zero-based preferred index; if out of range we'll fallback to the first available
+  const imageRes = useCallback((imagesUrls: Array<string|undefined|null> = [], preferred: number = 0): string | undefined => {
+    if (!imagesUrls || !Array.isArray(imagesUrls) || imagesUrls.length === 0) return undefined;
+    const clean = imagesUrls.map(u => {
+      if (typeof u === 'string') return u.trim();
+      if (u && typeof u === 'object' && typeof (u as any).url === 'string') return ((u as any).url || '').trim();
+      return '';
+    }).filter(Boolean) as string[];
+    if (clean.length === 0) return undefined;
+    // If preferred is within bounds and non-empty, return it.
+    if (Number.isInteger(preferred) && preferred >= 0 && preferred < clean.length && clean[preferred]) return clean[preferred];
+    // Otherwise, prefer the previous available index (preferred-1, preferred-2, ... 0)
+    let idx = Math.min(Math.max(Math.floor(preferred), 0), clean.length - 1);
+    for (; idx >= 0; idx--) {
+      if (clean[idx]) return clean[idx];
+    }
+    // No previous found; return undefined
+    return undefined;
+  }, []);
+
+  // Expose globally on window for legacy consumers that expect a helper
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).imageRes = imageRes;
+    } catch (e) {}
+    return () => {
+      try { (window as any).imageRes = undefined; } catch(e) {}
+    };
+  }, [imageRes]);
+
   const onDragLeft = (e: React.MouseEvent) => {
     if (leftCollapsed) return;
     e.preventDefault();

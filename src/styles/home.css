@@ -13,3 +13,13 @@
 
 @media (max-width:900px){ .home-hero { min-height:220px; } .home-hero-title { font-size:34px; } }
 @media (max-width:620px){ .home-hero-body { padding:26px 26px 24px; } .home-hero-title { font-size:28px; } .home-hero { border-radius:22px; } .media-row { gap:14px; } }
+.home-page .media-play-overlay {
+    --media-size: 4cqmin;
+}
+.home-page .artists .media-card {
+    padding: 0;
+    background: #fff0;
+    border: none;
+    gap: 2px;
+    text-align: center;
+}

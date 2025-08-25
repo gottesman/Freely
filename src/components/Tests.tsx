@@ -5,6 +5,8 @@ import SpotifyClient from '../core/spotify';
 import { useAlerts, LogEntry as AlertLogEntry } from '../core/alerts';
 import ApiCacheTest from './ApiCacheTest';
 import AddToPlaylistDemo from './AddToPlaylistDemo';
+// Torrent search runs in Node (server/Electron). Avoid importing node-only modules in client bundle.
+// We'll use window.electron.torrent (preload) or a server endpoint if available.
 
 function useApis(){
   const win: any = typeof window !== 'undefined' ? window : {};
@@ -50,6 +52,47 @@ export default function APIsTests(){
   // Shared state
   const [loading, setLoading] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
+
+  // Torrent search test state
+  const [tQuery, setTQuery] = useState('');
+  const [tProvider, setTProvider] = useState('all');
+  const [tPage, setTPage] = useState(1);
+  const [tResults, setTResults] = useState<any[]>([]);
+  const [scrapers, setScrapers] = useState<Array<{id:string,name:string}>>([]);
+
+  useEffect(()=>{
+    const w:any = window;
+    if(w.electron?.torrent?.listScrapers){
+      (async()=> setScrapers(await w.electron.torrent.listScrapers()))();
+    } else {
+      // no electron torrent API available in renderer; leave scrapers empty or optionally fetch a server endpoint
+      setScrapers([]);
+    }
+  }, []);
+
+  async function runTorrentSearch(){
+    if(!tQuery.trim()) return;
+    setLoading(true);
+    try {
+      const w:any = window;
+      let results:any[] = [];
+      if(w.electron?.torrent?.search){
+        results = await w.electron.torrent.search({ query: tQuery, page: tPage });
+      } else {
+        // fallback: try server API (if implemented)
+        try {
+          const resp = await fetch(`http://localhost:9000/api/torrent-search?q=${encodeURIComponent(tQuery)}&page=${tPage}`);
+          if(resp.ok) results = await resp.json();
+        } catch(err) {
+          // ignore
+        }
+      }
+      const filtered = tProvider==='all' ? results : results.filter((r:any)=> r.source === tProvider);
+      setTResults(filtered);
+      append('torrent:search', { query: tQuery, results: filtered.slice(0,50) });
+    } catch(e:any){ append('torrent:search:error', { error: e && e.message ? e.message : String(e) }); }
+    finally { setLoading(false); }
+  }
 
   // Genius inputs
   const [gQuery, setGQuery] = useState('Bohemian Rhapsody');
@@ -231,6 +274,48 @@ export default function APIsTests(){
       {/* Add to Playlist Demo Section */}
       <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Add to Playlist Modal Demo</h3>
       <AddToPlaylistDemo />
+
+      {/* Torrent Search Test Section */}
+      <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Torrent Search</h3>
+      <div className="gt-grid">
+        <div className="gt-block">
+          <h4 className="mini-title" style={{marginTop:0}}>Query</h4>
+          <input className="tb-search" value={tQuery} onChange={e=>setTQuery(e.target.value)} placeholder="Search torrents" />
+        </div>
+        <div className="gt-block">
+          <h4 className="mini-title" style={{marginTop:0}}>Provider</h4>
+          <select className="tb-search" value={tProvider} onChange={e=>setTProvider(e.target.value)}>
+            <option value="all">All</option>
+            {scrapers.map(s=> (<option key={s.id} value={s.id}>{s.name}</option>))}
+          </select>
+        </div>
+        <div className="gt-block">
+          <h4 className="mini-title" style={{marginTop:0}}>Page</h4>
+          <input className="tb-search" type="number" value={tPage} onChange={e=>setTPage(Number(e.target.value))} min={1} />
+        </div>
+        <div className="gt-block">
+          <div style={{display:'flex', gap:8, alignItems:'center'}}>
+            <button className="np-pill" disabled={loading || !tQuery.trim()} onClick={runTorrentSearch}>Search</button>
+            <button className="np-pill" onClick={()=>{ setTResults([]); }}>{'Clear'}</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{marginTop:12}}>
+        {tResults.length===0 && <p className="np-hint">No torrent results</p>}
+        {tResults.map((r, idx)=>(
+          <div key={idx} style={{display:'flex', justifyContent:'space-between', gap:12, alignItems:'center', padding:'8px 10px', borderRadius:8, background:'var(--surface-1)', border:'1px solid var(--border-subtle)', marginBottom:8}}>
+            <div style={{minWidth:0}}>
+              <div style={{fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{r.title}</div>
+              <div style={{fontSize:12, opacity:.75}}>{r.size || ''} · {r.seeders ?? 0}▲ · {r.leechers ?? 0}▼ · {r.source}</div>
+            </div>
+            <div style={{display:'flex', gap:8}}>
+              {r.magnetURI && <button className="btn" onClick={()=> window.open(r.magnetURI, '_blank')}>Magnet</button>}
+              {r.url && <button className="btn" onClick={()=> window.open(r.url, '_blank')}>Detail</button>}
+            </div>
+          </div>
+        ))}
+      </div>
 
     </section>
   );

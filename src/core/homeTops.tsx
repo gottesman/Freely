@@ -87,9 +87,21 @@ function parseChartGroup(chartGroup: any, limit?: number) {
  */
 export async function getWeeklyTops({ limit }: { limit?: number } = {}): Promise<{ songs: any[]; albums: any[]; artists: any[]; raw: any }> {
 	try {
-		const res = await fetch(chartsUrl);
-		if (!res.ok) throw new Error('charts fetch failed: ' + res.status);
-		const json = await res.json();
+		let json = null;
+		// If running in Electron with our preload exposure, request via IPC so the
+		// main process performs the fetch (avoids browser CORS/preflight).
+		try {
+			if (typeof (window as any).charts === 'object' && typeof (window as any).charts.getWeeklyTops === 'function') {
+				json = await (window as any).charts.getWeeklyTops({ url: chartsUrl });
+			} else {
+				const res = await fetch(chartsUrl);
+				if (!res.ok) throw new Error('charts fetch failed: ' + res.status);
+				json = await res.json();
+			}
+		} catch (ipcErr) {
+			// If IPC or fetch failed, rethrow to be caught by outer catch
+			throw ipcErr;
+		}
 
 		// The API returns an array named chartEntryViewResponses
 		const groups = json?.chartEntryViewResponses || json?.chart_entry_view_responses || [];

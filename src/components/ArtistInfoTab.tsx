@@ -136,7 +136,9 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
     return ()=> { cancelled = true; };
   }, [artist?.name, lastBioArtist]);
 
-  const heroImage = useMemo(()=> artist?.images?.[0]?.url || '', [artist?.images]);
+  const heroImage = useMemo(()=> {
+    return (window as any).imageRes?.(artist?.images, 0) || '';
+  }, [artist?.images]);
   // Column width handled within TrackList
 
   const playTopTracksNow = () => {
@@ -303,7 +305,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
             {recentAlbums.map(alb=>(
               <li key={alb.id} className="artist-grid-item" title={alb.name}>
                 <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> onSelectAlbum && onSelectAlbum(alb.id)}>
-                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${alb.images?.[0]?.url || ''})`}} />
+                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${(window as any).imageRes?.(alb.images,1) || ''})`}} />
                   <div className="info" style={{marginTop:'6px'}}><div className="name ellipsis" title={alb.name} style={{fontSize:'0.85rem', fontWeight:500}}>{alb.name}</div><div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{alb.releaseDate?.split('-')[0] || ''}</div></div>
                 </button>
               </li>
@@ -322,7 +324,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
             {playlists.map(pl=>(
               <li key={pl.id} className="artist-grid-item" title={pl.name}>
                 <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> onSelectPlaylist && onSelectPlaylist(pl.id)}>
-                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${pl.images?.[0]?.url || ''})`}} />
+                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${(window as any).imageRes?.(pl.images,1) || ''})`}} />
                   <div className="info" style={{marginTop:'6px'}}>
                     <div className="name ellipsis" title={pl.name} style={{fontSize:'0.85rem', fontWeight:500}}>{pl.name}</div>
                     <div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{typeof pl.totalTracks === 'number' ? t('np.tracks', undefined, { count: pl.totalTracks }) : ''}</div>

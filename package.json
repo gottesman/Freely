@@ -1,6 +1,6 @@
 {
     "name": "freely-player",
-    "version": "0.5.5",
+    "version": "0.5.7",
     "author": {
         "name": "Gottesman",
         "email": "gottesman@example.com"
@@ -18,16 +18,19 @@
         "preview": "vite preview",
         "start-torrent-server": "node server/torrent-server.js",
         "electron:dev": "npm run build && electron .",
-    "electron:build": "npm run build && electron-builder --win --x64",
-    "prune": "npm prune --production",
-    "prune-and-build": "npm run build && npm prune --production && electron-builder --win --x64",
+        "electron:build": "npm run build && electron-builder --win --x64",
+        "prune": "npm prune --production",
+        "prune-and-build": "npm run build && npm prune --production && electron-builder --win --x64",
         "smoke": "npm run build && npx electron . --enable-logging",
         "lint:css": "stylelint \"src/**/*.css\""
     },
     "dependencies": {
+        "buffer": "^6.0.3",
+        "cheerio": "^1.0.0-rc.12",
         "dotenv": "^16.4.5",
         "express": "^4.18.2",
         "multer": "^1.4.5-lts.1",
+        "node-fetch": "^3.3.1",
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
         "sql.js": "^1.8.0",
@@ -37,6 +40,7 @@
         "@types/node": "^24.3.0",
         "@types/react": "^18.2.21",
         "@types/react-dom": "^18.2.7",
+        "@types/webtorrent": "^0.110.1",
         "@types/ws": "^8.18.1",
         "@vitejs/plugin-react": "^4.0.0",
         "astral-regex": "^2.0.0",
@@ -46,7 +50,7 @@
         "stylelint": "^16.8.0",
         "stylelint-config-standard": "^36.0.0",
         "stylelint-order": "^6.0.4",
-        "typescript": "^5.1.6",
+        "typescript": "^5.9.2",
         "vite": "^7.1.2"
     },
     "build": {

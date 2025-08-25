@@ -17,6 +17,7 @@
   --surface-2: rgba(255 255 255 / 0.04);
   --surface-3: rgba(255 255 255 / 0.06);
   --surface-alt: rgb(0 255 175 / 0.14);
+  --surface-alt2: hsla(194, 100%, 50%, 0.14);
   --surface-hover: rgba(255 255 255 / 0.1);
   --surface-active: rgba(255 255 255 / 0.14);
   --panels-bg: rgba(255 255 255 / 0.05);

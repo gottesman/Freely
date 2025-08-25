@@ -17,6 +17,17 @@ export default function CenterTabs({ initial = 'home', searchQuery, searchTrigge
     if (searchTrigger) setTab('search')
   }, [searchTrigger])
 
+  // Reset scroll position to top whenever the visible tab changes
+  useEffect(() => {
+    // Defer to next frame to ensure DOM updates completed
+    requestAnimationFrame(() => {
+      const el = document.querySelector('.center-tabs .tabs-body') as HTMLElement | null;
+      if (el) el.scrollTop = 0;
+      const mainEl = document.querySelector('.center-tabs') as HTMLElement | null;
+      if (mainEl) mainEl.scrollTop = 0;
+    });
+  }, [tab]);
+
   // When normalized searchResults arrive while on the search tab, scroll them into view
   useEffect(() => {
     if (tab !== 'search') return;
@@ -56,7 +67,7 @@ export default function CenterTabs({ initial = 'home', searchQuery, searchTrigge
   return (
     <main className="center-tabs">
       <div className="tabs-body">
-  {tab === 'home' && <HomeTab />}
+  {tab === 'home' && (console.log('CenterTabs: rendering HomeTab, tab=', tab), <HomeTab onSelectArtist={onSelectArtist} onSelectAlbum={onSelectAlbum} onSelectTrack={onSelectTrack} />)}
   {tab === 'song' && <SongInfoTab trackId={songTrackId} onSelectArtist={onSelectArtist} onSelectAlbum={onSelectAlbum} onSelectTrack={onSelectTrack} />}
   {tab === 'album' && <AlbumInfoTab albumId={albumId} onSelectArtist={onSelectArtist} onSelectTrack={onSelectTrack} />}
   {tab === 'playlist' && <PlaylistInfoTab playlistId={playlistId} onSelectPlaylist={onSelectPlaylist} onSelectTrack={onSelectTrack} />}

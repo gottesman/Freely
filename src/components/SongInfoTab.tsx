@@ -5,6 +5,8 @@ import SpotifyClient, { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack
 import { useSpotifyClient } from '../core/spotify-client';
 import TrackList from './TrackList';
 import GeniusClient from '../core/musicdata';
+import { createNode } from '../core/p2p';
+import TrackSources from './TrackSources';
 
 function fmt(ms?: number){
   if(!ms && ms!==0) return '--:--';
@@ -192,6 +194,85 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     return ()=>{ cancelled = true; };
   }, [track?.id, spotifyClient]);
 
+  // Audio sources (torrent streams) — query the torrent-search server and list available sources
+  const [sources, setSources] = useState<any[]|undefined>();
+  // WebTorrent client and per-source file lists
+  const wtClientRef = useRef<any | null>(null);
+  const [torrentFileLists, setTorrentFileLists] = useState<Record<string, { name: string; length: number }[]>>({});
+  const [torrentLoadingKeys, setTorrentLoadingKeys] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (wtClientRef.current && typeof wtClientRef.current.destroy === 'function') {
+          wtClientRef.current.destroy();
+          wtClientRef.current = null;
+        }
+      } catch (e) {
+        console.error('Failed to destroy WebTorrent client', e);
+      }
+    };
+  }, []);
+  useEffect(()=>{
+    let cancelled = false;
+    async function loadSources(){
+      setSources(undefined);
+      // Prefer searching by album title (fall back to track name) plus primary artist
+      if(!track) return;
+      const albumTitle = album?.name || track.album?.name || track.name || '';
+      const artist = track.artists?.[0]?.name || primaryArtist?.name || '';
+      const query = `${albumTitle} ${artist}`.trim();
+      if(!query) return;
+      console.log('🎵 SongInfoTab: Searching torrent sources for album query:', query);
+
+      const w:any = window;
+      try {
+        // Prefer Electron IPC if available
+        if(w.electron?.torrent?.search){
+          const res = await w.electron.torrent.search(query, 1);
+          if(cancelled) return;
+          const list = Array.isArray(res) ? res : (res?.results || res?.items || []);
+          setSources(list.slice(0, 50));
+          return;
+        }
+
+  // Fallback to local server endpoint — discover port via IPC if available, otherwise use 9000
+  let url = `http://localhost:9000/api/torrent-search?q=${encodeURIComponent(query)}&page=1`;
+        if(w.electron?.invoke){
+          try{
+            const status = await w.electron.invoke('server:status');
+            if(status && status.port){
+              // prefer a reachable server port if reported
+              if(status.reachable) url = `http://localhost:${status.port}/api/torrent-search?q=${encodeURIComponent(query)}&page=1`;
+              else url = `http://localhost:${status.port}/api/torrent-search?q=${encodeURIComponent(query)}&page=1`;
+            }
+          }catch(e){ /* ignore and use default */ }
+        }
+        const resp = await fetch(url);
+        if(!resp.ok) throw new Error('torrent-search failed');
+        const body = await resp.json();
+        if(cancelled) return;
+        const list = Array.isArray(body) ? body : (body?.results || body?.items || []);
+        setSources(list.slice(0, 50));
+      } catch (err) {
+        console.log('🎵 SongInfoTab: torrent-search failed, falling back to seed-out.json', err);
+        // Final fallback: try local seed-out.json (developer tooling)
+        try {
+          const resp2 = await fetch('/seed-out.json');
+          if(!resp2.ok) throw new Error('no seed-out');
+          const body2 = await resp2.json();
+          if(cancelled) return;
+          const list2 = Array.isArray(body2) ? body2 : [body2];
+          setSources(list2);
+        } catch (_){
+          if(!cancelled) setSources(undefined);
+        }
+      }
+    }
+    loadSources();
+    return ()=> { cancelled = true; };
+  }, [track?.id, track?.name, primaryArtist?.name]);
+
   // Credits: no extra async call needed; we derive from existing track/album/artist data.
   // Add writers via Genius (best-effort)
   useEffect(()=>{
@@ -294,6 +375,9 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
           </div>
         </div>
       </header>
+  {/* Audio source chooser */}
+  <TrackSources track={track} album={album} primaryArtist={primaryArtist} />
+
       <div className="np-section np-album-tracks" aria-label={t('np.albumTrackList','Album track list')}>
         <h4 className="np-sec-title">{t('np.fromSameAlbum')}</h4>
         {album && (<div className="np-album-heading"><span className="np-album-name" title={album.name}>{album.name}</span><span className="np-album-trackcount">{t('np.tracks', undefined, { count: album.totalTracks })}</span></div>)}

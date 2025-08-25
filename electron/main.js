@@ -159,7 +159,7 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Start the local torrent server as a child process.
   // When packaged we expect the server JS to be unpacked (app.asar.unpacked/server/...)
   let serverPath;
@@ -176,19 +176,74 @@ app.whenReady().then(() => {
   }
 
   try {
+    // Before spawning, check for an existing server via PID file and probe it.
+    const SERVER_PID_FILE = path.join(__dirname, '..', 'server', '.torrent-server.pid');
+    const probeExistingServer = async () => {
+      try {
+        if (!fs.existsSync(SERVER_PID_FILE)) return null;
+        const raw = fs.readFileSync(SERVER_PID_FILE, 'utf8');
+        const info = JSON.parse(raw || '{}');
+        const port = info.port;
+        if (!port) return null;
+        try {
+          const controller = new AbortController();
+          const id = setTimeout(() => controller.abort(), 1500);
+          const res = await fetch(`http://localhost:${port}/api/torrent-search?q=ping`, { signal: controller.signal });
+          clearTimeout(id);
+          if (res && res.ok) return { pid: info.pid || null, port };
+        } catch (e) { /* not reachable */ }
+      } catch (e) { /* ignore parse errors */ }
+      return null;
+    };
+
+    const existing = await probeExistingServer();
+    if (existing) {
+      console.log('[server] existing torrent server reachable at port', existing.port, 'pid', existing.pid);
+    } else {
+      // Pipe stdout/stderr so we can detect when the server reports it's listening.
     serverProcess = spawn(process.execPath, [serverPath], {
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       cwd: path.dirname(serverPath),
     });
+    }
 
-    serverProcess.on('error', (err) => {
-      console.error('Failed to start server process:', err);
+    // Small helper to wait for a "listening" line from the server. If the
+    // server doesn't report ready within the timeout we proceed to create the
+    // window anyway so UI can still load; the server will keep running.
+    const serverReady = new Promise((resolve) => {
+      let settled = false;
+      const onData = (chunk) => {
+        try {
+          const s = String(chunk || '');
+          if (s.includes('Torrent server listening') || s.includes('listening on http')) {
+            if (!settled) { settled = true; cleanup(); resolve(true); }
+          }
+        } catch (e) { /* ignore parse errors */ }
+      };
+      const onExit = () => { if (!settled) { settled = true; cleanup(); resolve(false); } };
+      const cleanup = () => {
+        try { serverProcess.stdout && serverProcess.stdout.removeListener('data', onData); } catch(e){}
+        try { serverProcess.stderr && serverProcess.stderr.removeListener('data', onData); } catch(e){}
+        try { serverProcess.removeListener('exit', onExit); } catch(e){}
+      };
+      if (serverProcess.stdout) serverProcess.stdout.on('data', onData);
+      if (serverProcess.stderr) serverProcess.stderr.on('data', onData);
+      serverProcess.on('exit', onExit);
+      // Timeout fallback: proceed after 5s
+      setTimeout(() => { if (!settled) { settled = true; cleanup(); resolve(false); } }, 5000);
     });
 
-    serverProcess.on('exit', (code, signal) => {
-      console.log('Server process exited', code, signal);
-      serverProcess = null;
+    if (serverProcess) {
+      serverProcess.on('error', (err) => {
+      console.error('[server] process error', err && err.message ? err.message : err);
     });
+      serverProcess.on('exit', (code, signal) => {
+        console.log(`[server] process exited code=${code} signal=${signal}`);
+      });
+    }
+
+    const ok = await serverReady;
+    if (!ok) console.warn('[server] start timed out or did not report ready; continuing to load UI');
   } catch (e) {
     console.error('Error spawning server process', e);
   }
@@ -198,6 +253,72 @@ app.whenReady().then(() => {
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// --- Torrent search IPC (main process implementation) ---
+let torrentSearch;
+try {
+  // Some HTTP/fetch internals (undici/webidl) expect a global `File` constructor
+  // to be present. Polyfill a minimal `File` class in the main process so
+  // requiring modules that use fetch/undici doesn't throw `File is not defined`.
+  if (typeof global.File === 'undefined') {
+    try {
+      const BlobCtor = global.Blob || (globalThis && globalThis.Blob);
+      global.File = class File extends (BlobCtor || class {}) {
+        constructor(chunks = [], name = '', options = {}) {
+          if (BlobCtor) super(chunks, options);
+          this.name = String(name || '');
+          this.lastModified = options && options.lastModified ? Number(options.lastModified) : Date.now();
+        }
+      };
+    } catch (polyErr) {
+      // best-effort; continue without polyfill if it fails
+    }
+  }
+  torrentSearch = require(path.join(__dirname, 'torrent-search.js'));
+} catch (e) {
+  // Log full stack to help diagnose issues when requiring the helper fails
+  try { console.warn('Torrent search helper not available in main process', e && e.stack ? e.stack : e); } catch (_) { console.warn('Torrent search helper not available', e?.message || e); }
+  torrentSearch = null;
+}
+
+ipcMain.handle('torrent:listScrapers', async () => {
+  if (torrentSearch?.listScrapers) return torrentSearch.listScrapers();
+  // Fallback: probe local server's /api/torrent-search without query to infer providers
+  try {
+    const pidFile = path.join(__dirname, '..', 'server', '.torrent-server.pid');
+    let port = 9000;
+    if (fs.existsSync(pidFile)) {
+      const raw = fs.readFileSync(pidFile, 'utf8');
+      const info = JSON.parse(raw || '{}'); if (info.port) port = info.port;
+    }
+    const res = await fetch(`http://localhost:${port}/api/torrent-search?q=ping`);
+    if (!res.ok) return [];
+    const body = await res.json();
+    // If the server returns an array of results, we don't have scraper list — return empty
+    return [];
+  } catch (e) { return []; }
+});
+
+ipcMain.handle('torrent:search', async (_ev, opts) => {
+  if (torrentSearch?.search) return torrentSearch.search(opts || {});
+  // Fallback: proxy the request to the local torrent-server HTTP endpoint
+  try {
+    const pidFile = path.join(__dirname, '..', 'server', '.torrent-server.pid');
+    let port = 9000;
+    if (fs.existsSync(pidFile)) {
+      const raw = fs.readFileSync(pidFile, 'utf8');
+      const info = JSON.parse(raw || '{}'); if (info.port) port = info.port;
+    }
+    const q = encodeURIComponent(String((opts && opts.query) || ''));
+    const page = encodeURIComponent(String((opts && opts.page) || 1));
+    const url = `http://localhost:${port}/api/torrent-search?q=${q}&page=${page}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('torrent-search server error: ' + res.status);
+    return await res.json();
+  } catch (e) {
+    throw new Error('Torrent search not available');
+  }
 });
 
 ipcMain.handle('window:isMaximized', () => {
@@ -393,6 +514,24 @@ ipcMain.handle('genius:getLyrics', async (_ev, id) => {
   const html = await pageRes.text();
   const lyrics = parseLyrics(html);
   return { songId: s.id, url: s.url, lyrics, source: lyrics ? 'parsed-html' : 'unavailable', fetchedAt: Date.now() };
+});
+
+// ---------------- Charts proxy (CORS bypass) ----------------
+// Renderer can request weekly charts via IPC; the main process will perform
+// the HTTP fetch so browser preflight/CORS is not an issue.
+ipcMain.handle('charts:getWeeklyTops', async (_ev, opts) => {
+  const defaultUrl = 'https://round-boat-07c7.gabrielgonzalez-gsun.workers.dev/';
+  const url = (opts && opts.url) ? String(opts.url) : defaultUrl;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Charts fetch failed: ${res.status}`);
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    console.error('charts:getWeeklyTops error', err && err.message ? err.message : err);
+    // Propagate error to renderer
+    throw err;
+  }
 });
 
 // ---------------- Spotify API Proxy (no bundled secret) ----------------
@@ -654,6 +793,32 @@ ipcMain.handle('spotify:searchPlaylists', async (_ev, query) => {
       description: p.description
     }));
   return { query, items };
+});
+
+// Expose server status (PID file + reachability) so renderer can discover the
+// torrent-search endpoint instead of hardcoding port 9000.
+const SERVER_PID_FILE = path.join(__dirname, '..', 'server', '.torrent-server.pid');
+ipcMain.handle('server:status', async () => {
+  try {
+    if (!fs.existsSync(SERVER_PID_FILE)) return { pid: null, port: null, reachable: false };
+    const raw = fs.readFileSync(SERVER_PID_FILE, 'utf8');
+    const info = JSON.parse(raw || '{}');
+    const port = info.port || null;
+    const pid = info.pid || null;
+    let reachable = false;
+    if (port) {
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`http://localhost:${port}/api/torrent-search?q=ping`, { signal: controller.signal });
+        clearTimeout(id);
+        reachable = !!(res && res.ok);
+      } catch (e) { reachable = false; }
+    }
+    return { pid, port, reachable };
+  } catch (e) {
+    return { error: e && e.message ? e.message : String(e) };
+  }
 });
 
 function mapSpotifyArtist(a) { return { id: a.id, name: a.name, url: a.external_urls?.spotify, genres: a.genres || [], images: a.images || [], followers: a.followers?.total, popularity: a.popularity }; }

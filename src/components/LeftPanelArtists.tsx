@@ -24,30 +24,33 @@ export default function LeftPanelArtists({ onSelectArtist, activeArtistId, activ
 
   return (
     <div className='left-artists'>
-      {list.map(a => (
-        <button
-          key={a.id}
-          type="button"
-          className={`artist-row card-btn ${(activeArtistVisible && String(a.id) === String(activeArtistId || '')) ? 'active' : ''}`}
-          onClick={() => {
-            try {
-              if (onSelectArtist && a.id) onSelectArtist(a.id);
-            } catch (e) {
-              // ignore handler errors
-            }
-            // Robust fallback: dispatch a global event so higher-level listeners (App) can open the artist tab
-            try { window.dispatchEvent(new CustomEvent('freely:select-artist', { detail: String(a.id) })); } catch(e){}
-          }}
-        >
-          <div className='artist-avatar'>
-            {a.images?.[0]?.url ? <img src={a.images[0].url} alt=""/> : <span className="material-symbols-rounded">person</span>}
-          </div>
-          <div className='artist-text'>
-            <div className='artist-name'>{a.name}</div>
-            <div className='artist-genres'>{a.genres?.slice(0,2).join(', ')}</div>
-          </div>
-        </button>
-      ))}
+      {list.map(a => {
+        const img = (window as any).imageRes?.(a.images, 3);
+        return (
+          <button
+            key={a.id}
+            type="button"
+            className={`artist-row card-btn ${(activeArtistVisible && String(a.id) === String(activeArtistId || '')) ? 'active' : ''}`}
+            onClick={() => {
+              try {
+                if (onSelectArtist && a.id) onSelectArtist(a.id);
+              } catch (e) {
+                // ignore handler errors
+              }
+              // Robust fallback: dispatch a global event so higher-level listeners (App) can open the artist tab
+              try { window.dispatchEvent(new CustomEvent('freely:select-artist', { detail: String(a.id) })); } catch(e){}
+            }}
+          >
+            <div className='artist-avatar'>
+              { img ? <img src={img} alt="" /> : <span className="material-symbols-rounded">person</span> }
+            </div>
+            <div className='artist-text'>
+              <div className='artist-name'>{a.name}</div>
+              <div className='artist-genres'>{a.genres?.slice(0,2).join(', ')}</div>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

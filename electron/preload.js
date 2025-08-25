@@ -13,23 +13,32 @@ contextBridge.exposeInMainWorld('electron', {
     }
   },
   genius: {
-  search: (q) => ipcRenderer.invoke('genius:search', q),
-  getSong: (id) => ipcRenderer.invoke('genius:getSong', id),
-  getArtist: (id) => ipcRenderer.invoke('genius:getArtist', id),
-  getAlbum: (id) => ipcRenderer.invoke('genius:getAlbum', id),
-  getLyrics: (id) => ipcRenderer.invoke('genius:getLyrics', id)
-  }
-  ,
+    search: (q) => ipcRenderer.invoke('genius:search', q),
+    getSong: (id) => ipcRenderer.invoke('genius:getSong', id),
+    getArtist: (id) => ipcRenderer.invoke('genius:getArtist', id),
+    getAlbum: (id) => ipcRenderer.invoke('genius:getAlbum', id),
+    getLyrics: (id) => ipcRenderer.invoke('genius:getLyrics', id)
+  },
   spotify: {
     search: (q, types='track') => ipcRenderer.invoke('spotify:search', q, types),
     getTrack: (id) => ipcRenderer.invoke('spotify:getTrack', id),
     getAlbum: (id) => ipcRenderer.invoke('spotify:getAlbum', id),
-  getArtist: (id) => ipcRenderer.invoke('spotify:getArtist', id),
-  getAlbumTracks: (id, opts) => ipcRenderer.invoke('spotify:getAlbumTracks', id, opts),
-  getArtistAlbums: (id, opts) => ipcRenderer.invoke('spotify:getArtistAlbums', id, opts),
-  searchPlaylists: (q) => ipcRenderer.invoke('spotify:searchPlaylists', q),
-  tokenStatus: () => ipcRenderer.invoke('spotify:tokenStatus')
+    getArtist: (id) => ipcRenderer.invoke('spotify:getArtist', id),
+    getAlbumTracks: (id, opts) => ipcRenderer.invoke('spotify:getAlbumTracks', id, opts),
+    getArtistAlbums: (id, opts) => ipcRenderer.invoke('spotify:getArtistAlbums', id, opts),
+    searchPlaylists: (q) => ipcRenderer.invoke('spotify:searchPlaylists', q),
+    tokenStatus: () => ipcRenderer.invoke('spotify:tokenStatus')
+  },
+  torrent: {
+    listScrapers: () => ipcRenderer.invoke('torrent:listScrapers'),
+    search: (opts) => ipcRenderer.invoke('torrent:search', opts)
   }
+});
+
+
+// Expose charts API for renderer to request weekly tops via main process
+contextBridge.exposeInMainWorld('charts', {
+  getWeeklyTops: (opts) => ipcRenderer.invoke('charts:getWeeklyTops', opts)
 });
 
 // Database persistence API exposed to renderer
