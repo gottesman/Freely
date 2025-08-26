@@ -1,6 +1,6 @@
 {
     "name": "freely-player",
-    "version": "0.5.7",
+    "version": "0.6.0",
     "author": {
         "name": "Gottesman",
         "email": "gottesman@example.com"
@@ -9,8 +9,9 @@
     "main": "electron/main.js",
     "private": true,
     "scripts": {
-        "fetch-wasm": "node scripts/copy-sql-wasm.js",
-        "postinstall": "npm run fetch-wasm",
+    "fetch-wasm": "node scripts/copy-sql-wasm.js",
+    "vendor-webtorrent": "node scripts/vendor-webtorrent.js",
+    "postinstall": "npm run fetch-wasm && npm run vendor-webtorrent",
         "dev": "vite",
         "prebuild": "node -e \"const f=require('fs'); if(f.existsSync('dist')){ const rimraf=(p)=>{ require('child_process').execSync(process.platform === 'win32' ? `rmdir /s /q \"${p}\"` : `rm -rf \"${p}\"`); }; rimraf('dist'); }\"",
         "build": "npm run prebuild && vite build",

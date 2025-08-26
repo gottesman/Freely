@@ -16,6 +16,30 @@
     <link rel="stylesheet" href="splash.css" />
   </head>
   <body>
+    <!-- Vendor webtorrent browser bundle (if present) -->
+    <script>
+      // Dynamically inject vendor bundle if it exists on the server.
+      (function(){
+        try {
+          const url = 'https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js';
+          var xhr = new XMLHttpRequest();
+          xhr.open('HEAD', url, true);
+          xhr.onreadystatechange = function(){
+            if (xhr.readyState === 4) {
+              if (xhr.status === 200) {
+                var s = document.createElement('script');
+                s.src = url;
+                s.async = false;
+                document.head.appendChild(s);
+              }
+            }
+          };
+          xhr.send();
+        } catch (e) {
+          // ignore
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -88,4 +88,9 @@
   --padding-md: 12px;
   --padding-lg: 16px;
   --padding-xl: 24px;
+
+  /* Layout */
+  --header-height: 44px;
+  --footer-gap: 10px;
+  --footer-height: 99px;
 }

@@ -14,6 +14,68 @@ function fmt(ms?: number){
 }
 
 export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, onSelectTrack }: { trackId?: string, onSelectArtist?: (id: string)=>void, onSelectAlbum?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
+  // Scroll to .np-audio-sources in .tabs-body on mouse wheel event
+  React.useEffect(() => {
+    const tabsBody = document.querySelector('.tabs-body');
+    if (!tabsBody) return;
+  let wheelAccum = 0;
+  let scrollTriggered = false;
+  let animating = false;
+    const threshold = 1; // Typical mouse wheel delta for one notch
+    // Custom smooth scroll with longer duration
+    function smoothScrollTo(element: HTMLElement, target: number, duration: number = 1200) {
+      const start = element.scrollTop;
+      const change = target - start;
+      const startTime = performance.now();
+      animating = true;
+      function animateScroll(currentTime: number) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease in-out cubic
+        const ease = progress < 0.5
+          ? 4 * progress * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        element.scrollTop = start + change * ease;
+        if (progress < 1) {
+          requestAnimationFrame(animateScroll);
+        } else {
+          scrollTriggered = true;
+          animating = false;
+        }
+      }
+      requestAnimationFrame(animateScroll);
+    }
+
+    const onWheel = (e: Event) => {
+      const wheelEvent = e as WheelEvent;
+      if (wheelEvent.deltaY > 0) { // Only trigger on downward scroll
+        if (animating) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        } // Block retrigger during animation
+        wheelAccum += wheelEvent.deltaY;
+        const npAudio = document.querySelector('.np-audio-sources');
+        if (npAudio && typeof (npAudio as HTMLElement).offsetTop === 'number') {
+          const targetOffset = (npAudio as HTMLElement).offsetTop;
+          if (!scrollTriggered && tabsBody.scrollTop < targetOffset && wheelAccum >= threshold) {
+            wheelAccum = 0;
+            smoothScrollTo(tabsBody as HTMLElement, targetOffset, 1200);
+          }
+          // If user scrolls up above np-audio-sources, allow retrigger
+          if (tabsBody.scrollTop < targetOffset - 10) {
+            scrollTriggered = false;
+          }
+        }
+      } else {
+        wheelAccum = 0; // Reset if scrolling up
+      }
+    };
+    tabsBody.addEventListener('wheel', onWheel as EventListener, { passive: true });
+    return () => {
+      tabsBody.removeEventListener('wheel', onWheel as EventListener);
+    };
+  }, []);
   const { t } = useI18n();
   const spotifyClient = useSpotifyClient();
   // Playback context (avoid calling hook inside handlers)

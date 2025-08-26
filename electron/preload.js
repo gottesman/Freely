@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('electron', {
   torrent: {
     listScrapers: () => ipcRenderer.invoke('torrent:listScrapers'),
     search: (opts) => ipcRenderer.invoke('torrent:search', opts)
+  ,
+  getFiles: (id, opts) => ipcRenderer.invoke('torrent:getFiles', id, opts)
   }
 });
 

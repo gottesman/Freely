@@ -1,5 +1,5 @@
 /* Titlebar & Search */
-.titlebar { user-select:none; -webkit-user-select:none; -webkit-app-region:drag; width:100%; height:44px; display:flex; align-items:stretch; justify-content:space-between; gap:12px; position:relative; }
+.titlebar { user-select:none; -webkit-user-select:none; -webkit-app-region:drag; width:100%; height:var(--header-height); display:flex; align-items:stretch; justify-content:space-between; gap:12px; position:relative; }
 .titlebar-left { padding:6px 12px; gap:10px; }
 .titlebar-left, .titlebar-right { display:flex; align-items:center; z-index:1; }
 .titlebar-icon, .titlebar-icon.placeholder { width:28px; height:28px; background-size:contain; background-repeat:no-repeat; background-position:center; }

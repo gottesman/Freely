@@ -282,6 +282,93 @@ try {
   torrentSearch = null;
 }
 
+// --- Main-process WebTorrent client for metadata/file listing ---
+let _wtClient = null;
+let _WebTorrent = null;
+try {
+  // Use Node-side webtorrent (no bundler ambiguity)
+  _WebTorrent = require('webtorrent');
+} catch (e) {
+  console.warn('[main] webtorrent not available in main process:', e?.message || e);
+  _WebTorrent = null;
+}
+
+async function ensureWtClient() {
+  if (_wtClient) return _wtClient;
+  if (!_WebTorrent) {
+    throw new Error('webtorrent is not available in main process');
+  }
+  try {
+    _wtClient = new _WebTorrent();
+    return _wtClient;
+  } catch (e) {
+    console.error('[main] failed to construct WebTorrent client', e);
+    throw e;
+  }
+}
+
+// Expose a simple IPC to fetch torrent file lists from the main process.
+ipcMain.handle('torrent:getFiles', async (_ev, id, opts) => {
+  if (!id) throw new Error('Missing torrent id');
+  const timeoutMs = (opts && opts.timeoutMs) ? Number(opts.timeoutMs) : 20000;
+  const client = await ensureWtClient();
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const tid = setTimeout(() => { if (!settled) { settled = true; reject(new Error('Failed to fetch torrent metadata (timeout)')); } }, timeoutMs);
+
+    try {
+      let torrent = client.get(id);
+      const cleanup = () => {
+        try { if (torrent && torrent.removeListener) { torrent.removeListener('ready', onReady); torrent.removeListener('metadata', onReady); torrent.removeListener('error', onError); } } catch(_){}
+      };
+
+      const onReady = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(tid);
+        try {
+          const files = (torrent.files || []).map(f => ({ name: f.name, length: f.length }));
+          cleanup();
+          resolve(files);
+        } catch (e) {
+          cleanup();
+          reject(e);
+        }
+      };
+
+      const onError = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(tid);
+        cleanup();
+        reject(err || new Error('Torrent error'));
+      };
+
+      if (torrent) {
+        if (torrent.files && torrent.files.length) {
+          onReady();
+        } else {
+          torrent.once && torrent.once('ready', onReady);
+          torrent.once && torrent.once('metadata', onReady);
+          torrent.once && torrent.once('error', onError);
+        }
+      } else {
+        try {
+          torrent = client.add(id, { destroyStoreOnDestroy: true });
+          torrent.once && torrent.once('ready', onReady);
+          torrent.once && torrent.once('metadata', onReady);
+          torrent.once && torrent.once('error', onError);
+        } catch (e) {
+          if (!settled) { settled = true; clearTimeout(tid); reject(e); }
+        }
+      }
+    } catch (e) {
+      if (!settled) { settled = true; clearTimeout(tid); reject(e); }
+    }
+  });
+});
+
 ipcMain.handle('torrent:listScrapers', async () => {
   if (torrentSearch?.listScrapers) return torrentSearch.listScrapers();
   // Fallback: probe local server's /api/torrent-search without query to infer providers
