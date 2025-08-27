@@ -18,7 +18,7 @@
 .media-row-overflow-both{ --row-mask:#fff0 0%, #fff 10%, #fff 90%, #fff0; }
 .media-row.dense { gap:14px; } .media-row.artists { gap:22px; }
 .media-row.scroll-x { scrollbar-width:none; scroll-snap-type:x proximity; } .media-row.scroll-x::-webkit-scrollbar { display:none; }
-.media-row-wrap { --mask: #fff; position:relative; display:flex; align-items:stretch; }
+.media-row-wrap { --mask-size:80px; --mask: #fff; position:relative; display:flex; align-items:stretch; }
 .media-row-wrap .media-row { flex:1 1 auto; scroll-behavior:smooth; mask: linear-gradient(to right, var(--mask)); }
 .media-row.scroll-x > * { scroll-snap-align:start; }
 .np-icon.scroll-btn {
@@ -54,9 +54,9 @@
 .media-row-wrap.media-row-overflow-both:hover .scroll-btn { opacity:1; pointer-events:auto; }
 
 /* Optional subtle edge fade */
-.media-row-wrap.media-row-overflow-right { --mask: #fff 80%, #fff0; }
-.media-row-wrap.media-row-overflow-left { --mask: #fff0 0%, #fff 20%; }
-.media-row-wrap.media-row-overflow-both { --mask: #fff0 0%, #fff 20%, #fff 80%, #fff0; }
+.media-row-wrap.media-row-overflow-right { --mask: #fff calc(100% - var(--mask-size)), #fff0; }
+.media-row-wrap.media-row-overflow-left { --mask: #fff0 0px, #fff var(--mask-size); }
+.media-row-wrap.media-row-overflow-both { --mask: #fff0 0px, #fff var(--mask-size), #fff calc(100% - var(--mask-size)), #fff0; }
 
 .media-card { background: var(--surface-3); border:1px solid var(--border-subtle); border-radius:var(--radius-xl); padding:14px 14px 16px; width:160px; flex:0 0 auto; display:flex; flex-direction:column; gap:10px; cursor:pointer; transition: background var(--dur-med), border-color var(--dur-med), transform var(--dur-med); }
 

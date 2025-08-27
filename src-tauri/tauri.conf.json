@@ -1,0 +1,84 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "version": "0.7.1",
+  "build": {
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev"
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["public/icon-192.png"],
+    "resources": ["./dist"],
+    "windows": {
+      "allowDowngrades": true,
+      "certificateThumbprint": null,
+      "digestAlgorithm": null,
+      "nsis": null,
+      "signCommand": null,
+      "timestampUrl": null,
+      "tsp": false,
+      "webviewInstallMode": {
+        "silent": true,
+        "type": "downloadBootstrapper"
+      },
+      "wix": null
+    },
+    "targets": "all" 
+  },
+
+  "app": {
+    "windows": [
+      {
+        "title": "Freely Player",
+        "width": 1200,
+        "height": 800,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "decorations": false,
+        "shadow": false,
+        "resizable": true,
+        "fullscreen": false,
+        "minWidth": 800,
+        "minHeight": 600,
+        "maximizable": true,
+        "maximized": false,
+        "closable": true,
+        "devtools": true,
+        "center": true,
+        "contentProtected": false,
+        "backgroundThrottling": "disabled"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["*/**"]
+      },
+      "capabilities": [
+        {
+          "identifier": "com.freely.player",
+          "windows": ["*"],
+          "permissions": [
+            "core:window:default",
+            "core:window:allow-maximize",
+            "core:window:allow-unmaximize",
+            "core:window:allow-minimize",
+            "core:window:allow-close",
+            "core:event:default",
+            "core:path:default"
+          ]
+        }
+      ],
+      "dangerousDisableAssetCspModification": false,
+      "freezePrototype": false,
+      "pattern": {
+        "use": "brownfield"
+      }
+    },
+    "withGlobalTauri": true
+  },
+  "productName": "Freely Player",
+  "identifier": "com.freely.player"
+}
+

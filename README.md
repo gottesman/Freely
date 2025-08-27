@@ -1,5 +1,33 @@
 # Freely — decentralized, P2P music player
 
+A decentralized, peer-to-peer music player built with Electron, React, and TypeScript.
+
+## Tauri (experimental)
+
+This repository includes an experimental Tauri target alongside the existing Electron setup. The Tauri files are minimal and intended to let you try a native build which often produces smaller executables.
+
+Quick run (dev):
+
+```bash
+npm install
+npm run dev    # starts the Vite dev server
+npm run tauri:dev
+```
+
+Build (production):
+
+```bash
+npm install
+npm run build
+npm run tauri:build
+```
+
+Notes:
+- Tauri requires a Rust toolchain and platform-specific dependencies. See https://tauri.app/v1/guides/getting-started/prerequisites for setup.
+- The Tauri config is in `src-tauri/tauri.conf.json` and the minimal Rust entry is in `src-tauri/src/main.rs`.
+
+# Freely — decentralized, P2P music player
+
 <p align="center">
 	<img src="public/splash.png" alt="Freely splash screen" width="480" />
 </p>

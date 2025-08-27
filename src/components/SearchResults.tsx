@@ -42,13 +42,27 @@ export default function SearchResults({
   const albums = results?.albums || []
   const playlists = results?.playlists || []
 
+  // Deduplicate songs by id (preserve first occurrence order)
+  const uniqueSongs = React.useMemo(() => {
+    const seen = new Set<string>();
+    const out: typeof songs = [];
+    for (const s of songs) {
+      const key = s && s.id !== undefined && s.id !== null ? String(s.id) : '';
+      if (!key) continue; // skip items without id
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(s);
+    }
+    return out;
+  }, [songs]);
+
   // Only display a small subset of the returned items per type
-  const displayedSongs = songs.slice(0, 4)
+  const displayedSongs = uniqueSongs.slice(0, 4)
   const displayedArtists = artists.slice(0, 6)
   const displayedAlbums = albums.slice(0, 4)
   const displayedPlaylists = playlists.slice(0, 6)
 
-  const hasAny = !!query && (songs.length || artists.length || albums.length || playlists.length)
+  const hasAny = !!query && (uniqueSongs.length || artists.length || albums.length || playlists.length)
 
   const [tab, setTab] = useState<'all'|'songs'|'artists'|'albums'|'playlists'>('all')
 
@@ -303,7 +317,7 @@ export default function SearchResults({
                 </tr>
               </thead>
               <tbody>
-                {songs.map((s, i) => (
+                {uniqueSongs.map((s, i) => (
                   <tr key={String(s.id)} className="sr-table-row" onClick={() => onSelectTrack && onSelectTrack(String(s.id))}>
                     <td>
                       <div className="sr-title-with-thumb">

@@ -42,12 +42,10 @@
 .sr-more .material-symbols-rounded { --size: 18px; }
 .media-card { position: relative; }
 .media-card .media-cover { position: relative; }
-.compact .media-play-overlay{
-    --media-size: 5cqmin;
-}
+
 .media-play-overlay {
-    --media-size: 6cqmin;
-    --media-position: calc(var(--media-size) / 6);
+    --media-size: 40px;
+    --media-position: calc(var(--media-size) / 10);
     --size: var(--media-size);
     position: absolute;
     bottom: var(--media-position);

@@ -10,8 +10,7 @@ import { PlaybackProvider, usePlayback } from './core/playback'
 import TitleBar from './components/TitleBar'
 import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts'
 import { useAppReady } from './core/ready'
-import { useI18n } from './core/i18n'
-import { I18nProvider } from './core/i18n'
+import { useI18n, I18nProvider } from './core/i18n'
 import { AddToPlaylistModalProvider, useGlobalAddToPlaylistModal } from './core/AddToPlaylistModalContext'
 import { PromptProvider } from './core/PromptContext'
 
@@ -31,42 +30,59 @@ export default function App() {
   )
 }
 
-
 function Main() {
-  // Track window maximized state
+  // Add appWindow state inside the component
+  const [appWindow, setAppWindow] = useState<any>(null);
+
+  // Track window maximized state in Tauri
   const [maximized, setMaximized] = useState(false);
+
   useEffect(() => {
-    // Only run in Electron
-    if (typeof window === 'undefined' || !(window as any).electron) return;
-    const electron = (window as any).electron;
-    // Listen for maximize/unmaximize events from preload
-    if (electron?.onWindowMaximize && electron?.onWindowUnmaximize) {
-      electron.onWindowMaximize(() => setMaximized(true));
-      electron.onWindowUnmaximize(() => setMaximized(false));
-      // Query initial state if available
-      if (electron?.isWindowMaximized) {
-        setMaximized(!!electron.isWindowMaximized());
-      }
-    } else if (electron?.ipcRenderer) {
-      // Fallback: listen via IPC
-      electron.ipcRenderer.on('window-maximize', () => setMaximized(true));
-      electron.ipcRenderer.on('window-unmaximize', () => setMaximized(false));
-      // Query initial state if available
-      if (electron?.isWindowMaximized) {
-        setMaximized(!!electron.isWindowMaximized());
-      }
-    }
-    // Cleanup listeners on unmount
+    let isMounted = true;
+    let unlisten: (() => void) | undefined;
+
+    const setupEventListeners = async () => {
+      // Dynamically import the API inside useEffect
+      const { Window } = await import('@tauri-apps/api/window');
+      // Use a local reference to avoid relying on state immediately after setState
+      const wnd = Window.getCurrent();
+      setAppWindow(wnd);
+      console.log('[App] appWindow successfully retrieved for window:', wnd?.label);
+
+      const updateMaximizedState = async () => {
+        if (!isMounted) return;
+        try {
+          const isMax = await wnd.isMaximized();
+          console.log('[App] Window maximized state is:', isMax);
+          setMaximized(isMax);
+        } catch (e) {
+          console.warn('[App] failed to read maximized state', e);
+        }
+      };
+
+      // Set initial state
+      await updateMaximizedState();
+
+      // Listen to the 'tauri://resize' event.
+      unlisten = await wnd.listen('tauri://resize', updateMaximizedState);
+      
+      console.log('[App] Event listener for "tauri://resize" has been set up.');
+    };
+
+    setupEventListeners().catch(e => {
+        console.error("Failed to set up Tauri event listeners:", e);
+    });
+
+    // Cleanup function
     return () => {
-      if (electron?.removeWindowMaximize && electron?.removeWindowUnmaximize) {
-        electron.removeWindowMaximize();
-        electron.removeWindowUnmaximize();
-      } else if (electron?.ipcRenderer) {
-        electron.ipcRenderer.removeAllListeners('window-maximize');
-        electron.ipcRenderer.removeAllListeners('window-unmaximize');
+      isMounted = false;
+      if (unlisten) {
+        console.log('[App] Cleaning up event listener.');
+        unlisten(); // Execute the unlisten function
       }
     };
   }, []);
+
   const { ready: dbReady, getSetting, setSetting } = useDB()
   const { ready, states } = useAppReady(dbReady)
   const { t } = useI18n();
@@ -334,6 +350,14 @@ function Main() {
           onSearch={handleSearch}
           onNavigate={handleNavigate}
           activeTab={activeTab}
+          // Provide safe wrappers so buttons don't throw if appWindow is not ready
+          windowStatus={{
+            maximize: async () => await (appWindow)?.maximize?.().catch?.((e: any) => {console.error(e)}),
+            restore:  async () => await (appWindow)?.unmaximize?.().catch?.((e: any) => {console.error(e)}),
+            minimize: async () => await (appWindow)?.minimize?.().catch?.((e: any) => {console.error(e)}),
+            close:    async () => await (appWindow)?.close?.().catch?.((e: any) => {console.error(e)})
+          }}
+          isMaximized={maximized}
         />
         <div className="window-body">
           <div className="content layout">
@@ -463,7 +487,6 @@ function useDebouncedSearch(query: string | undefined, trigger: number | undefin
 // Global modal component that renders the AddToPlaylistModal using context
 function GlobalAddToPlaylistModal() {
   const { isOpen, track, fromBottomPlayer, closeModal } = useGlobalAddToPlaylistModal();
-  const { push: pushAlert } = useAlerts();
 
   return (
     <AddToPlaylistModal

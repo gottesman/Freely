@@ -1,6 +1,6 @@
 {
     "name": "freely-player",
-    "version": "0.7.0",
+    "version": "0.7.1",
     "author": {
         "name": "Gottesman",
         "email": "gottesman@example.com"
@@ -23,7 +23,9 @@
         "electron:build": "npm run build:scrapers && npm run build && electron-builder --win --x64",
         "prune": "npm prune --production",
         "prune-and-build": "npm run build && npm prune --production && electron-builder --win --x64",
-        "smoke": "npm run build && npx electron . --enable-logging",
+    "smoke": "npm run build && npx electron . --enable-logging",
+    "tauri:dev": "npx tauri dev",
+    "tauri:build": "npm run build && npx tauri build",
         "lint:css": "stylelint \"src/**/*.css\""
     },
     "dependencies": {
@@ -54,6 +56,9 @@
         "stylelint-order": "^6.0.4",
         "typescript": "^5.9.2",
         "vite": "^7.1.2"
+    ,
+        "@tauri-apps/cli": "^2.5.1",
+        "@tauri-apps/api": "^2.5.0"
     },
     "build": {
         "appId": "com.freely.player",

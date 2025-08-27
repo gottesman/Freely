@@ -4,13 +4,13 @@ This document provides a guide for AI coding agents to effectively contribute to
 
 ### Big Picture
 
-Freely is a decentralized, peer-to-peer music player built with Electron, React, and TypeScript. It's designed to be a web-first application with a focus on local-first data ownership and peer-to-peer streaming.
+Freely is a decentralized, peer-to-peer music player built with Tauri, React, and TypeScript. It's designed to be a web-first application with a focus on local-first data ownership and peer-to-peer streaming.
 
 The application is composed of three main parts:
 
-1.  **Electron Main Process (`electron/main.js`)**: This is the entry point of the desktop application. It's responsible for creating the main browser window, handling native OS integrations, and managing the application's lifecycle. It also acts as a backend for the renderer process, handling tasks that require Node.js APIs, such as file system access and spawning child processes.
+1.  **Tauri Main Process (`src-tauri/main.rs`)**: This is the entry point of the desktop application. It's responsible for creating the main browser window, handling native OS integrations, and managing the application's lifecycle. It also acts as a backend for the renderer process, handling tasks that require Node.js APIs, such as file system access and spawning child processes.
 
-2.  **React Renderer Process (`src/`)**: This is the user interface of the application. It's a single-page application built with React and TypeScript, and it's responsible for rendering the UI and handling user interactions. It communicates with the main process through a preload script (`electron/preload.js`) that exposes a secure API for accessing Node.js and Electron APIs.
+2.  **React Renderer Process (`src/`)**: This is the user interface of the application. It's a single-page application built with React and TypeScript, and it's responsible for rendering the UI and handling user interactions.
 
 3.  **Torrent Server (`server/torrent-server.js`)**: This is a separate Node.js process that's responsible for handling the peer-to-peer streaming of music. It's spawned by the main process and communicates with it through IPC.
 
@@ -23,18 +23,18 @@ npm install
 npm run dev
 ```
 
-This will start a Vite development server for the React application and an Electron application that will load the development server's URL.
+This will start a Vite development server for the React application but no Tauri application.
 
 To build the application for development, you can use the following command:
 
 ```bash
-npm run electron:dev
+npm run tauri:dev
 ```
 
 To build the application for production, you can use the following command:
 
 ```bash
-npm run electron:build
+npm run tauri:build
 ```
 
 This will create a distributable package for your operating system in the `build` directory.
@@ -49,11 +49,15 @@ This will create a distributable package for your operating system in the `build
 
 ### Key Files and Directories
 
-*   `electron/main.js`: The entry point of the Electron application.
-*   `electron/preload.js`: The preload script that exposes a secure API to the renderer process.
 *   `src/App.tsx`: The main application component.
 *   `src/core/db.tsx`: The database provider and hook.
 *   `src/core/playback.tsx`: The playback provider and hook. (not yet implemented)
 *   `server/torrent-server.js`: The torrent server.
 *   `vite.config.ts`: The Vite configuration file.
 *   `package.json`: The project's dependencies and scripts.
+
+### Tauri
+
+*   `src-tauri/tauri.conf.json`: The configuration file for the Tauri application.
+*   `src-tauri/src/main.rs`: The main Rust file for the Tauri application.
+*   `https://schema.tauri.app/config/2`: The schema for the Tauri configuration file.

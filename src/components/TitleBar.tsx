@@ -1,43 +1,20 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { useI18n } from '../core/i18n'
 
-export default function TitleBar({ title, icon, onSearch, onNavigate, activeTab }: { title?: string, icon?: string, onSearch?: (q: string) => void, onNavigate?: (dest: string) => void, activeTab?: string }) {
+export default function TitleBar({ title, icon, onSearch, onNavigate, activeTab, windowStatus: { maximize, restore, minimize, close }, isMaximized }: { title?: string, icon?: string, onSearch?: (q: string) => void, onNavigate?: (dest: string) => void, activeTab?: string, windowStatus: { maximize: () => void, restore: () => void, minimize: () => void, close: () => void }, isMaximized: boolean }) {
   const { t } = useI18n();
   const resolvedTitle = title || t('app.title');
   const [maximized, setMaximized] = useState(false)
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
 
+  // get maximized status from App.tsx
   useEffect(() => {
-    let mounted = true
-    ;(async () => {
-      try {
-        const isMax = await (window as any).electron.window.isMaximized()
-        if (mounted) setMaximized(!!isMax)
-      } catch (e) {}
-    })()
-    // listen for maximize/unmaximize events from main
-    try {
-      (window as any).electron.window.onMaximizeChanged((v: boolean) => {
-        setMaximized(!!v)
-        const root = document.querySelector('body')
-        if (root) {
-          if (v) root.classList.add('maximized')
-          else root.classList.remove('maximized')
-        }
-      })
-    } catch (e) {}
-    return () => { mounted = false }
-  }, [])
-
-  const onMin = () => (window as any).electron.window.minimize()
-  const onMax = () => (window as any).electron.window.maximize()
-  const onRestore = () => (window as any).electron.window.restore()
-  const onToggleMax = () => { maximized ? onRestore() : onMax() }
-  const onClose = () => (window as any).electron.window.close()
+    setMaximized(isMaximized);
+  }, [isMaximized]);
 
   return (
-  <div className="titlebar" onDoubleClick={onToggleMax}>
+  <div className="titlebar">
       <div className="titlebar-left">
         {icon ? <div className="titlebar-icon" style={{ backgroundImage: `url(${icon})` }} /> : <div className="titlebar-icon placeholder" />}
   <div className="titlebar-title">{resolvedTitle}</div>
@@ -79,13 +56,13 @@ export default function TitleBar({ title, icon, onSearch, onNavigate, activeTab 
       
   {/* Additional right-side custom buttons could go here */}
       <div className="titlebar-right titlebar-window-buttons">
-  <button className="tb-btn tb-min" onClick={onMin} aria-label={t('window.minimize','Minimize')}>—</button>
+  <button className="tb-btn tb-min" onClick={minimize} aria-label={t('window.minimize','Minimize')}>—</button>
         {maximized ? (
-          <button className="tb-btn tb-restore" onClick={onToggleMax} aria-label={t('window.restore','Restore')}>❐</button>
+          <button className="tb-btn tb-restore" onClick={restore} aria-label={t('window.restore','Restore')}>❐</button>
         ) : (
-          <button className="tb-btn tb-max" onClick={onToggleMax} aria-label={t('window.maximize','Maximize')}>▢</button>
+          <button className="tb-btn tb-max" onClick={maximize} aria-label={t('window.maximize','Maximize')}>▢</button>
         )}
-  <button className="tb-btn tb-close" onClick={onClose} aria-label={t('window.close','Close')}>✕</button>
+  <button className="tb-btn tb-close" onClick={close} aria-label={t('window.close','Close')}>✕</button>
       </div>
     </div>
   )
