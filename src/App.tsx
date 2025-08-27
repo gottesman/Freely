@@ -33,6 +33,40 @@ export default function App() {
 
 
 function Main() {
+  // Track window maximized state
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    // Only run in Electron
+    if (typeof window === 'undefined' || !(window as any).electron) return;
+    const electron = (window as any).electron;
+    // Listen for maximize/unmaximize events from preload
+    if (electron?.onWindowMaximize && electron?.onWindowUnmaximize) {
+      electron.onWindowMaximize(() => setMaximized(true));
+      electron.onWindowUnmaximize(() => setMaximized(false));
+      // Query initial state if available
+      if (electron?.isWindowMaximized) {
+        setMaximized(!!electron.isWindowMaximized());
+      }
+    } else if (electron?.ipcRenderer) {
+      // Fallback: listen via IPC
+      electron.ipcRenderer.on('window-maximize', () => setMaximized(true));
+      electron.ipcRenderer.on('window-unmaximize', () => setMaximized(false));
+      // Query initial state if available
+      if (electron?.isWindowMaximized) {
+        setMaximized(!!electron.isWindowMaximized());
+      }
+    }
+    // Cleanup listeners on unmount
+    return () => {
+      if (electron?.removeWindowMaximize && electron?.removeWindowUnmaximize) {
+        electron.removeWindowMaximize();
+        electron.removeWindowUnmaximize();
+      } else if (electron?.ipcRenderer) {
+        electron.ipcRenderer.removeAllListeners('window-maximize');
+        electron.ipcRenderer.removeAllListeners('window-unmaximize');
+      }
+    };
+  }, []);
   const { ready: dbReady, getSetting, setSetting } = useDB()
   const { ready, states } = useAppReady(dbReady)
   const { t } = useI18n();
@@ -143,6 +177,21 @@ function Main() {
   }, []);
 
   const handleNavigate = useCallback((dest: string) => setActiveTab(dest), []);
+
+  // Deduplicating selection handlers to avoid double-opening the song info tab
+  const handleSelectTrack = useCallback((id?: string) => {
+    if (!id) return;
+    setSongInfoTrackId(prev => (prev === id ? prev : id));
+    setActiveTab(prev => (prev === 'song' ? prev : 'song'));
+  }, []);
+
+  const handleActivateSongInfo = useCallback(() => {
+    const current = currentTrackIdRef.current;
+    if (current) {
+      setSongInfoTrackId(prev => (prev === current ? prev : current));
+    }
+    setActiveTab(prev => (prev === 'song' ? prev : 'song'));
+  }, []);
 
   function persistLocal(){
     try {
@@ -276,7 +325,7 @@ function Main() {
   )
 
   return (
-      <div className={"app" + (draggingLeft || draggingRight ? ' is-resizing' : '')}>
+      <div className={"app" + (draggingLeft || draggingRight ? ' is-resizing' : '') + (maximized ? ' maximized' : '')}>
       <PromptProvider>
         <div className="bg" />
         <TitleBar
@@ -324,7 +373,7 @@ function Main() {
                 onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
                 onSelectAlbum={(id)=> { setAlbumInfoAlbumId(id); setActiveTab('album'); }}
                 onSelectPlaylist={(id)=> { setPlaylistInfoPlaylistId(prev => { if(prev===id) return prev; return id; }); setActiveTab('playlist'); }}
-                onSelectTrack={(id)=> { setSongInfoTrackId(id); setActiveTab('song'); }}
+                onSelectTrack={(id)=> { handleSelectTrack(id); }}
               />
               <LyricsOverlay open={lyricsOpen} onClose={() => setLyricsOpen(false)} />
             </div>
@@ -351,7 +400,7 @@ function Main() {
           <BottomPlayer
             lyricsOpen={lyricsOpen}
             onToggleLyrics={() => setLyricsOpen(o => !o)}
-            onActivateSongInfo={() => { if(currentTrackIdRef.current){ setSongInfoTrackId(currentTrackIdRef.current); } setActiveTab('song'); }}
+            onActivateSongInfo={() => { handleActivateSongInfo(); }}
             onToggleQueueTab={() => {
               // Toggle between queue and artist tabs without forcing expansion.
               // Previously we auto-expanded the right panel when activating the queue;

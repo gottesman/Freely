@@ -88,7 +88,22 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
   // (Removed artist biography display; we now show track credits instead.)
   const [writers, setWriters] = useState<string[]|undefined>();
   const [writersLoading, setWritersLoading] = useState(false);
-  const effectiveTrackId = trackId || playingTrackId;
+  // selectedTrackId is initialized from prop `trackId` if provided, otherwise
+  // from the current playback track at mount. It will only change when the
+  // parent explicitly provides a different `trackId` prop. We do NOT follow
+  // playback changes automatically to avoid the tab updating when the queue
+  // advances.
+  const [selectedTrackId, setSelectedTrackId] = useState<string | undefined>(() => trackId ?? playingTrackId);
+
+  // Keep selectedTrackId in sync with explicit prop changes only
+  useEffect(() => {
+    if (trackId !== undefined && trackId !== selectedTrackId) {
+      setSelectedTrackId(trackId);
+    }
+    // if parent clears trackId (undefined), do not automatically switch to
+    // playback changes — keep the current selectedTrackId until user picks a track
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackId]);
   
   // Scroll position preservation
   const containerRef = useRef<HTMLElement>(null);
@@ -98,13 +113,13 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
   useEffect(()=>{
     let cancelled = false;
     async function load(){
-      console.log('🎵 SongInfoTab: Track loading started for ID:', effectiveTrackId);
+      console.log('🎵 SongInfoTab: Track loading started for ID:', selectedTrackId);
       setTrack(undefined);
-      if(!effectiveTrackId) {
-        console.log('🎵 SongInfoTab: No effective track ID, skipping track load');
+      if(!selectedTrackId) {
+        console.log('🎵 SongInfoTab: No selected track ID, skipping track load');
         return;
       }
-      if(playbackTrack && playbackTrack.id === effectiveTrackId){ 
+      if(playbackTrack && playbackTrack.id === selectedTrackId){ 
         console.log('🎵 SongInfoTab: Using playback track:', playbackTrack.name);
         setTrack(playbackTrack); 
         return; 
@@ -113,7 +128,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
       try {
         if(w.electron?.spotify?.getTrack){
           console.log('🎵 SongInfoTab: Loading track via Electron API');
-          const tr: SpotifyTrack = await w.electron.spotify.getTrack(effectiveTrackId);
+          const tr: SpotifyTrack = await w.electron.spotify.getTrack(selectedTrackId as string);
           if(!cancelled) {
             console.log('🎵 SongInfoTab: Track loaded via Electron:', tr?.name);
             setTrack(tr);
@@ -122,7 +137,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
           console.log('🎵 SongInfoTab: Loading track via Spotify Client');
           try {
             console.log('🎵 SongInfoTab: About to call spotifyClient.getTrack()');
-            const tr = await spotifyClient.getTrack(effectiveTrackId);
+            const tr = await spotifyClient.getTrack(selectedTrackId as string);
             console.log('🎵 SongInfoTab: spotifyClient.getTrack() completed:', tr?.name);
             if(!cancelled) {
               console.log('🎵 SongInfoTab: Track loaded via Client:', tr?.name);
@@ -140,7 +155,8 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     }
     load();
     return ()=> { cancelled = true; };
-  }, [effectiveTrackId, playbackTrack?.id, spotifyClient]);
+  // only reload when selectedTrackId (explicit selection) changes or spotify client changes
+  }, [selectedTrackId, spotifyClient]);
 
   // Preserve scroll position during track transitions
   useEffect(() => {
@@ -148,7 +164,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     if (containerRef.current) {
       scrollPositionRef.current = containerRef.current.scrollTop;
     }
-  }, [effectiveTrackId]);
+  }, [selectedTrackId]);
 
   // Restore scroll position after content loads
   useEffect(() => {
@@ -378,7 +394,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     <section ref={containerRef} className="now-playing" aria-labelledby="np-heading">
       <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
         <div className="np-hero-inner">
-          <h1 id="np-heading" className="np-title">{ track ? track.name : (effectiveTrackId ? t('np.loading') : t('np.noTrack')) }</h1>
+          <h1 id="np-heading" className="np-title">{ track ? track.name : (selectedTrackId ? t('np.loading') : t('np.noTrack')) }</h1>
           {track && (
             <div className="np-meta-line">
               <span className="np-artists">
@@ -443,8 +459,8 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
       <div className="np-section np-album-tracks" aria-label={t('np.albumTrackList','Album track list')}>
         <h4 className="np-sec-title">{t('np.fromSameAlbum')}</h4>
         {album && (<div className="np-album-heading"><span className="np-album-name" title={album.name}>{album.name}</span><span className="np-album-trackcount">{t('np.tracks', undefined, { count: album.totalTracks })}</span></div>)}
-        {!track && effectiveTrackId && !albumTracks && <p className="np-hint">{t('np.loading')}</p>}
-        {!effectiveTrackId && <p className="np-hint">{t('np.selectTrackHint')}</p>}
+  {!track && selectedTrackId && !albumTracks && <p className="np-hint">{t('np.loading')}</p>}
+  {!selectedTrackId && <p className="np-hint">{t('np.selectTrackHint')}</p>}
         {tracksLoading && <p className="np-hint">{t('np.loadingTracks')}</p>}
         {albumTracks && (
           <TrackList

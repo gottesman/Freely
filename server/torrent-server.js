@@ -3,12 +3,13 @@ const fs = require('fs');
 const express = require('express');
 const multer = require('multer');
 const WebTorrent = require('webtorrent');
+const subdir = "data"
 
-const upload = multer({ dest: path.join(__dirname, 'uploads') });
+const upload = multer({ dest: path.join(__dirname, subdir) });
 const client = new WebTorrent();
 const app = express();
 const PORT = process.env.PORT || 9000;
-const PID_FILE = path.join(__dirname, '.torrent-server.pid');
+const PID_FILE = path.join(__dirname, subdir, '.torrent-server.pid');
 
 // Simple CORS for dev: allow browser dev server to call this API
 app.use((req, res, next) => {
@@ -75,7 +76,7 @@ async function ensureNoExistingServer() {
 // Expose a simple JSON API for torrent searching so the renderer (vite) can use it in dev
 // Simple in-memory cache for search responses (with disk persistence)
 const SEARCH_CACHE_TTL_SECONDS = parseInt(process.env.TORRENT_SEARCH_CACHE_TTL_SECONDS || '86400', 10);
-const SEARCH_CACHE_FILE = path.join(__dirname, 'search-cache.json');
+const SEARCH_CACHE_FILE = path.join(__dirname, subdir, 'search-cache.json');
 const searchCache = new Map(); // key -> { ts: number, value: any }
 
 // Persistence helpers: load on startup, debounce saves, flush on exit
@@ -123,7 +124,7 @@ function flushSearchCacheToDiskSync() {
 }
 
 // Load existing cache now
-loadSearchCacheFromDisk();
+// loadSearchCacheFromDisk();
 
 app.get('/api/torrent-search', async (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -138,29 +139,14 @@ app.get('/api/torrent-search', async (req, res) => {
   const normKey = `${normalize(q)}::${page}`;
   const now = Date.now();
 
-  // Build query words for defensive cache validation
-  const qWords = normalize(q).split(' ').filter(Boolean);
-
-  // Helper to verify cached entry relevance (must contain at least one query word)
-  const cacheMatchesQuery = (cached) => {
-    if (!cached || !Array.isArray(cached.value)) return false;
-    if (qWords.length === 0) return true; // empty query: accept cached
-    for (const item of cached.value) {
-      if (!item || !item.title) continue;
-      const title = String(item.title).toLowerCase().replace(/[^a-z]+/g, ' ');
-      if (qWords.some(w => title.includes(w))) return true;
-    }
-    return false;
-  };
-
   // Check both raw and normalized cache entries for backward compatibility
   const cachedRaw = searchCache.get(rawKey);
-  if (cachedRaw && (now - cachedRaw.ts) < SEARCH_CACHE_TTL_SECONDS * 1000 && cacheMatchesQuery(cachedRaw)) {
+  if (cachedRaw && (now - cachedRaw.ts) < SEARCH_CACHE_TTL_SECONDS * 1000) {
     console.log(`[torrent-search] cache hit rawKey=${rawKey} q="${q}" page=${page} items=${(cachedRaw.value||[]).length}`);
     return res.json(Array.isArray(cachedRaw.value) ? cachedRaw.value.slice() : cachedRaw.value);
   }
   const cachedNorm = searchCache.get(normKey);
-  if (cachedNorm && (now - cachedNorm.ts) < SEARCH_CACHE_TTL_SECONDS * 1000 && cacheMatchesQuery(cachedNorm)) {
+  if (cachedNorm && (now - cachedNorm.ts) < SEARCH_CACHE_TTL_SECONDS * 1000) {
     console.log(`[torrent-search] cache hit normKey=${normKey} q="${q}" page=${page} items=${(cachedNorm.value||[]).length}`);
     return res.json(Array.isArray(cachedNorm.value) ? cachedNorm.value.slice() : cachedNorm.value);
   }
@@ -168,12 +154,9 @@ app.get('/api/torrent-search', async (req, res) => {
 
   try {
     const results = await torrentSearchHelper.search({ query: String(q), page });
-    // Ensure consistent ordering: sort by seeders desc
-    const sorted = (results || []).slice().sort((a, b) => (b.seeders || 0) - (a.seeders || 0));
-
     // Deep-clone before caching to prevent future mutation affecting cached copy
     let cacheValue;
-    try { cacheValue = JSON.parse(JSON.stringify(sorted)); } catch (_) { cacheValue = sorted.slice(); }
+    try { cacheValue = JSON.parse(JSON.stringify(results)); } catch (_) { cacheValue = results.slice(); }
 
     try {
       // Save normalized key going forward and also preserve raw key for compatibility
@@ -183,7 +166,7 @@ app.get('/api/torrent-search', async (req, res) => {
     } catch (_) {}
 
     // Return a fresh copy to the client
-    return res.json(sorted);
+    return res.json(results);
   } catch (e) {
     res.status(500).json({ error: e?.message || String(e) });
   }

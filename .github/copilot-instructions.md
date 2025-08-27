@@ -1,0 +1,59 @@
+## Welcome to Freely!
+
+This document provides a guide for AI coding agents to effectively contribute to the Freely codebase.
+
+### Big Picture
+
+Freely is a decentralized, peer-to-peer music player built with Electron, React, and TypeScript. It's designed to be a web-first application with a focus on local-first data ownership and peer-to-peer streaming.
+
+The application is composed of three main parts:
+
+1.  **Electron Main Process (`electron/main.js`)**: This is the entry point of the desktop application. It's responsible for creating the main browser window, handling native OS integrations, and managing the application's lifecycle. It also acts as a backend for the renderer process, handling tasks that require Node.js APIs, such as file system access and spawning child processes.
+
+2.  **React Renderer Process (`src/`)**: This is the user interface of the application. It's a single-page application built with React and TypeScript, and it's responsible for rendering the UI and handling user interactions. It communicates with the main process through a preload script (`electron/preload.js`) that exposes a secure API for accessing Node.js and Electron APIs.
+
+3.  **Torrent Server (`server/torrent-server.js`)**: This is a separate Node.js process that's responsible for handling the peer-to-peer streaming of music. It's spawned by the main process and communicates with it through IPC.
+
+### Developer Workflows
+
+To get started with development, you'll need to have Node.js and npm installed. Once you've cloned the repository, you can install the dependencies and start the development server by running the following commands:
+
+```bash
+npm install
+npm run dev
+```
+
+This will start a Vite development server for the React application and an Electron application that will load the development server's URL.
+
+To build the application for development, you can use the following command:
+
+```bash
+npm run electron:dev
+```
+
+To build the application for production, you can use the following command:
+
+```bash
+npm run electron:build
+```
+
+This will create a distributable package for your operating system in the `build` directory.
+
+### Project-Specific Conventions
+
+*   **State Management**: The application uses a combination of React's built-in state management and a local-first database (sql.js) for storing user data. The database is managed by the `DBProvider` component, which provides a `useDB` hook for accessing the database.
+
+*   **Styling**: The application uses a combination of CSS modules and a global stylesheet (`src/app.css`). The global stylesheet is used for defining the overall look and feel of the application, while CSS modules are used for styling individual components.
+
+*   **API Integration**: The application integrates with the Genius and Spotify APIs for fetching music metadata. The API calls are made from the main process and exposed to the renderer process through the preload script. This is done to avoid exposing API keys to the renderer process.
+
+### Key Files and Directories
+
+*   `electron/main.js`: The entry point of the Electron application.
+*   `electron/preload.js`: The preload script that exposes a secure API to the renderer process.
+*   `src/App.tsx`: The main application component.
+*   `src/core/db.tsx`: The database provider and hook.
+*   `src/core/playback.tsx`: The playback provider and hook. (not yet implemented)
+*   `server/torrent-server.js`: The torrent server.
+*   `vite.config.ts`: The Vite configuration file.
+*   `package.json`: The project's dependencies and scripts.

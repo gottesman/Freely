@@ -2,10 +2,18 @@
 .app { border-radius: var(--app-border-radius); overflow:hidden; display:flex; flex-direction:column; background: rgba(var(--bg), var(--bg-opacity)); height:calc(100vh - (var(--app-shadow-size) * 2)); margin: var(--app-shadow-size); box-shadow: inset 0 0 1px 1px var(--app-border-color), var(--app-shadow-color) 0 2px var(--app-shadow-size) 0; }
 .app::before { content:""; position:absolute; inset:0; background: var(--color-bg-solid); z-index:-1; }
 
-/* .maximized { box-shadow:none; margin:0; } */
+.maximized {
+    --app-shadow-size: 0px;
+    box-shadow: none;
+    border: none;
+    border-radius: 0;
+}
+.maximized .tb-btn{
+    border: none;
+}
 
 .window-body { overflow:hidden; width:100%; height:100%; display:flex; flex-direction:column; gap:var(--footer-gap); }
-.content { padding:0 16px; display:flex; width:100%; height:100%; min-width:0; min-height:0; overflow:hidden; box-sizing:border-box; }
+.content { padding:0 var(--padding-sm); display:flex; width:100%; height:100%; min-width:0; min-height:0; overflow:hidden; box-sizing:border-box; }
 .content .left-panel, .content .right-panel { flex:0 0 auto; }
 .center-area { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:12px; position:relative; border-radius:var(--app-border-radius); overflow:hidden; clip-path: inset(0 round var(--app-border-radius)); isolation:isolate; contain:paint; }
 .center-area .center-tabs { flex:1 1 auto; min-width:0; width:100%; }
