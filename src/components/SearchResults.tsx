@@ -174,6 +174,27 @@ export default function SearchResults({
     )
   }
 
+  function img(
+    type?: 'track' | 'album' | 'artist' | 'playlist',
+    images?: { url: string; alt?: string }[] | undefined,
+    preselect?: number
+  ) {
+    type = type ?? 'track';
+    const icon = type === 'track' ? 'music_note'
+               : type === 'album' ? 'album'
+               : type === 'artist' ? 'person'
+               : 'queue_music';
+    return (
+      <div className="media-cover-inner">
+        {images && images.length ? (
+          <img src={images[Math.min(preselect ?? images.length - 1, images.length - 1)].url} alt="" />
+        ) : (
+          <span className="material-symbols-rounded">{icon}</span>
+      )}
+    </div>
+    )
+  }
+
   return (
     <section className="search-results">
       <div className='sr-header'>
@@ -203,7 +224,7 @@ export default function SearchResults({
                   {displayedSongs.map(s => (
                       <li key={String(s.id)} className="sr-item" onClick={() => onSelectTrack && onSelectTrack(String(s.id))}>
                         <div className="sr-thumb">
-                          {s.album?.images?.[s.album?.images?.length - 1]?.url ? <img src={s.album.images[s.album.images.length - 1].url} alt=""/> : <span className="material-symbols-rounded">music_note</span>}
+                          {img('track', s.album?.images, 1)}
                           <div className='play-button' onClick={(e)=>{ e.stopPropagation(); playNow(String(s.id)); }}>
                             <span className="material-symbols-rounded filled">play_arrow</span>
                           </div>
@@ -236,13 +257,7 @@ export default function SearchResults({
                   {displayedArtists.map(a => (
                       <div className="media-card compact" role="button" onClick={() => onSelectArtist && onSelectArtist(String(a.id))}>
                         <div className="media-cover circle">
-                          <div className="media-cover-inner">
-                            {a.images?.[a.images?.length - 1]?.url ? (
-                              <img src={a.images[a.images.length - 1].url} alt="" />
-                            ) : (
-                              <span className="material-symbols-rounded">person</span>
-                            )}
-                          </div>
+                          {img('artist', a.images, 1)}
                           {renderCollectionPlay('artist', a.id)}
                         </div>
                         <h3 className="media-title">{highlight(a.name, query)}</h3>
@@ -261,13 +276,7 @@ export default function SearchResults({
                   {displayedAlbums.map(al => (
                       <div className="media-card compact" role="button" onClick={() => onSelectAlbum && onSelectAlbum(String(al.id))}>
                         <div className="media-cover square">
-                          <div className="media-cover-inner">
-                            {al.images?.[al.images.length - 1]?.url ? (
-                              <img src={al.images[al.images.length - 1].url} alt="" />
-                            ) : (
-                              <span className="material-symbols-rounded">album</span>
-                            )}
-                          </div>
+                          {img('album', al.images, 1)}
                           {renderCollectionPlay('album', al.id)}
                         </div>
                         <h3 className="media-title">{highlight(al.name, query)}</h3>
@@ -322,7 +331,7 @@ export default function SearchResults({
                     <td>
                       <div className="sr-title-with-thumb">
                         <div className="sr-thumb-inline" aria-hidden>
-                          {s.album?.images?.[s.album?.images?.length - 1]?.url ? <img src={s.album.images[s.album.images.length - 1].url} alt="" /> : <span className="material-symbols-rounded">music_note</span>}
+                          {img('track', s.album?.images, 1)}
                         </div>
                         <div className="sr-title-meta">
                           <div className="sr-table-title">{highlight(s.name, query)}</div>
@@ -343,7 +352,10 @@ export default function SearchResults({
             <div className="sr-grid-vertical">
               {(artists||[]).map(a => (
                 <div key={String(a.id)} className="media-card" onClick={() => onSelectArtist && onSelectArtist(String(a.id))}>
-                  <div className="media-cover circle"><div className="media-cover-inner">{a.images?.[0]?.url ? <img src={a.images[0].url} alt=""/> : <span className="material-symbols-rounded">person</span>}</div>{renderCollectionPlay('artist', a.id)}</div>
+                  <div className="media-cover circle">
+                    {img('artist', a.images, 1)}
+                    {renderCollectionPlay('artist', a.id)}
+                  </div>
                   <h3 className="media-title">{a.name}</h3>
                 </div>
               ))}
@@ -354,7 +366,10 @@ export default function SearchResults({
             <div className="sr-grid-vertical">
               {(albums||[]).map(al => (
                 <div key={String(al.id)} className="media-card" onClick={() => onSelectAlbum && onSelectAlbum(String(al.id))}>
-                  <div className="media-cover square"><div className="media-cover-inner">{al.images?.[0]?.url ? <img src={al.images[0].url} alt=""/> : <span className="material-symbols-rounded">album</span>}</div>{renderCollectionPlay('album', al.id)}</div>
+                  <div className="media-cover square">
+                    {img('album', al.images, 1)}
+                    {renderCollectionPlay('album', al.id)}
+                  </div>
                   <h3 className="media-title">{highlight(al.name, query)}</h3>
                   {((al.artists && al.artists.length) || al.artist) ? (
                     <div className="media-meta">{highlight((al.artists?.map(a => a.name).join(', ')) || al.artist || '', query)}</div>
@@ -368,7 +383,10 @@ export default function SearchResults({
             <div className="sr-grid-vertical">
               {(playlists||[]).map(p => (
                 <div key={String(p.id)} className="media-card" onClick={() => onSelectPlaylist && onSelectPlaylist(String(p.id))}>
-                  <div className="media-cover square"><div className="media-cover-inner">{p.images?.[0]?.url ? <img src={p.images[0].url} alt=""/> : <span className="material-symbols-rounded">queue_music</span>}</div>{renderCollectionPlay('playlist', p.id)}</div>
+                  <div className="media-cover square">
+                    {img('playlist', p.images, 1)}
+                    {renderCollectionPlay('playlist', p.id)}
+                  </div>
                   <h3 className="media-title">{p.name}</h3>
                   <div className="media-meta">{(p.totalTracks || 0) + ' ' + t('pl.tracks','tracks')}</div>
                 </div>

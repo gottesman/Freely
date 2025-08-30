@@ -1,96 +1,50 @@
 {
-    "name": "freely-player",
-    "version": "0.7.1",
-    "author": {
-        "name": "Gottesman",
-        "email": "gottesman@example.com"
-    },
-    "description": "A local music player with torrent streaming support.",
-    "main": "electron/main.js",
-    "private": true,
-    "scripts": {
-        "fetch-wasm": "node scripts/copy-sql-wasm.js",
-        "vendor-webtorrent": "node scripts/vendor-webtorrent.js",
-        "postinstall": "npm run fetch-wasm && npm run vendor-webtorrent",
-        "dev": "vite",
-        "prebuild": "node -e \"const f=require('fs'); if(f.existsSync('dist')){ const rimraf=(p)=>{ require('child_process').execSync(process.platform === 'win32' ? `rmdir /s /q \"${p}\"` : `rm -rf \"${p}\"`); }; rimraf('dist'); }\"",
-        "build": "npm run prebuild && vite build",
-        "build:scrapers": "tsc -p tsconfig.electron.json",
-        "build:ci": "set NODE_ENV=production && npm run build",
-        "preview": "vite preview",
-        "start-torrent-server": "node server/torrent-server.js",
-        "electron:dev": "npm run build:scrapers && npm run build && electron .",
-        "electron:build": "npm run build:scrapers && npm run build && electron-builder --win --x64",
-        "prune": "npm prune --production",
-        "prune-and-build": "npm run build && npm prune --production && electron-builder --win --x64",
-    "smoke": "npm run build && npx electron . --enable-logging",
-    "tauri:dev": "npx tauri dev",
-    "tauri:build": "npm run build && npx tauri build",
-        "lint:css": "stylelint \"src/**/*.css\""
-    },
-    "dependencies": {
-        "buffer": "^6.0.3",
-        "cheerio": "^1.0.0-rc.12",
-        "dotenv": "^16.4.5",
-        "express": "^4.18.2",
-        "multer": "^1.4.5-lts.1",
-        "node-fetch": "^3.3.1",
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0",
-        "sql.js": "^1.8.0",
-        "webtorrent": "^1.0.0"
-    },
-    "devDependencies": {
-        "@types/node": "^24.3.0",
-        "@types/react": "^18.2.21",
-        "@types/react-dom": "^18.2.7",
-        "@types/webtorrent": "^0.110.1",
-        "@types/ws": "^8.18.1",
-        "@vitejs/plugin-react": "^4.0.0",
-        "astral-regex": "^2.0.0",
-        "electron": "^26.6.10",
-        "electron-builder": "^24.6.0",
-        "prettier": "^2.8.8",
-        "stylelint": "^16.8.0",
-        "stylelint-config-standard": "^36.0.0",
-        "stylelint-order": "^6.0.4",
-        "typescript": "^5.9.2",
-        "vite": "^7.1.2"
-    ,
-        "@tauri-apps/cli": "^2.5.1",
-        "@tauri-apps/api": "^2.5.0"
-    },
-    "build": {
-        "appId": "com.freely.player",
-        "productName": "Freely Player",
-        "asar": true,
-        "asarUnpack": [
-            "server/**"
-        ],
-        "compression": "maximum",
-        "npmRebuild": false,
-        "files": [
-            "dist/**",
-            "electron/**",
-            "server/**",
-            "config/**",
-            "package.json",
-            "!**/*.map",
-            "!**/__tests__/**",
-            "!**/tests/**",
-            "!**/*.md",
-            "!**/docs/**",
-            "!**/examples/**",
-            "!**/example/**"
-        ],
-        "directories": {
-            "output": "build"
-        },
-        "win": {
-            "target": [
-                "nsis"
-            ],
-            "icon": "public/icon.ico"
-        }
-    }
+  "name": "freely-player",
+  "version": "0.8.0",
+  "author": {
+    "name": "Gottesman",
+    "email": "gottesman@example.com"
+  },
+  "description": "A local music player with torrent streaming support.",
+  "private": true,
+  "scripts": {
+    "dev:frontend": "vite",
+    "dev": "npm-run-all --parallel dev:frontend build:server",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "build:server": "webpack --config webpack.server.config.js"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-shell": "^2.3.1",
+    "buffer": "^6.0.3",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^3.3.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "utp-native": "^2.5.3",
+    "webtorrent": "^1.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.0.0-beta.18",
+    "@tauri-apps/cli": "^2.8.3",
+    "@types/node": "^20.14.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/webtorrent": "^0.109.9",
+    "@types/ws": "^8.5.10",
+    "@vitejs/plugin-react": "^4.3.1",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.3.1",
+    "stylelint": "^16.6.1",
+    "stylelint-config-standard": "^36.0.0",
+    "stylelint-order": "^6.0.4",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.13",
+    "webpack": "^5.101.3",
+    "webpack-cli": "^6.0.1"
+  }
 }

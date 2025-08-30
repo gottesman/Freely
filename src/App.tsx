@@ -5,7 +5,7 @@ import RightPanel from './components/RightPanel'
 import BottomPlayer from './components/BottomPlayer'
 import LyricsOverlay from './components/LyricsOverlay'
 import AddToPlaylistModal from './components/AddToPlaylistModal'
-import { DBProvider, useDB } from './core/db'
+import { DBProvider, useDB } from './core/dbIndexed'
 import { PlaybackProvider, usePlayback } from './core/playback'
 import TitleBar from './components/TitleBar'
 import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts'
@@ -13,6 +13,7 @@ import { useAppReady } from './core/ready'
 import { useI18n, I18nProvider } from './core/i18n'
 import { AddToPlaylistModalProvider, useGlobalAddToPlaylistModal } from './core/AddToPlaylistModalContext'
 import { PromptProvider } from './core/PromptContext'
+import { ContextMenuProvider } from './core/ContextMenuContext'
 
 export default function App() {
   return (
@@ -20,9 +21,11 @@ export default function App() {
       <DBProvider>
         <PlaybackProvider>
           <AlertsProvider>
+            <ContextMenuProvider>
             <AddToPlaylistModalProvider>
                 <Main />
               </AddToPlaylistModalProvider>
+            </ContextMenuProvider>
           </AlertsProvider>
         </PlaybackProvider>
   </DBProvider>
@@ -37,49 +40,76 @@ function Main() {
   // Track window maximized state in Tauri
   const [maximized, setMaximized] = useState(false);
 
-  useEffect(() => {
+   useEffect(() => {
     let isMounted = true;
-    let unlisten: (() => void) | undefined;
+    const unlistenFns: (() => void)[] = [];
 
+    // The core setup logic remains the same.
     const setupEventListeners = async () => {
-      // Dynamically import the API inside useEffect
+      // Add a check for isMounted at the beginning.
+      if (!isMounted) return;
+
+      console.log('[App] Attempting to set up Tauri event listeners...');
       const { Window } = await import('@tauri-apps/api/window');
-      // Use a local reference to avoid relying on state immediately after setState
+
+      if (!Window || !Window.getCurrent) {
+        console.warn('[App] Tauri Window API is not available.');
+        return;
+      }
+
       const wnd = Window.getCurrent();
       setAppWindow(wnd);
       console.log('[App] appWindow successfully retrieved for window:', wnd?.label);
 
-      const updateMaximizedState = async () => {
-        if (!isMounted) return;
-        try {
-          const isMax = await wnd.isMaximized();
-          console.log('[App] Window maximized state is:', isMax);
-          setMaximized(isMax);
-        } catch (e) {
-          console.warn('[App] failed to read maximized state', e);
+      try {
+        const isMax = await wnd.isMaximized();
+        if (isMounted) setMaximized(isMax);
+      } catch (e) {
+        console.warn('[App] failed to read initial maximized state', e);
+      }
+
+      const unlistenMaximize = await wnd.listen('window:maximize', () => {
+        if (isMounted) {
+          console.log('[App] Received "window:maximize" event from backend.');
+          setMaximized(true);
         }
-      };
+      });
+      unlistenFns.push(unlistenMaximize);
 
-      // Set initial state
-      await updateMaximizedState();
-
-      // Listen to the 'tauri://resize' event.
-      unlisten = await wnd.listen('tauri://resize', updateMaximizedState);
+      const unlistenUnmaximize = await wnd.listen('window:unmaximize', () => {
+        if (isMounted) {
+          console.log('[App] Received "window:unmaximize" event from backend.');
+          setMaximized(false);
+        }
+      });
+      unlistenFns.push(unlistenUnmaximize);
       
-      console.log('[App] Event listener for "tauri://resize" has been set up.');
+      console.log('[App] Successfully set up Tauri event listeners.');
     };
 
-    setupEventListeners().catch(e => {
-        console.error("Failed to set up Tauri event listeners:", e);
-    });
+    // --- THIS IS THE FIX ---
+    // We create an `init` function that calls our setup.
+    const init = () => {
+      setupEventListeners().catch(e => {
+          console.error("Failed to execute Tauri event listener setup:", e);
+      });
+    };
 
-    // Cleanup function
+    // Check if the DOM is already loaded. If it is, we can run our setup immediately.
+    // Otherwise, we wait for the 'DOMContentLoaded' event.
+    if (document.readyState === 'interactive' || document.readyState === 'complete') {
+      init();
+    } else {
+      window.addEventListener('DOMContentLoaded', init);
+    }
+    // --- END OF FIX ---
+
+    // The cleanup function now needs to handle the DOM listener as well.
     return () => {
       isMounted = false;
-      if (unlisten) {
-        console.log('[App] Cleaning up event listener.');
-        unlisten(); // Execute the unlisten function
-      }
+      window.removeEventListener('DOMContentLoaded', init);
+      console.log(`[App] Cleaning up ${unlistenFns.length} event listener(s).`);
+      unlistenFns.forEach(unlisten => unlisten());
     };
   }, []);
 

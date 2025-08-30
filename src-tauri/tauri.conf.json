@@ -1,31 +1,30 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "build": {
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build && npm run build:server",
+    "frontendDist": "../dist"    
   },
   "bundle": {
     "active": true,
-    "icon": ["public/icon-192.png"],
-    "resources": ["./dist"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon-192.png"
+    ],
     "windows": {
       "allowDowngrades": true,
-      "certificateThumbprint": null,
-      "digestAlgorithm": null,
-      "nsis": null,
-      "signCommand": null,
-      "timestampUrl": null,
-      "tsp": false,
       "webviewInstallMode": {
         "silent": true,
         "type": "downloadBootstrapper"
-      },
-      "wix": null
+      }
     },
-    "targets": "all" 
+    "targets": ["nsis"],
+    "resources": [
+      "server-dist"
+    ]
   },
-
   "app": {
     "windows": [
       {
@@ -41,7 +40,6 @@
         "minWidth": 800,
         "minHeight": 600,
         "maximizable": true,
-        "maximized": false,
         "closable": true,
         "devtools": true,
         "center": true,
@@ -53,32 +51,32 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["*/**"]
+        "scope": [
+          "*/**"
+        ]
       },
       "capabilities": [
         {
           "identifier": "com.freely.player",
           "windows": ["*"],
           "permissions": [
+            
             "core:window:default",
             "core:window:allow-maximize",
             "core:window:allow-unmaximize",
             "core:window:allow-minimize",
             "core:window:allow-close",
             "core:event:default",
+            "core:event:allow-listen",
             "core:path:default"
+
           ]
         }
       ],
       "dangerousDisableAssetCspModification": false,
-      "freezePrototype": false,
-      "pattern": {
-        "use": "brownfield"
-      }
-    },
-    "withGlobalTauri": true
+      "freezePrototype": false
+    }
   },
   "productName": "Freely Player",
   "identifier": "com.freely.player"
 }
-

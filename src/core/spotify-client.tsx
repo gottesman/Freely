@@ -1,6 +1,5 @@
 import SpotifyClient from './spotify'
-import { useDB } from './db'
-import { useEffect, useState } from 'react'
+import { useDB } from './dbIndexed'
 
 // Global cached client instance - now initialized during warmup
 let cachedClient: SpotifyClient | null = null

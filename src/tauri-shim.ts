@@ -31,27 +31,8 @@ const defaultDB = {
     // @ts-ignore
     const tauri = await import('@tauri-apps/api').catch(() => null);
     if (!tauri) throw new Error('tauri API not available');
-    // @ts-ignore
-    const windowApi = await import('@tauri-apps/api/window').catch(() => null);
 
   const invoke = (tauri as any).invoke as any;
-    // windowApi may expose different names across versions; try a few fallbacks
-    let appWindow: any = null;
-    try {
-      if (windowApi?.getCurrentWindow) appWindow = windowApi.getCurrentWindow();
-    } catch (e) {
-      appWindow = null;
-    }
-
-    // Helper to get maximized state
-    const _isMaximized = async () => {
-      try {
-        if (appWindow && typeof appWindow.isMaximized === 'function') return await appWindow.isMaximized();
-        if (invoke) return await invoke('window:isMaximized');
-      } catch (e) {}
-      return false;
-    };
-
 
     const dbShim = {
       read: async () => {

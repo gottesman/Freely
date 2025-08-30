@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useI18n } from '../core/i18n'
-import { useDB } from '../core/db'
+import { useDB } from '../core/dbIndexed'
 import { usePlaylists, broadcastPlaylistsChanged } from '../core/playlists'
 import { usePrompt } from '../core/PromptContext'
 import { useAlerts } from '../core/alerts'

@@ -1,6 +1,6 @@
 node_modules
 dist
-public/sql*
+public/vendor
 server/data
 build*
 logo
@@ -14,3 +14,4 @@ dist-*
 src-tauri/gen
 src-tauri/target
 src-tauri/Cargo.lock
+deprecated*

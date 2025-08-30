@@ -31,7 +31,11 @@ async function applyPolyfills() {
         console.warn('torrentClient polyfills failed (continuing):', e);
     }
 }
-const isBrowser = (typeof window !== 'undefined') && !(window as any).electron;
+// Detect runtime: Tauri, Electron, or Browser
+const wAny: any = typeof window !== 'undefined' ? (window as any) : {};
+const isTauri = !!(wAny.__TAURI__ || wAny.tauri || wAny.__TAURI__);
+const isElectron = !!wAny?.electron;
+const isBrowser = (typeof window !== 'undefined') && !isElectron && !isTauri;
 
 async function ensureClient(): Promise<any> {
     if (client) return client;
@@ -59,7 +63,7 @@ async function ensureClient(): Promise<any> {
     if (isBrowser) {
         const g: any = (globalThis as any);
         if (!g.WebTorrent) {
-            // Wait for vendor bundle to load (max 2s)
+            // Wait for webtorrent vendor bundle to load (max 2s)
             await new Promise((resolve, reject) => {
                 let waited = 0;
                 const interval = setInterval(() => {
@@ -91,10 +95,9 @@ async function ensureClient(): Promise<any> {
     // Node/Electron: import as before
     let wt: any = null;
     try {
-        try { wt = await import('webtorrent'); }
-        catch (_) { wt = await import('webtorrent/webtorrent.min.js'); }
+        wt = await import('webtorrent');
     } catch (err) {
-        throw new Error('Failed to import webtorrent: ' + String(err));
+        throw new Error('Failed to import webtorrent module. Ensure it is installed (npm install webtorrent). Original error: ' + String(err));
     }
 
     const NodeWebTorrent = wt && (wt.default || wt);
@@ -121,8 +124,23 @@ export async function getTorrentFileList(id: string, opts?: { timeoutMs?: number
     const timeoutMs = opts?.timeoutMs ?? 20000;
 
     if (!isBrowser) {
-        // If main-process IPC is available, ask main process to fetch files (recommended for Electron)
+        // Prefer Tauri invoke when running inside a Tauri app
         try {
+            if (isTauri) {
+                // Use the global __TAURI__ invoke if available to avoid pulling in @tauri-apps/api here
+                const tauri = (wAny.__TAURI__ || wAny.tauri || wAny.__TAURI__);
+                if (tauri && typeof tauri.invoke === 'function') {
+                    const res = await tauri.invoke('torrent_get_files', { id, timeoutMs });
+                    return Array.isArray(res) ? res : [];
+                }
+                // Fallback: if using new window.tauri API that exposes 'invoke' under window.__TAURI__.tauri
+                if (wAny.__TAURI__ && wAny.__TAURI__.tauri && typeof wAny.__TAURI__.tauri.invoke === 'function') {
+                    const res = await wAny.__TAURI__.tauri.invoke('torrent_get_files', { id, timeoutMs });
+                    return Array.isArray(res) ? res : [];
+                }
+            }
+
+            // If running in Electron renderer with a main-process torrent helper, prefer IPC
             const w: any = window as any;
             if (w?.electron?.torrent?.getFiles) {
                 const res = await w.electron.torrent.getFiles(id, { timeoutMs });

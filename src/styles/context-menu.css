@@ -1,0 +1,31 @@
+.cm-root{
+  position: fixed;
+  z-index: 10050;
+  transform: translate3d(0,0,0);
+}
+.cm-card, .cm-submenu-list{
+  min-width: 160px;
+  background: color-mix(in srgb, var(--glass-bg-strong) 50%, rgb(var(--bg)) 100%);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+  padding: 6px;
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(10px) saturate(120%);
+}
+.cm-item{
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.cm-submenu::after {
+    content: "chevron_forward";
+    font-family: Material Symbols Rounded, sans-serif;
+}
+.cm-item.disabled{ opacity: 0.45; cursor: default }
+.cm-item:hover{ background: var(--glass-bg-hover) }
+.cm-label{ flex: 1; font-size: 13px }
+.cm-submenu{ position: relative }
+.cm-submenu-list{ position: absolute; left: 100%; top: 0; display: none; min-width: 160px }
+.cm-submenu:hover > .cm-submenu-list{ display: block }

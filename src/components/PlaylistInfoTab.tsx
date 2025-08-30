@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../core/i18n';
-import SpotifyClient, { SpotifyTrack, SpotifyPlaylist } from '../core/spotify'
+import { SpotifyTrack, SpotifyPlaylist } from '../core/spotify'
 import { useSpotifyClient } from '../core/spotify-client'
 import { usePlaylists } from '../core/playlists';
-import { useDB } from '../core/db';
 import { usePlayback } from '../core/playback';
 import TrackList from './TrackList';
 import { usePrompt } from '../core/PromptContext';
@@ -30,8 +29,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
   const [loading, setLoading] = useState(false);
   const { queueIds, setQueue, enqueue, currentIndex } = usePlayback();
   const { playlists, getPlaylistTracks, getPlaylistTrackIds, updatePlaylist, deletePlaylist, removeTrack, refresh, createPlaylistWithTracks } = usePlaylists();
-  const { db } = useDB();
-  const spotifyClient = useSpotifyClient(); // Cached client with DB caching
+  const spotifyClient = useSpotifyClient();
   const prompt = usePrompt();
   const { push: pushAlert } = useAlerts();
 
@@ -94,8 +92,8 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
           const shim: SpotifyPlaylist = { id: playlistId, name: localRec.code==='favorites' ? t('pl.favorites','Favorites') : localRec.name, images: [], totalTracks: localRec.track_count || 0 } as any;
           
           // Get stored tracks with metadata (no API calls needed!)
-          const storedTracks = getPlaylistTracks(localRec.id);
-          
+          const storedTracks = await getPlaylistTracks(localRec.id);
+
           // Check if we have stored metadata or need to fetch from API (legacy support)
           if(storedTracks.length > 0 && storedTracks[0]?.name) {
             // We have stored metadata, use it directly
@@ -105,9 +103,9 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
             setLoading(false); 
             return;
           }
-          
+
           // Legacy fallback: fetch track metadata for stored ids (for old playlists without stored metadata)
-          const ids = getPlaylistTrackIds(localRec.id);
+          const ids = await getPlaylistTrackIds(localRec.id);
           if(ids.length === 0) {
             // Empty playlist
             if(cancelled) return; 

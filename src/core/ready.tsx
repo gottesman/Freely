@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 // Vite: ?url returns final asset URL
 import appCssUrl from '../styles.css?url';
 import SpotifyClient from './spotify';
-import { useDB } from './db';
+import { useDB } from './dbIndexed';
 
 /** App readiness steps:
  * 1. DB ready (handled externally) 

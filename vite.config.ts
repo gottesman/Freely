@@ -1,39 +1,30 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig(({ command, mode }) => ({
+// https://vitejs.dev/config/
+
+export default defineConfig(({}) => ({
   plugins: [react()],
-  base: './',
-  server: { port: 5173 },
+
+  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+  // prevent vite from obscuring rust errors
+  clearScreen: false,
+  // tauri expects a fixed port, fail if that port is not available
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+  // to make use of `TAURI_DEBUG` and other env variables
+  // https://tauri.app/v1/api/config#buildconfig.beforedevcommand
+  envPrefix: ['VITE_', 'TAURI_'],
   build: {
+    // Tauri supports es2021
+    target: process.env.TAURI_PLATFORM == 'windows' ? 'chrome105' : 'safari13',
+    // don't minify for debug builds
+    minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
+    // produce sourcemaps for debug builds
+    sourcemap: !!process.env.TAURI_DEBUG,
     outDir: 'dist',
     emptyOutDir: true,
-    sourcemap: false,
-    target: 'es2020',
-    minify: 'esbuild',
-    chunkSizeWarningLimit: 1500,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id) return;
-          if (id.includes('node_modules')) {
-            if (id.includes('react') || id.includes('react-dom')) return 'vendor_react';
-            if (id.includes('sql.js')) return 'vendor_sqljs';
-            if (id.includes('webtorrent')) return 'vendor_webtorrent';
-            return 'vendor';
-          }
-        }
-      }
-    }
   },
-  optimizeDeps: {
-    include: ['react', 'react-dom', 'sql.js', 'webtorrent'],
-    esbuildOptions: { target: 'es2020' }
-  },
-  define: {
-    'process.env.NODE_ENV': JSON.stringify(mode)
-  },
-  commonjsOptions: {
-    transformMixedEsModules: true
-  }
 }))

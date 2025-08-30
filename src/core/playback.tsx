@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import SpotifyClient, { SpotifyTrack } from './spotify';
 import { createCachedSpotifyClient } from './spotify-client';
-import { useDB } from './db';
+// This import correctly points to the new IndexedDB provider.
+import { useDB } from './dbIndexed';
 
 interface PlaybackContextValue {
   currentTrack?: SpotifyTrack;
@@ -27,7 +28,6 @@ interface PlaybackContextValue {
 
 const PlaybackContext = createContext<PlaybackContextValue | undefined>(undefined);
 
-// Static test track IDs used to seed an initial queue for development/testing
 const TEST_TRACK_IDS = [
   '6suU8oBlW4O2pg88tOXgHo', // existing sample
   '3n3Ppam7vgaVa1iaRUc9Lp', // lose yourself (example popular track)
@@ -44,9 +44,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [queueIds, setQueueIds] = useState<string[]>(TEST_TRACK_IDS);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [trackCache, setTrackCache] = useState<Record<string, SpotifyTrack | undefined>>({});
+  
   const { getApiCache, setApiCache, ready } = useDB();
 
-  // Create cached Spotify client
   const spotifyClient = ready ? createCachedSpotifyClient({ getApiCache, setApiCache }) : new SpotifyClient();
 
   const fetchTrack = async (id: string) => {
@@ -72,29 +72,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { fetchTrack(trackId); }, [trackId]);
 
-  // Keep current index in sync if trackId changes externally
   useEffect(()=>{
     const idx = queueIds.indexOf(trackId);
     if(idx !== -1 && idx !== currentIndex) setCurrentIndex(idx);
   }, [trackId, queueIds]);
 
-  // Trim any tracks that appear before the current one so items "above" the
-  // playing track are removed automatically after navigation or reordering.
   useEffect(() => {
     if(currentIndex > 0){
       setQueueIds(q => {
-        // safeguard if index out of range
         if(currentIndex >= q.length) return q;
-        const currentId = q[currentIndex];
-        const trimmed = q.slice(currentIndex); // keep current and everything after it
-        setCurrentIndex(0); // current track now at position 0
-        // trackId already points at currentId; no need to update unless defensive
+        const trimmed = q.slice(currentIndex);
+        setCurrentIndex(0);
         return trimmed;
       });
     }
   }, [currentIndex]);
 
-  // Lazy-load metadata for queue items (shallow prefetch)
   useEffect(()=>{
     let cancelled = false;
     (async () => {
@@ -115,7 +108,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
     })();
     return ()=> { cancelled = true; };
-  }, [queueIds]);
+  }, [queueIds, spotifyClient]); // spotifyClient added as dependency for correctness
 
   function setQueue(ids: string[], startIndex: number = 0){
     setQueueIds(ids);
@@ -140,27 +133,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   function playTrack(id: string){
     const idx = queueIds.indexOf(id);
     if(idx === -1){
-      setQueueIds(q => [...q, id]);
-      setCurrentIndex(queueIds.length); // will point to new last after state flush
+      const newQueue = [...queueIds, id];
+      setQueueIds(newQueue);
+      setCurrentIndex(newQueue.length - 1);
     } else {
       setCurrentIndex(idx);
     }
     setTrackId(id);
   }
-
-  /**
-   * Prepend the given track id to the front of the queue (remove any existing
-   * occurrences) and start playback at index 0.
-   */
+  
   function playNow(ids: string | string[]){
     const idsArr = Array.isArray(ids) ? ids.filter(Boolean) : (ids ? [ids] : []);
     if(!idsArr.length) return;
     setQueueIds(prev => {
-      // remove any occurrences of the incoming ids from previous queue
       const filtered = prev.filter(p => !idsArr.includes(p));
       return [...idsArr, ...filtered];
     });
-    // Ensure playback starts at the new head (first id)
     setCurrentIndex(0);
     setTrackId(idsArr[0]);
   }
@@ -199,10 +187,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     next,
     prev,
     playAt,
-  playTrack,
-  playNow,
-    trackCache
-  ,reorderQueue
+    playTrack,
+    playNow,
+    trackCache,
+    reorderQueue
   };
 
   return <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>;

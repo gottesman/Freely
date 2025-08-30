@@ -1,6 +1,6 @@
 # Freely — decentralized, P2P music player
 
-A decentralized, peer-to-peer music player built with Electron, React, and TypeScript.
+A decentralized, peer-to-peer music player built with React and TypeScript.
 
 ## Tauri (experimental)
 
@@ -120,26 +120,7 @@ Deploy steps:
 
 In Electron main we read `process.env.SPOTIFY_TOKEN_ENDPOINT`; if present the app fetches the token from there (no secret locally). The Tests tab has a Token Status button that logs debug info (status, body snippet) to help diagnose hosting issues (e.g. HTML challenge pages).
 
-## Desktop build (Electron)
-
-This project can be packaged as a Windows executable using Electron + electron-builder.
-
-Developer quick-run (recommended):
-
-```powershell
-npm install
-npm run start-torrent-server   # start local torrent server
-npx electron .                 # run electron from npx (no global install)
-```
-
-To create a Windows installer (.exe / NSIS):
-
-```powershell
-npm run build
-npx electron-builder --win --x64
-```
-
-Note: electron-builder will download Electron binaries. Ensure you have network access and enough disk space.
+<!-- Electron desktop build instructions removed. Project now targets Tauri for native desktop builds. -->
 
 ## Roadmap
 

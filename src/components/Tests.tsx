@@ -5,6 +5,7 @@ import SpotifyClient from '../core/spotify';
 import { useAlerts, LogEntry as AlertLogEntry } from '../core/alerts';
 import ApiCacheTest from './ApiCacheTest';
 import AddToPlaylistDemo from './AddToPlaylistDemo';
+import { useContextMenu } from '../core/ContextMenuContext';
 // Torrent search runs in Node (server/Electron). Avoid importing node-only modules in client bundle.
 // We'll use window.electron.torrent (preload) or a server endpoint if available.
 
@@ -49,6 +50,14 @@ export default function APIsTests(){
   const { t } = useI18n();
   const { geniusProxy, spotifyProxy, geniusDirect, spotifyDirect } = useApis();
   const { addLogListener } = useAlerts();
+  // Context menu (test)
+  let openMenu: any = null;
+  try {
+    // try to obtain the menu API; if provider missing this will throw and be caught
+    openMenu = useContextMenu().openMenu;
+  } catch (_) {
+    openMenu = null;
+  }
   // Shared state
   const [loading, setLoading] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -274,6 +283,23 @@ export default function APIsTests(){
       {/* Add to Playlist Demo Section */}
       <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Add to Playlist Modal Demo</h3>
       <AddToPlaylistDemo />
+      <div style={{marginTop:12}}>
+        <button className="np-pill" onClick={async ()=>{
+          if(!openMenu){ append('context:menu:error', { message: 'ContextMenuProvider not available' }); return; }
+          const items = [
+            { id: 'copy', label: 'Copy', type: 'action' },
+            { id: 'open', label: 'Open website', type: 'link', href: 'https://example.com' },
+            { id: 'more', label: 'More...', type: 'submenu', submenu: [
+              { id: 'sub1', label: 'Sub option 1', type: 'action' },
+              { id: 'sub2', label: 'Sub option 2', type: 'action' },
+            ]}
+          ];
+          try {
+            const res = await openMenu({ x: 240, y: 240, items });
+            append('context:menu:result', { result: res });
+          } catch(e:any){ append('context:menu:error', { error: String(e) }); }
+        }}>Open Context Menu (test)</button>
+      </div>
 
       {/* Torrent Search Test Section */}
       <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Torrent Search</h3>

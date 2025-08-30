@@ -5,11 +5,32 @@ const multer = require('multer');
 const WebTorrent = require('webtorrent');
 const subdir = "data"
 
+// Prevent crashes from unhandled promise rejections or exceptions in scrapers.
+process.on('unhandledRejection', (reason, promise) => {
+  try {
+    console.warn('Unhandled Rejection at:', promise, 'reason:', reason && reason.stack ? reason.stack : reason);
+  } catch (e) { /* ignore */ }
+});
+process.on('uncaughtException', (err) => {
+  try {
+    console.error('Uncaught Exception:', err && err.stack ? err.stack : err);
+  } catch (e) { /* ignore */ }
+});
+
 const upload = multer({ dest: path.join(__dirname, subdir) });
 const client = new WebTorrent();
 const app = express();
 const PORT = process.env.PORT || 9000;
-const PID_FILE = path.join(__dirname, subdir, '.torrent-server.pid');
+
+// --- MODIFIED SECTION START ---
+
+// Read the PID file path from the environment variable set by Tauri.
+// Provide a fallback for local testing where the variable isn't set.
+const PID_FILE = process.env.PID_FILE_PATH || path.join(__dirname, subdir, '.torrent-server.pid');
+console.log(`Using PID file path: ${PID_FILE}`);
+
+// --- MODIFIED SECTION END ---
+
 
 // Simple CORS for dev: allow browser dev server to call this API
 app.use((req, res, next) => {
@@ -20,13 +41,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Optional: load torrent-search helper (reuse same scrapers used by Electron main)
 let torrentSearchHelper;
 try {
-  torrentSearchHelper = require(path.join(__dirname, '..', 'electron', 'torrent-search.js'));
+  // Webpack will understand this relative path during the build process
+  // and bundle the contents of the file directly.
+  torrentSearchHelper = require('./torrent-scrappers.js');
+  console.log('Loaded scrappers for server API');
 } catch (e) {
-  console.warn('Could not load torrent-search helper for server API:', e?.message || e);
+  console.warn('Could not load scrapper helper for server API:', e.message);
+  // Assign a dummy object so the app doesn't crash if the file is missing
+  torrentSearchHelper = { searchAll: () => Promise.resolve([]) }; 
 }
+
 
 // If a previous server left a PID file, attempt to terminate that process first.
 function readPidFile() {
@@ -126,10 +152,15 @@ function flushSearchCacheToDiskSync() {
 // Load existing cache now
 // loadSearchCacheFromDisk();
 
+app.get('/ping', (req, res) => {
+  console.log('Received ping request');
+  res.json({ pong: true });
+});
+
 app.get('/api/torrent-search', async (req, res) => {
   const q = String(req.query.q || '').trim();
   const page = parseInt(req.query.page || '1', 10) || 1;
-  if (!torrentSearchHelper || !torrentSearchHelper.search) {
+  if (!torrentSearchHelper || !torrentSearchHelper.searchAll) {
     return res.status(501).json({ error: 'torrent search not available on server' });
   }
 
@@ -153,7 +184,7 @@ app.get('/api/torrent-search', async (req, res) => {
   console.log(`[torrent-search] cache miss q="${q}" page=${page}`);
 
   try {
-    const results = await torrentSearchHelper.search({ query: String(q), page });
+    const results = await torrentSearchHelper.searchAll({ query: String(q), page });
     // Deep-clone before caching to prevent future mutation affecting cached copy
     let cacheValue;
     try { cacheValue = JSON.parse(JSON.stringify(results)); } catch (_) { cacheValue = results.slice(); }
@@ -274,62 +305,71 @@ app.get('/status/:infoHash', (req, res) => {
 
 // Start server with retry on EADDRINUSE so running multiple dev instances doesn't crash
 let _server = null;
+
+// --- MODIFIED SECTION START ---
+
+function writePidFile(port) {
+  try {
+    // Ensure the parent directory exists before writing the file.
+    const pidDir = path.dirname(PID_FILE);
+    if (!fs.existsSync(pidDir)) {
+      fs.mkdirSync(pidDir, { recursive: true });
+    }
+
+    const info = { pid: process.pid, port: port, startedAt: Date.now() };
+    fs.writeFileSync(PID_FILE, JSON.stringify(info), { encoding: 'utf8' });
+    console.log(`Successfully wrote PID info to: ${PID_FILE}`);
+  } catch (e) {
+    // This is a critical failure, log it clearly.
+    console.error(`CRITICAL: Failed to write PID file to ${PID_FILE}. The app backend will not be able to connect.`);
+    console.error(e);
+  }
+}
+
+// --- MODIFIED SECTION END ---
+
+
 async function tryListen(port, attempts = 5) {
+  // Ensure any previous server (from a previous run) is terminated first.
+  try {
+    await ensureNoExistingServer();
+  } catch (e) {
+    console.warn('Error while ensuring no existing server:', e && e.message ? e.message : e);
+    // proceed anyway
+  }
+
   return new Promise((resolve, reject) => {
     try {
       _server = app.listen(port, () => {
         console.log(`Torrent server listening on http://localhost:${port}`);
+        // write PID file now that we have successfully bound
+        writePidFile(port);
         resolve(port);
       });
-  // Ensure any previous server is stopped before starting
-        ensureNoExistingServer().then(()=>{
-          _server.on('error', (err) => {
+
+      _server.on('error', (err) => {
         if (err && err.code === 'EADDRINUSE' && attempts > 0) {
           console.warn(`Port ${port} in use, trying ${port + 1}...`);
-          setTimeout(() => tryListen(port + 1, attempts - 1).then(resolve).catch(reject), 200);
+          setTimeout(() => {
+            tryListen(port + 1, attempts - 1).then(resolve).catch(reject);
+          }, 200);
         } else {
           console.error('Server listen error', err && err.message ? err.message : err);
           reject(err);
         }
       });
-        }).catch((e)=>{
-          console.warn('Error while ensuring no existing server:', e && e.message ? e.message : e);
-          // proceed anyway
-          _server.on('error', (err) => {
-            if (err && err.code === 'EADDRINUSE' && attempts > 0) {
-              console.warn(`Port ${port} in use, trying ${port + 1}...`);
-              setTimeout(() => tryListen(port + 1, attempts - 1).then(resolve).catch(reject), 200);
-            } else {
-              console.error('Server listen error', err && err.message ? err.message : err);
-              reject(err);
-            }
-          });
-        });
     } catch (e) {
       reject(e);
     }
   });
 }
 
-  // When the server binds successfully, write PID file
-  function writePidFile(port) {
-    try {
-      const info = { pid: process.pid, port: port, startedAt: Date.now() };
-      fs.writeFileSync(PID_FILE, JSON.stringify(info), { encoding: 'utf8' });
-    } catch (e) { /* ignore */ }
-  }
+process.on('exit', ()=>{ try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch(_){} });
+process.on('SIGINT', ()=>{ try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch(_){} process.exit(0); });
 
-  process.on('exit', ()=>{ try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch(_){} });
-  process.on('SIGINT', ()=>{ try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch(_){} process.exit(0); });
-
-  // Hook into the listen success to write PID file
-  const _origTryListen = tryListen;
-  tryListen = function(port, attempts){
-    return _origTryListen(port, attempts).then(p => { writePidFile(p); return p; });
-  }
 tryListen(PORT).catch((e) => {
   console.error('Failed to start torrent server:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.emit('exit');
 });
 
 // Graceful shutdown
