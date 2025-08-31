@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, ReactNode, useMemo } from 'react';
 import SpotifyClient, { SpotifyTrack } from './spotify';
 import { createCachedSpotifyClient } from './spotify-client';
 // This import correctly points to the new IndexedDB provider.
@@ -28,8 +28,63 @@ interface PlaybackContextValue {
 
 const PlaybackContext = createContext<PlaybackContextValue | undefined>(undefined);
 
+// --- Playback actions context (stable callbacks) ---
+const PlaybackActionsContext = createContext<PlaybackContextValue | undefined>(undefined);
+
+// --- Selector pub/sub for fine-grained subscriptions ---
+type PlaybackStateSnapshot = {
+  currentTrack?: SpotifyTrack;
+  loading: boolean;
+  error?: string;
+  trackId?: string;
+  queueIds: string[];
+  currentIndex: number;
+  trackCache: Record<string, SpotifyTrack | undefined>;
+};
+
+let playbackSnapshot: PlaybackStateSnapshot | null = null;
+let subscriberId = 0;
+const playbackSubscribers = new Map<number, { selector: (s: PlaybackStateSnapshot) => any; last: any; cb: (v: any) => void }>();
+
+function notifyPlaybackSubscribers(snapshot: PlaybackStateSnapshot) {
+  playbackSubscribers.forEach((entry) => {
+    try {
+      const next = entry.selector(snapshot);
+      if (!Object.is(next, entry.last)) {
+        entry.last = next;
+        entry.cb(next);
+      }
+    } catch (err) {
+      console.warn('[playback-debug] subscriber error', err);
+    }
+  });
+}
+
+export function subscribePlaybackSelector<T>(selector: (s: PlaybackStateSnapshot) => T, cb: (v: T) => void) {
+  const id = ++subscriberId;
+  const initial = playbackSnapshot ? selector(playbackSnapshot) : undefined;
+  playbackSubscribers.set(id, { selector: selector as any, last: initial, cb: cb as any });
+  return () => { playbackSubscribers.delete(id); };
+}
+
+export function usePlaybackSelector<T>(selector: (s: PlaybackStateSnapshot) => T, deps: any[] = []): T | undefined {
+  const [val, setVal] = useState<T | undefined>(() => playbackSnapshot ? selector(playbackSnapshot) : undefined);
+  useEffect(() => {
+    let mounted = true;
+    const unsub = subscribePlaybackSelector(selector, (v: T) => { if (mounted) setVal(v); });
+    // also update once immediately in case snapshot changed before subscribe
+    if (playbackSnapshot) {
+      const cur = selector(playbackSnapshot);
+      if (!Object.is(cur, val)) setVal(cur);
+    }
+    return () => { mounted = false; unsub(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return val;
+}
+
 const TEST_TRACK_IDS = [
-  '6suU8oBlW4O2pg88tOXgHo', // existing sample
+  '5AZGbqiIK5t1jrWSPT7k8X', // existing sample
   '3n3Ppam7vgaVa1iaRUc9Lp', // lose yourself (example popular track)
   '7ouMYWpwJ422jRcDASZB7P', // numb
   '0eGsygTp906u18L0Oimnem', // enter sandman
@@ -95,13 +150,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if(cancelled) return;
         if(!trackCache[id]){
           try {
-            const w:any = typeof window !== 'undefined' ? window : {};
-            let t: SpotifyTrack;
-            if (w.electron?.spotify?.getTrack) {
-              const resp = await w.electron.spotify.getTrack(id);
-              if (resp && (resp as any).error) throw new Error((resp as any).error);
-              t = resp as any;
-            } else { t = await spotifyClient.getTrack(id); }
+            let t = await spotifyClient.getTrack(id);
             if(!cancelled) setTrackCache(c => ({ ...c, [id]: t }));
           } catch { /* ignore prefetch errors */ }
         }
@@ -193,13 +242,46 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     reorderQueue
   };
 
-  return <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>;
+  // Memoize actions object so its identity is stable for action-only consumers
+  const actions = useMemo(() => ({
+    setTrackId,
+    refresh: () => fetchTrack(trackId),
+    setQueue,
+    enqueue,
+    next,
+    prev,
+    playAt,
+    playTrack,
+    playNow,
+    reorderQueue
+  }), [setTrackId, setQueue, enqueue, next, prev, playAt, playTrack, playNow, reorderQueue, trackId]);
+
+  // Keep a snapshot and notify selector subscribers when relevant state changes
+  useEffect(() => {
+    const snap: PlaybackStateSnapshot = { currentTrack, loading, error, trackId, queueIds, currentIndex, trackCache };
+    playbackSnapshot = snap;
+    notifyPlaybackSubscribers(snap);
+  }, [currentTrack, loading, error, trackId, queueIds, currentIndex, trackCache]);
+
+  return (
+    <PlaybackActionsContext.Provider value={actions as any}>
+      <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>
+    </PlaybackActionsContext.Provider>
+  );
 }
 
-export function usePlayback(): PlaybackContextValue {
-  const ctx = useContext(PlaybackContext);
-  if (!ctx) throw new Error('usePlayback must be used within PlaybackProvider');
+export function usePlaybackActions() {
+  const ctx = useContext(PlaybackActionsContext) as any;
+  if (!ctx) throw new Error('usePlaybackActions must be used within PlaybackProvider');
   return ctx;
 }
+export interface TrackData {
+  id: string;
+  name: string;
+  artists: { name: string }[];
+  album: {
+    images: any[]; // Or a more specific type if you have one
+  };
+}
 
-export default PlaybackProvider;
+export default { PlaybackProvider };

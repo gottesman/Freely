@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useI18n } from '../core/i18n'
 import { useDB } from '../core/dbIndexed'
-import { usePlaylists, broadcastPlaylistsChanged } from '../core/playlists'
+import { usePlaylists } from '../core/playlists'
 import { usePrompt } from '../core/PromptContext'
 import { useAlerts } from '../core/alerts'
 
@@ -10,7 +10,7 @@ export default function Settings(){
   const [accent, setAccent] = useState('#6b21a8')
   const { lang, setLang, t } = useI18n();
   const [importFileName, setImportFileName] = useState<string>('')
-  const { refresh: refreshPlaylists } = usePlaylists();
+  usePlaylists();
   const prompt = usePrompt();
   const { push: pushAlert } = useAlerts();
 
@@ -59,8 +59,6 @@ export default function Settings(){
     if(!ok) return;
     try {
       await clearLocalData();
-      try { refreshPlaylists(); } catch(_) {}
-      try { broadcastPlaylistsChanged(); } catch(_) {}
       try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
       try { if(location.hash) location.hash = ''; } catch(_) {}
       pushAlert(t('settings.data.local.cleared'), 'info');

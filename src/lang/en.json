@@ -1,9 +1,11 @@
 {
   "app.title": "Freely",
   "queue.empty": "Queue is empty",
-  "queue.title": "Play Queue",
+  "queue.title": "Queue",
   "queue.play": "Play {track}",
   "queue.drag": "Drag to reorder {track}",
+  "queue.playingNow": "Playing Now",
+  "queue.nextUp": "Next Up",
   "loading.db": "Preparing database",
   "loading.fonts": "Loading fonts",
   "loading.services": "Connecting services",

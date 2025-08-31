@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
-import { usePlayback } from '../core/playback';
+import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 
 function fmt(ms?: number){
@@ -19,7 +19,9 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
   const [loadingAlbum, setLoadingAlbum] = useState(false);
   const [loadingTracks, setLoadingTracks] = useState(false);
   const [loadingArtist, setLoadingArtist] = useState(false);
-  const { queueIds, setQueue, enqueue, currentIndex } = usePlayback();
+  const { setQueue, enqueue } = usePlaybackActions();
+  const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
+  const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
 
   // Load album
   useEffect(()=>{
@@ -110,7 +112,7 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
                     disabled={!tracks?.length}
                     onClick={()=>{
                         if(!tracks?.length) return;
-                        const currentSegment = queueIds.slice(currentIndex);
+                        const currentSegment = (queueIds || []).slice(currentIndex || 0);
                         const trackIds = tracks.map(t=> t.id).filter(Boolean);
                         const dedupSet = new Set(trackIds);
                         const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));
@@ -139,7 +141,7 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
         {loadingTracks && <p className="np-hint">{t('np.loadingTracks')}</p>}
         {!loadingTracks && !tracks && albumId && <p className="np-hint">{t('np.loading')}</p>}
         {!loadingTracks && tracks && (
-          <TrackList tracks={tracks} playingTrackId={queueIds[currentIndex]} showPlayButton onSelectTrack={onSelectTrack} />
+          <TrackList tracks={tracks} playingTrackId={(queueIds || [])[currentIndex || 0]} showPlayButton onSelectTrack={onSelectTrack} />
         )}
       </div>
       <div className="np-section np-track-credits" aria-label={t('np.albumCredits','Album credits')}>

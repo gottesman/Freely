@@ -3,7 +3,7 @@ import { useI18n } from '../core/i18n';
 import { SpotifyTrack, SpotifyPlaylist } from '../core/spotify'
 import { useSpotifyClient } from '../core/spotify-client'
 import { usePlaylists } from '../core/playlists';
-import { usePlayback } from '../core/playback';
+import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 import { usePrompt } from '../core/PromptContext';
 import { useAlerts } from '../core/alerts';
@@ -27,7 +27,9 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
   const [playlist, setPlaylist] = useState<SpotifyPlaylist|undefined>();
   const [tracks, setTracks] = useState<SpotifyTrack[]|undefined>();
   const [loading, setLoading] = useState(false);
-  const { queueIds, setQueue, enqueue, currentIndex } = usePlayback();
+  const { setQueue, enqueue } = usePlaybackActions();
+  const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
+  const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
   const { playlists, getPlaylistTracks, getPlaylistTrackIds, updatePlaylist, deletePlaylist, removeTrack, refresh, createPlaylistWithTracks } = usePlaylists();
   const spotifyClient = useSpotifyClient();
   const prompt = usePrompt();
@@ -316,7 +318,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
                     disabled={!tracks?.length}
                     onClick={()=>{
                     if(!tracks?.length) return;
-                    const currentSegment = queueIds.slice(currentIndex); // trimmed queue (playback may already trim older items)
+                    const currentSegment = (queueIds || []).slice(currentIndex || 0); // trimmed queue (playback may already trim older items)
                     const trackIds = tracks.map(t=> t.id).filter(Boolean);
                     // Avoid duplicating: remove any of these ids already in current segment before prepending
                     const dedupSet = new Set(trackIds);
@@ -352,7 +354,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
         {!loading && tracks && (
           <TrackList 
             tracks={tracks} 
-            playingTrackId={queueIds[currentIndex]} 
+            playingTrackId={(queueIds || [])[currentIndex || 0]} 
             showPlayButton
             onSelectTrack={onSelectTrack}
             onDeleteTrack={isLocalPlaylist ? handleDeleteTrack : undefined}

@@ -1,9 +1,11 @@
 {
   "app.title": "Freely",
   "queue.empty": "La cola está vacía",
-  "queue.title": "Cola de reproducción",
+  "queue.title": "Cola",
   "queue.play": "Reproducir {track}",
   "queue.drag": "Arrastra para reordenar {track}",
+  "queue.playingNow": "Reproduciendo ahora",
+  "queue.nextUp": "A continuación",
   "loading.db": "Preparando base de datos",
   "loading.fonts": "Cargando fuentes",
   "loading.services": "Conectando servicios",

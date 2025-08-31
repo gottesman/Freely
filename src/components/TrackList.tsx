@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useI18n } from '../core/i18n';
-import { usePlayback } from '../core/playback';
+import { usePlaybackSelector, usePlaybackActions } from '../core/playback';
 import type { SpotifyTrack } from '../core/spotify';
 
 // Duration formatting helper (mm:ss)
@@ -21,7 +21,9 @@ export interface TrackListProps {
 
 export default function TrackList({ tracks, selectedTrackId, playingTrackId, showPlayButton = false, onSelectTrack, onDeleteTrack, className }: TrackListProps){
   const { t } = useI18n();
-  const { queueIds, setQueue, currentIndex, enqueue } = usePlayback();
+  const queueIds = usePlaybackSelector(s => s.queueIds) as string[] | undefined;
+  const currentIndex = usePlaybackSelector(s => s.currentIndex) as number | undefined;
+  const { setQueue, enqueue } = usePlaybackActions();
 
   const artistColWidth = useMemo(()=>{ if(!tracks?.length) return undefined; const names = tracks.map(t=> t.artists?.[0]?.name || ''); const longest = names.reduce((a,b)=> b.length>a.length? b:a,''); if(!longest) return undefined; const avgCharPx=7.2; const padding=28; return Math.min(240, Math.max(80, Math.round(longest.length*avgCharPx+padding))); }, [tracks]);
 
@@ -56,7 +58,7 @@ export default function TrackList({ tracks, selectedTrackId, playingTrackId, sho
                 onClick={(e: React.MouseEvent)=>{
                   e.stopPropagation();
                   if(!tr.id) return;
-                  const currentSegment = queueIds.slice(currentIndex);
+                  const currentSegment = (queueIds || []).slice(currentIndex || 0);
                   const rest = currentSegment.filter(id => id !== tr.id);
                   const newQueue = [tr.id, ...rest];
                   setQueue(newQueue, 0);

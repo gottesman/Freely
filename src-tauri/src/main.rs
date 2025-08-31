@@ -245,14 +245,15 @@ async fn torrent_search(query: String, page: Option<u64>, paths: State<'_, PathS
 
 #[tauri::command]
 async fn charts_get_weekly_tops(opts: serde_json::Value) -> Result<serde_json::Value, String> {
-    let url = opts.get("url").and_then(|v| v.as_str()).unwrap_or("https://round-boat-07c7.gabrielgonzalez-gsun.workers.dev/");
+    let endpoint = std::env::var("CHARTS_SPOTIFY_ENDPOINT").map_err(|_| "Missing charts endpoint")?;
+    let url = opts.get("url").and_then(|v| v.as_str()).unwrap_or(endpoint.as_str());
     let resp = reqwest::get(url).await.map_err(|e| e.to_string())?;
     Ok(resp.json().await.map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
 async fn genius_search(query: String) -> Result<serde_json::Value, String> {
-    let token = std::env::var("GENIUS_ACCESS_TOKEN").or_else(|_| std::env::var("VITE_GENIUS_ACCESS_TOKEN")).map_err(|_| "Missing Genius token")?;
+    let token = std::env::var("GENIUS_ACCESS_TOKEN").map_err(|_| "Missing Genius token")?;
     let url = format!("https://api.genius.com/search?q={}", urlencoding::encode(&query));
     let client = reqwest::Client::new();
     let res = client.get(&url).bearer_auth(token).send().await.map_err(|e| e.to_string())?;

@@ -1,32 +1,6 @@
-/**
- * Genius API Wrapper for Freely Player
- * NOTE: The official Genius API does NOT provide full lyrics via JSON responses
- * due to licensing. Lyrics retrieval here performs an HTML fetch of the song page
- * and attempts to parse visible lyric containers. Always respect copyright &
- * cache locally only for personal use.
- */
+import { env } from './accessEnv';
 
-// Environment variable names expected (configure via Electron / build tooling)
-// GENIUS_ACCESS_TOKEN  (Preferred: your personal access token / bearer)
-// GENIUS_CLIENT_ID
-// GENIUS_CLIENT_SECRET
-// GENIUS_REDIRECT_URI  (Needed for OAuth browser flow)
-
-const API_BASE = 'https://api.genius.com';
-
-// Unified environment accessor that works in Node (Electron main) and Vite/Browser.
-// Prefers actual Node process.env if available; otherwise falls back to import.meta.env.
-function getEnv(name: string): string | undefined {
-	// @ts-ignore - process may be undefined in browser bundle
-	if (typeof process !== 'undefined' && process?.env) return process.env[name];
-	// Vite exposes import.meta.env with VITE_* vars
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		return (import.meta as any).env[name];
-	}
-	return undefined;
-}
+const API_BASE = env('GENIUS_ENDPOINT');
 
 export interface GeniusConfig {
 	accessToken?: string;            // If provided, used directly
@@ -103,10 +77,29 @@ const internalCache = new Map<string, any>();
 /** Utility for building cache keys */
 function key(parts: unknown[]) { return parts.join('::'); }
 
+/** Safely join a base URL and a path segment without producing `//` (except after protocol)
+ * Examples:
+ *  joinUrl('https://api.example.com', '/foo') => 'https://api.example.com/foo'
+ *  joinUrl('https://api.example.com/', 'foo') => 'https://api.example.com/foo'
+ *  joinUrl('https://api.example.com/', '/foo') => 'https://api.example.com/foo'
+ */
+function joinUrl(base: string, path: string) {
+	if (!path) return base;
+	// Keep protocol slashes (https://)
+	const protocolMatch = base.match(/^([a-z0-9+.-]+:\/\/)/i);
+	const protocol = protocolMatch ? protocolMatch[1] : '';
+	const rest = protocol ? base.slice(protocol.length) : base;
+
+	const left = rest.endsWith('/') ? rest.slice(0, -1) : rest;
+	const right = path.startsWith('/') ? path.slice(1) : path;
+	return protocol + left + '/' + right;
+}
+
 /** Request helper with timeout + basic caching */
 async function http<T>(cfg: GeniusConfig, path: string, params?: Record<string, any>, cacheTtlMs = 60_000): Promise<T> {
-	const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined) as any) : '';
-	const url = API_BASE + path + search;
+		const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined) as any) : '';
+		const base = (await API_BASE) || 'https://api.genius.com';
+		const url = joinUrl(base, path) + search;
 	const k = key(['GET', url]);
 	const cacheMap = cfg.cache ?? internalCache;
 	const cached = cacheMap.get(k);
@@ -114,10 +107,11 @@ async function http<T>(cfg: GeniusConfig, path: string, params?: Record<string, 
 	const controller = new AbortController();
 	const to = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 15_000);
 	try {
+		const token = await env('GENIUS_ACCESS_TOKEN') || '';
 		const res = await fetch(url, {
 			headers: {
-				'Authorization': `Bearer ${resolveAccessToken(cfg)}`,
-				'User-Agent': cfg.userAgent || getEnv('VITE_APP_USER_AGENT') || 'FreelyPlayer/0.1 (+https://example.local)'
+				'Authorization': `Bearer ${token}`,
+				'User-Agent': cfg.userAgent || (await env('APP_USER_AGENT') || ''),
 			},
 			signal: controller.signal
 		});
@@ -128,41 +122,10 @@ async function http<T>(cfg: GeniusConfig, path: string, params?: Record<string, 
 	} finally { clearTimeout(to); }
 }
 
-function resolveAccessToken(cfg: GeniusConfig): string {
-	return (
-		cfg.accessToken ||
-		getEnv('GENIUS_ACCESS_TOKEN') ||
-		getEnv('VITE_GENIUS_ACCESS_TOKEN') ||
-		''
-	);
-}
-
-/** Genius OAuth helpers (authorization code flow). */
-export function buildAuthorizeUrl(cfg: GeniusConfig, opts: { state?: string; scope?: string } = {}): string {
-	const envClientId = getEnv('GENIUS_CLIENT_ID');
-	if (!cfg.clientId && !envClientId) throw new Error('Missing clientId');
-	const cid = cfg.clientId || envClientId!;
-	const redirect = encodeURIComponent(cfg.redirectUri || getEnv('GENIUS_REDIRECT_URI') || '');
-	const state = encodeURIComponent(opts.state || '');
-	const scope = encodeURIComponent(opts.scope || 'me');
-	return `https://api.genius.com/oauth/authorize?client_id=${cid}&redirect_uri=${redirect}&scope=${scope}&state=${state}&response_type=code`; 
-}
-
-export async function exchangeCodeForToken(code: string, cfg: GeniusConfig): Promise<{ accessToken: string; refreshToken?: string; raw: any; }> {
-	if (!cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) throw new Error('Missing OAuth config');
-	const body = new URLSearchParams({ code, client_id: cfg.clientId, client_secret: cfg.clientSecret, redirect_uri: cfg.redirectUri, response_type: 'code', grant_type: 'authorization_code' });
-	const res = await fetch('https://api.genius.com/oauth/token', { method: 'POST', body });
-	if (!res.ok) throw new Error(`Token exchange failed: ${res.status}`);
-	const json = await res.json();
-	return { accessToken: json.access_token, refreshToken: json.refresh_token, raw: json };
-}
-
 /** High-level client */
 export class GeniusClient {
 	private cfg: GeniusConfig;
-	constructor(cfg: GeniusConfig = {}) { this.cfg = cfg; }
-
-	setAccessToken(token: string) { this.cfg.accessToken = token; }
+	constructor() { this.cfg = {}; }
 
 	async search(query: string): Promise<SearchResponse> {
 		const json: any = await http(this.cfg, '/search', { q: query });
@@ -367,7 +330,7 @@ function escapeHtml(s: string): string {
 }
 
 /* -------------- Example Usage (Remove / Adapt) -------------- */
-// const genius = new GeniusClient({ accessToken: process.env.GENIUS_ACCESS_TOKEN });
+// const genius = new GeniusClient();
 // genius.search('Daft Punk').then(r => console.log(r.hits[0]));
 // genius.getSong(123).then(console.log);
 // genius.getLyricsForSong(123).then(console.log);

@@ -5,7 +5,7 @@ import SpotifyClient from '../core/spotify';
 import { useAlerts, LogEntry as AlertLogEntry } from '../core/alerts';
 import ApiCacheTest from './ApiCacheTest';
 import AddToPlaylistDemo from './AddToPlaylistDemo';
-import { useContextMenu } from '../core/ContextMenuContext';
+import { useContextMenu, ContextMenuItem } from '../core/ContextMenuContext';
 // Torrent search runs in Node (server/Electron). Avoid importing node-only modules in client bundle.
 // We'll use window.electron.torrent (preload) or a server endpoint if available.
 
@@ -124,7 +124,7 @@ export default function APIsTests(){
     // Record environment first
     append('tests:init', { geniusProxy: !!geniusProxy, spotifyProxy: !!spotifyProxy });
     // Kick off searches (non-blocking) to populate log; ignore errors (they'll be logged by existing handlers)
-    setTimeout(()=>{ if(gQuery) gSearch(); if(sQuery) sSearch(); }, 50);
+    //setTimeout(()=>{ if(gQuery) gSearch(); if(sQuery) sSearch(); }, 50);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -284,18 +284,23 @@ export default function APIsTests(){
       <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Add to Playlist Modal Demo</h3>
       <AddToPlaylistDemo />
       <div style={{marginTop:12}}>
-        <button className="np-pill" onClick={async ()=>{
+        <button className="np-pill" onClick={async (e: React.MouseEvent<HTMLButtonElement>)=>{
           if(!openMenu){ append('context:menu:error', { message: 'ContextMenuProvider not available' }); return; }
           const items = [
-            { id: 'copy', label: 'Copy', type: 'action' },
-            { id: 'open', label: 'Open website', type: 'link', href: 'https://example.com' },
-            { id: 'more', label: 'More...', type: 'submenu', submenu: [
-              { id: 'sub1', label: 'Sub option 1', type: 'action' },
-              { id: 'sub2', label: 'Sub option 2', type: 'action' },
+            { id: 'group1', type: 'group', title: 'Group 1', items: [
+              { id: 'g1o1', label: 'Group 1 - Option 1', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Group 1 - Option 1 clicked', item); }},
+              { id: 'g1o2', label: 'Group 1 - Option 2', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Group 1 - Option 2 clicked', item); }},
+            ]},
+            { id: 'copy', label: 'Copy', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Copy action clicked', item); }, icon: 'content_copy' },
+            { id: 'open', label: 'Open website', type: 'link', href: 'https://example.com', icon: 'open_in_new'},
+            { id: 'sep1', type: 'separator' },
+            { id: 'more', label: 'More', type: 'submenu', submenu: [
+              { id: 'sub1', label: 'Sub option 1', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Sub option 1 clicked', item); }},
+              { id: 'sub2', label: 'Sub option 2', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Sub option 2 clicked', item); }},
             ]}
           ];
           try {
-            const res = await openMenu({ x: 240, y: 240, items });
+            const res = await openMenu({ e:e.currentTarget, items });
             append('context:menu:result', { result: res });
           } catch(e:any){ append('context:menu:error', { error: String(e) }); }
         }}>Open Context Menu (test)</button>

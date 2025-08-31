@@ -4,10 +4,10 @@ import SpotifyClient from '../../core/spotify';
 import { useSpotifyClient } from '../spotify-client';
 import { useAlerts } from '../../core/alerts';
 import { ArtistBuckets } from '../../components/MoreFromArtist';
-import { usePlayback } from '../../core/playback';
+import { usePlaybackSelector } from '../../core/playback';
 
 export function useArtistBuckets() {
-  const { currentTrack } = usePlayback();
+  const currentTrack = usePlaybackSelector(s => s.currentTrack);
   const primaryArtistId = currentTrack?.artists?.[0]?.id;
   const [deferredArtistId, setDeferredArtistId] = useState<string | undefined>();
   const [buckets, setBuckets] = useState<ArtistBuckets>({ singles: [], albums: [], playlists: [], loading: false, fetched: false });

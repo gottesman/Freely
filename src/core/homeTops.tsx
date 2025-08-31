@@ -1,4 +1,14 @@
-const chartsUrl = 'https://round-boat-07c7.gabrielgonzalez-gsun.workers.dev/';
+import { env } from './accessEnv';
+
+// We'll resolve charts endpoint at runtime to support Rust-only env variables
+let _chartsUrlCached: string | null = null;
+async function chartsUrl(): Promise<string> {
+	if (_chartsUrlCached !== null) return _chartsUrlCached;
+	const remote = await env('CHARTS_SPOTIFY_ENDPOINT') || '';
+	_chartsUrlCached = remote || '';
+	if (_chartsUrlCached === '') console.warn('⚠️ CHARTS_SPOTIFY_ENDPOINT not set - weekly charts will be unavailable');
+	return _chartsUrlCached;
+}
 
 /**
  * Parse a spotify uri formatted as "spotify:type:id" -> { type, id }
@@ -87,14 +97,16 @@ function parseChartGroup(chartGroup: any, limit?: number) {
  */
 export async function getWeeklyTops({ limit }: { limit?: number } = {}): Promise<{ songs: any[]; albums: any[]; artists: any[]; raw: any }> {
 	try {
+		const url = await chartsUrl();
+		if(url === '') throw new Error('CHARTS_SPOTIFY_ENDPOINT not set');
 		let json = null;
 		// If running in Electron with our preload exposure, request via IPC so the
 		// main process performs the fetch (avoids browser CORS/preflight).
 		try {
 			if (typeof (window as any).charts === 'object' && typeof (window as any).charts.getWeeklyTops === 'function') {
-				json = await (window as any).charts.getWeeklyTops({ url: chartsUrl });
+				json = await (window as any).charts.getWeeklyTops({ url });
 			} else {
-				const res = await fetch(chartsUrl);
+				const res = await fetch(url);
 				if (!res.ok) throw new Error('charts fetch failed: ' + res.status);
 				json = await res.json();
 			}

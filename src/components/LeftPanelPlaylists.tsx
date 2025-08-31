@@ -1,6 +1,6 @@
 import React from 'react';
 import { useI18n } from '../core/i18n';
-import { usePlaylists, broadcastPlaylistsChanged } from '../core/playlists';
+import { usePlaylists } from '../core/playlists';
 
 export interface LeftPanelPlaylistsProps {
   onSelectPlaylist?: (id: string) => void;
@@ -9,7 +9,7 @@ export interface LeftPanelPlaylistsProps {
 
 export default function LeftPanelPlaylists({ onSelectPlaylist, activePlaylistId }: LeftPanelPlaylistsProps){
   const { t } = useI18n();
-  const { playlists, createPlaylist, refresh: refreshPlaylists } = usePlaylists();
+  const { playlists, createPlaylist } = usePlaylists();
 
   const [query, setQuery] = React.useState('');
   const [tagFilter, setTagFilter] = React.useState<string>('');
@@ -48,13 +48,10 @@ export default function LeftPanelPlaylists({ onSelectPlaylist, activePlaylistId 
   const onCreate = async (e: any) => {
     const name = newName.trim();
     if(!name) return;
-    createPlaylist(name);
-    try { resetCreate(undefined); } catch(err) {console.error(err)}
-    setTagFilter('');
-    setQuery(q=> q ? '' : q);
-    try { refreshPlaylists(); } catch(_) {}
-    try { broadcastPlaylistsChanged(); } catch(_) {}
-    setTimeout(()=> { try { refreshPlaylists(); } catch(_) {} }, 30);
+  await createPlaylist(name);
+  try { resetCreate(undefined); } catch(err) {console.error(err)}
+  setTagFilter('');
+  setQuery(q=> q ? '' : q);
   };
 
   const resetCreate = (e: any) => {
@@ -157,8 +154,8 @@ export default function LeftPanelPlaylists({ onSelectPlaylist, activePlaylistId 
                 <span className="material-symbols-rounded" style={{fontSize:22}}>add</span>
               </div>
               <div className="pl-meta">
-                <div className="pl-name">{t('pl.new.item','New Playlist')}</div>
-                <div className="pl-sub">{t('pl.new.hint','Click to create')}</div>
+                <div className="pl-name overflow-ellipsis">{t('pl.new.item','New Playlist')}</div>
+                <div className="pl-sub overflow-ellipsis">{t('pl.new.hint','Click to create')}</div>
               </div>
             </>
           ) : (
@@ -200,8 +197,8 @@ export default function LeftPanelPlaylists({ onSelectPlaylist, activePlaylistId 
                 ) : p.name.slice(0,2).toUpperCase()}
               </div>
               <div className="pl-meta">
-                <div className="pl-name">{p.system && p.code==='favorites' ? t('pl.favorites','Favorites') : p.name}</div>
-                <div className="pl-sub">{(p.track_count||0)} {t('pl.tracks','tracks')}{p.tags.length ? ' · ' + p.tags.join(', ') : ''}</div>
+                <div className="pl-name overflow-ellipsis">{p.system && p.code==='favorites' ? t('pl.favorites','Favorites') : p.name}</div>
+                <div className="pl-sub overflow-ellipsis">{(p.track_count||0)} {t('pl.tracks','tracks')}{p.tags.length ? ' · ' + p.tags.join(', ') : ''}</div>
               </div>
             </div>
           );

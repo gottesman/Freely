@@ -3,7 +3,7 @@ import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import GeniusClient from '../core/musicdata';
-import { usePlayback } from '../core/playback';
+import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 import useFollowedArtists from '../core/artists';
 
@@ -28,7 +28,10 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
   const [bioLoading, setBioLoading] = useState(false);
   const [bioExpanded, setBioExpanded] = useState(false);
   const [lastBioArtist, setLastBioArtist] = useState<string | undefined>();
-  const { enqueue, setQueue, queueIds, currentIndex, currentTrack } = usePlayback();
+  const { enqueue, setQueue } = usePlaybackActions();
+  const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
+  const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
+  const currentTrack = usePlaybackSelector(s => s.currentTrack);
   const { followArtist, unfollowArtist, isFollowing, artists: followedArtists } = useFollowedArtists();
   const [localFollowing, setLocalFollowing] = useState<boolean>(false);
   const optimisticUpdateRef = useRef<{ id: string; following: boolean } | null>(null);
@@ -143,7 +146,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
 
   const playTopTracksNow = () => {
     if(!topTracks?.length) return;
-    const currentSegment = queueIds.slice(currentIndex);
+  const currentSegment = (queueIds || []).slice(currentIndex || 0);
     const trackIds = topTracks.map(t=> t.id).filter(Boolean);
     const dedupSet = new Set(trackIds);
     const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));

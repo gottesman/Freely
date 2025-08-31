@@ -1,305 +1,311 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
-import LeftPanel from './components/LeftPanel'
-import CenterTabs from './components/CenterTabs'
-import RightPanel from './components/RightPanel'
-import BottomPlayer from './components/BottomPlayer'
-import LyricsOverlay from './components/LyricsOverlay'
-import AddToPlaylistModal from './components/AddToPlaylistModal'
-import { DBProvider, useDB } from './core/dbIndexed'
-import { PlaybackProvider, usePlayback } from './core/playback'
-import TitleBar from './components/TitleBar'
-import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts'
-import { useAppReady } from './core/ready'
-import { useI18n, I18nProvider } from './core/i18n'
-import { AddToPlaylistModalProvider, useGlobalAddToPlaylistModal } from './core/AddToPlaylistModalContext'
-import { PromptProvider } from './core/PromptContext'
-import { ContextMenuProvider } from './core/ContextMenuContext'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import LeftPanel from './components/LeftPanel';
+import CenterTabs from './components/CenterTabs';
+import RightPanel from './components/RightPanel';
+import BottomPlayer from './components/BottomPlayer';
+import LyricsOverlay from './components/LyricsOverlay';
+import AddToPlaylistModal from './components/AddToPlaylistModal';
+import { DBProvider, useDB } from './core/dbIndexed';
+import { PlaybackProvider, usePlaybackSelector } from './core/playback';
+import TitleBar from './components/TitleBar';
+import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts';
+import { useAppReady } from './core/ready';
+import { useI18n, I18nProvider } from './core/i18n';
+import { AddToPlaylistModalProvider, useGlobalAddToPlaylistModal } from './core/AddToPlaylistModalContext';
+import { PromptProvider } from './core/PromptContext';
+import { ContextMenuProvider } from './core/ContextMenuContext';
 
 export default function App() {
   return (
     <I18nProvider>
       <DBProvider>
-        <PlaybackProvider>
-          <AlertsProvider>
-            <ContextMenuProvider>
-            <AddToPlaylistModalProvider>
+        <ContextMenuProvider>
+          <PlaybackProvider>
+            <AlertsProvider>
+              <AddToPlaylistModalProvider>
                 <Main />
               </AddToPlaylistModalProvider>
-            </ContextMenuProvider>
-          </AlertsProvider>
-        </PlaybackProvider>
-  </DBProvider>
+            </AlertsProvider>
+          </PlaybackProvider>
+        </ContextMenuProvider>
+      </DBProvider>
     </I18nProvider>
-  )
+  );
 }
 
 function Main() {
-  // Add appWindow state inside the component
+  const { t } = useI18n();
+
+  // Tauri window & maximized state
   const [appWindow, setAppWindow] = useState<any>(null);
+  const [maximized, setMaximized] = useState<boolean>(false);
 
-  // Track window maximized state in Tauri
-  const [maximized, setMaximized] = useState(false);
-
-   useEffect(() => {
+  useEffect(() => {
     let isMounted = true;
     const unlistenFns: (() => void)[] = [];
 
-    // The core setup logic remains the same.
     const setupEventListeners = async () => {
-      // Add a check for isMounted at the beginning.
       if (!isMounted) return;
-
-      console.log('[App] Attempting to set up Tauri event listeners...');
-      const { Window } = await import('@tauri-apps/api/window');
-
-      if (!Window || !Window.getCurrent) {
-        console.warn('[App] Tauri Window API is not available.');
-        return;
-      }
-
-      const wnd = Window.getCurrent();
-      setAppWindow(wnd);
-      console.log('[App] appWindow successfully retrieved for window:', wnd?.label);
-
       try {
-        const isMax = await wnd.isMaximized();
-        if (isMounted) setMaximized(isMax);
+        // dynamic import to avoid loading in non-tauri environment
+        const { Window } = await import('@tauri-apps/api/window');
+        if (!Window || !Window.getCurrent) {
+          console.warn('[App] Tauri Window API not available');
+          return;
+        }
+
+        const wnd = Window.getCurrent();
+        if (!isMounted) return;
+        setAppWindow(wnd);
+
+        try {
+          const isMax = await wnd.isMaximized();
+          if (isMounted) setMaximized(isMax);
+        } catch (e) {
+          console.warn('[App] failed to read initial maximized state', e);
+        }
+
+        const unlistenMax = await wnd.listen('window:maximize', () => { if (isMounted) setMaximized(true); });
+        unlistenFns.push(unlistenMax);
+        const unlistenUnmax = await wnd.listen('window:unmaximize', () => { if (isMounted) setMaximized(false); });
+        unlistenFns.push(unlistenUnmax);
       } catch (e) {
-        console.warn('[App] failed to read initial maximized state', e);
+        // Non-critical; app should still work without Tauri window APIs
+        console.debug('[App] Tauri integration not available or failed to init', e);
       }
-
-      const unlistenMaximize = await wnd.listen('window:maximize', () => {
-        if (isMounted) {
-          console.log('[App] Received "window:maximize" event from backend.');
-          setMaximized(true);
-        }
-      });
-      unlistenFns.push(unlistenMaximize);
-
-      const unlistenUnmaximize = await wnd.listen('window:unmaximize', () => {
-        if (isMounted) {
-          console.log('[App] Received "window:unmaximize" event from backend.');
-          setMaximized(false);
-        }
-      });
-      unlistenFns.push(unlistenUnmaximize);
-      
-      console.log('[App] Successfully set up Tauri event listeners.');
     };
 
-    // --- THIS IS THE FIX ---
-    // We create an `init` function that calls our setup.
-    const init = () => {
-      setupEventListeners().catch(e => {
-          console.error("Failed to execute Tauri event listener setup:", e);
-      });
-    };
-
-    // Check if the DOM is already loaded. If it is, we can run our setup immediately.
-    // Otherwise, we wait for the 'DOMContentLoaded' event.
     if (document.readyState === 'interactive' || document.readyState === 'complete') {
-      init();
+      setupEventListeners();
     } else {
-      window.addEventListener('DOMContentLoaded', init);
+      const onDom = () => setupEventListeners();
+      window.addEventListener('DOMContentLoaded', onDom);
+      unlistenFns.push(() => window.removeEventListener('DOMContentLoaded', onDom));
     }
-    // --- END OF FIX ---
 
-    // The cleanup function now needs to handle the DOM listener as well.
     return () => {
       isMounted = false;
-      window.removeEventListener('DOMContentLoaded', init);
-      console.log(`[App] Cleaning up ${unlistenFns.length} event listener(s).`);
-      unlistenFns.forEach(unlisten => unlisten());
+      unlistenFns.forEach((u) => {
+        try { u(); } catch (e) { /* swallow */ }
+      });
     };
   }, []);
 
-  const { ready: dbReady, getSetting, setSetting } = useDB()
-  const { ready, states } = useAppReady(dbReady)
-  const { t } = useI18n();
-  const [searchQuery, setSearchQuery] = useState<string>('')
-  const [searchTriggeredAt, setSearchTriggeredAt] = useState<number>(0)
-  const [searchResults, setSearchResults] = useState<any | undefined>(undefined)
-  const [searchLoading, setSearchLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState<string>('home')
-  const [songInfoTrackId, setSongInfoTrackId] = useState<string | undefined>(undefined)
-  const [albumInfoAlbumId, setAlbumInfoAlbumId] = useState<string | undefined>(undefined)
-  const [playlistInfoPlaylistId, setPlaylistInfoPlaylistId] = useState<string | undefined>(undefined)
-  const [artistInfoArtistId, setArtistInfoArtistId] = useState<string | undefined>(undefined)
-  const currentTrackIdRef = useRef<string | undefined>(undefined)
-  const { currentTrack: playbackCurrent } = usePlayback();
-  // Attempt to subscribe to playback changes if exposed on window (best-effort)
-  // Keep ref synced with playback hook (simpler than IPC event subscription)
-  useEffect(()=>{ currentTrackIdRef.current = playbackCurrent?.id; }, [playbackCurrent?.id]);
-  // track collapsed state for side panels
-  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false)
-  const [rightCollapsed, setRightCollapsed] = useState<boolean>(false)
-  const [lyricsOpen, setLyricsOpen] = useState<boolean>(false)
-  const [rightTab, setRightTab] = useState<string>('artist')
-  // resizable panel widths
-  const [leftWidth, setLeftWidth] = useState<number>(220)
-  const [rightWidth, setRightWidth] = useState<number>(220)
-  const minPanel = 220; // minimum visible width
-  const maxPanel = 480
-  const collapseThreshold = 200;
-  const collapseIntentThreshold = collapseThreshold;
+  // App-ready / DB ready
+  const { ready: dbReady, getSetting, setSetting } = useDB();
+  const { ready, states } = useAppReady(dbReady);
+
+  // Playback current track (to keep references and id sync)
+  const playbackCurrent = usePlaybackSelector(s => s.currentTrack);
+  const currentTrackIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => { currentTrackIdRef.current = playbackCurrent?.id; }, [playbackCurrent?.id]);
+
+  // UI state
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchTriggeredAt, setSearchTriggeredAt] = useState<number>(0);
+  const [searchResults, setSearchResults] = useState<any | undefined>(undefined);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  // Active tab and content ids (song/album/playlist/artist)
+  const [activeTab, setActiveTab] = useState<string>('home');
+  const [songInfoTrackId, setSongInfoTrackId] = useState<string | undefined>(undefined);
+  const [albumInfoAlbumId, setAlbumInfoAlbumId] = useState<string | undefined>(undefined);
+  const [playlistInfoPlaylistId, setPlaylistInfoPlaylistId] = useState<string | undefined>(undefined);
+  const [artistInfoArtistId, setArtistInfoArtistId] = useState<string | undefined>(undefined);
+
+  // Track panel collapsed states and widths
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false);
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(false);
+  const [rightTab, setRightTab] = useState<string>('artist');
+
+  const [leftWidth, setLeftWidth] = useState<number>(220);
+  const [rightWidth, setRightWidth] = useState<number>(220);
+
+  // Resizing / dragging indicators
   const [draggingLeft, setDraggingLeft] = useState(false);
   const [draggingRight, setDraggingRight] = useState(false);
   const [collapseIntentLeft, setCollapseIntentLeft] = useState(false);
   const [collapseIntentRight, setCollapseIntentRight] = useState(false);
 
+  // constants
+  const minPanel = 220;
+  const maxPanel = 480;
+  const collapseThreshold = 200;
+  const collapseIntentThreshold = collapseThreshold;
+
+  // Load persisted UI state once DB is ready (single-run)
   const loadedRef = useRef(false);
-  // Load persisted UI state once DB is ready (with localStorage fallback)
-  useEffect(()=>{
-    if(!dbReady || loadedRef.current) return;
-    (async()=>{
-      let applied = false;
+  useEffect(() => {
+    if (!dbReady || loadedRef.current) return;
+    let mounted = true;
+    (async () => {
       try {
         const [lw, rw, lc, rc, rtab] = await Promise.all([
           getSetting('ui.leftWidth'),
           getSetting('ui.rightWidth'),
           getSetting('ui.leftCollapsed'),
           getSetting('ui.rightCollapsed'),
-          getSetting('ui.rightTab')
+          getSetting('ui.rightTab'),
         ]);
-        if(lw){ const n = parseInt(lw,10); if(!isNaN(n)){ setLeftWidth(Math.min(Math.max(n, minPanel), maxPanel)); applied = true; } }
-        if(rw){ const n = parseInt(rw,10); if(!isNaN(n)){ setRightWidth(Math.min(Math.max(n, minPanel), maxPanel)); applied = true; } }
-        if(lc === '1'){ setLeftCollapsed(true); applied = true; }
-        if(rc === '1'){ setRightCollapsed(true); applied = true; }
-        if(rtab === 'queue' || rtab === 'artist'){ setRightTab(rtab); applied = true; }
-      } catch(e){}
-      // Fallback to localStorage if DB yielded nothing
-      if(!applied && typeof window !== 'undefined'){
+        if (!mounted) return;
+        if (lw) {
+          const n = parseInt(lw, 10);
+          if (!isNaN(n)) setLeftWidth(Math.min(Math.max(n, minPanel), maxPanel));
+        }
+        if (rw) {
+          const n = parseInt(rw, 10);
+          if (!isNaN(n)) setRightWidth(Math.min(Math.max(n, minPanel), maxPanel));
+        }
+        if (lc === '1') setLeftCollapsed(true);
+        if (rc === '1') setRightCollapsed(true);
+        if (rtab === 'queue' || rtab === 'artist') setRightTab(rtab);
+      } catch (e) {
+        // fallback to localStorage
         try {
-          const raw = window.localStorage.getItem('ui.layout.v1');
-          if(raw){
+          const raw = typeof window !== 'undefined' ? window.localStorage.getItem('ui.layout.v1') : null;
+          if (raw) {
             const obj = JSON.parse(raw);
-            if(typeof obj.leftWidth === 'number') setLeftWidth(Math.min(Math.max(obj.leftWidth, minPanel), maxPanel));
-            if(typeof obj.rightWidth === 'number') setRightWidth(Math.min(Math.max(obj.rightWidth, minPanel), maxPanel));
-            if(obj.leftCollapsed === true) setLeftCollapsed(true);
-            if(obj.rightCollapsed === true) setRightCollapsed(true);
-            if(obj.rightTab === 'queue' || obj.rightTab === 'artist') setRightTab(obj.rightTab);
+            if (typeof obj.leftWidth === 'number') setLeftWidth(Math.min(Math.max(obj.leftWidth, minPanel), maxPanel));
+            if (typeof obj.rightWidth === 'number') setRightWidth(Math.min(Math.max(obj.rightWidth, minPanel), maxPanel));
+            if (obj.leftCollapsed === true) setLeftCollapsed(true);
+            if (obj.rightCollapsed === true) setRightCollapsed(true);
+            if (obj.rightTab === 'queue' || obj.rightTab === 'artist') setRightTab(obj.rightTab);
           }
-        } catch(e){}
+        } catch (err) {
+          // no-op
+        }
+      } finally {
+        loadedRef.current = true;
       }
-      loadedRef.current = true;
     })();
-  }, [dbReady, getSetting, maxPanel, minPanel]);
+    return () => { mounted = false; };
+  }, [dbReady, getSetting]);
 
-  // Persist relevant UI state when they change (debounced via effect ordering is fine given low frequency)
-  // Persist to DB + mirror to localStorage
-  // Persist UI state (batch to reduce duplicated effects)
-  useEffect(()=>{
-    if(!dbReady) return;
-    try { setSetting('ui.leftWidth', String(leftWidth)); } catch{}
-    try { setSetting('ui.rightWidth', String(rightWidth)); } catch{}
-    try { setSetting('ui.leftCollapsed', leftCollapsed ? '1':'0'); } catch{}
-    try { setSetting('ui.rightCollapsed', rightCollapsed ? '1':'0'); } catch{}
-    try { setSetting('ui.rightTab', rightTab); } catch{}
-    if(typeof window !== 'undefined') persistLocal();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Persist UI state when relevant values change
+  useEffect(() => {
+    if (!dbReady) return;
+    try { setSetting('ui.leftWidth', String(leftWidth)); } catch {}
+    try { setSetting('ui.rightWidth', String(rightWidth)); } catch {}
+    try { setSetting('ui.leftCollapsed', leftCollapsed ? '1' : '0'); } catch {}
+    try { setSetting('ui.rightCollapsed', rightCollapsed ? '1' : '0'); } catch {}
+    try { setSetting('ui.rightTab', rightTab); } catch {}
+    try {
+      if (typeof window !== 'undefined') {
+        const payload = { leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab };
+        window.localStorage.setItem('ui.layout.v1', JSON.stringify(payload));
+      }
+    } catch (e) { /* ignore */ }
   }, [dbReady, leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab]);
 
-  // Wire debounced search to update searchResults. Pass searchTriggeredAt so re-triggering
-  // the same query (e.g. clicking the search icon again) forces a refresh.
-  useDebouncedSearch(searchQuery, searchTriggeredAt, (res:any) => setSearchResults(res), (b:boolean) => setSearchLoading(b));
+  // debounced search hook
+  useDebouncedSearch(searchQuery, searchTriggeredAt, (res: any) => setSearchResults(res), (b: boolean) => setSearchLoading(b));
 
-  // Fallback global listener: in case some consumers dispatch a global event when
-  // selecting an artist (legacy code), respond by opening the artist tab.
-  React.useEffect(() => {
-    function onGlobalSelect(e: any) {
-      const id = e?.detail;
-      if (!id) return;
-      setArtistInfoArtistId(String(id));
-      setActiveTab('artist');
-    }
-    window.addEventListener('freely:select-artist', onGlobalSelect as EventListener);
-    return () => window.removeEventListener('freely:select-artist', onGlobalSelect as EventListener);
-  }, []);
-
-  // Memoize handlers that are passed down to avoid unnecessary re-renders
-  const handleSearch = useCallback((q?: string) => {
-    setSearchQuery(q || '');
-    setSearchTriggeredAt(Date.now());
-  }, []);
-
-  const handleNavigate = useCallback((dest: string) => setActiveTab(dest), []);
-
-  // Deduplicating selection handlers to avoid double-opening the song info tab
-  const handleSelectTrack = useCallback((id?: string) => {
-    if (!id) return;
-    setSongInfoTrackId(prev => (prev === id ? prev : id));
-    setActiveTab(prev => (prev === 'song' ? prev : 'song'));
-  }, []);
-
-  const handleActivateSongInfo = useCallback(() => {
-    const current = currentTrackIdRef.current;
-    if (current) {
-      setSongInfoTrackId(prev => (prev === current ? prev : current));
-    }
-    setActiveTab(prev => (prev === 'song' ? prev : 'song'));
-  }, []);
-
-  function persistLocal(){
-    try {
-      const payload = { leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab };
-      window.localStorage.setItem('ui.layout.v1', JSON.stringify(payload));
-    } catch(e){}
-  }
-
-  // Resolve a preferred image URL from an array of image URLs.
-  // - imagesUrls: array of image URL strings (may contain falsy values)
-  // - preferred: zero-based preferred index; if out of range we'll fallback to the first available
-  const imageRes = useCallback((imagesUrls: Array<string|undefined|null> = [], preferred: number = 0): string | undefined => {
-    if (!imagesUrls || !Array.isArray(imagesUrls) || imagesUrls.length === 0) return undefined;
+  // Expose imageRes util on window (stable callback)
+  const imageRes = useCallback((imagesUrls: Array<string | undefined | null> = [], preferred: number = 0): string | undefined => {
+    if (!Array.isArray(imagesUrls) || imagesUrls.length === 0) return undefined;
     const clean = imagesUrls.map(u => {
       if (typeof u === 'string') return u.trim();
       if (u && typeof u === 'object' && typeof (u as any).url === 'string') return ((u as any).url || '').trim();
       return '';
     }).filter(Boolean) as string[];
     if (clean.length === 0) return undefined;
-    // If preferred is within bounds and non-empty, return it.
     if (Number.isInteger(preferred) && preferred >= 0 && preferred < clean.length && clean[preferred]) return clean[preferred];
-    // Otherwise, prefer the previous available index (preferred-1, preferred-2, ... 0)
     let idx = Math.min(Math.max(Math.floor(preferred), 0), clean.length - 1);
-    for (; idx >= 0; idx--) {
-      if (clean[idx]) return clean[idx];
-    }
-    // No previous found; return undefined
+    for (; idx >= 0; idx--) if (clean[idx]) return clean[idx];
     return undefined;
   }, []);
-
-  // Expose globally on window for legacy consumers that expect a helper
   useEffect(() => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).imageRes = imageRes;
-    } catch (e) {}
-    return () => {
-      try { (window as any).imageRes = undefined; } catch(e) {}
-    };
+    try { (window as any).imageRes = imageRes; } catch { /* ignore */ }
+    return () => { try { (window as any).imageRes = undefined; } catch { /* ignore */ } };
   }, [imageRes]);
 
-  const onDragLeft = (e: React.MouseEvent) => {
+  // Helper to set active tab only if different (avoids re-rendering children unnecessarily)
+  const setActiveTabIfDifferent = useCallback((newTab: string) => {
+    setActiveTab(prev => (prev === newTab ? prev : newTab));
+  }, []);
+
+  // Handlers: memoized so they are stable references
+  const handleSearch = useCallback((q?: string) => {
+    setSearchQuery(q || '');
+    setSearchTriggeredAt(Date.now());
+  }, []);
+
+  const handleNavigate = useCallback((dest: string) => {
+    setActiveTabIfDifferent(dest);
+  }, [setActiveTabIfDifferent]);
+
+  // Selection helpers: only update id if different (avoids re-rendering SongInfo if same id)
+  const handleSelectTrack = useCallback((id?: string) => {
+    if (!id) return;
+    setSongInfoTrackId(prev => (prev === id ? prev : id));
+    setActiveTabIfDifferent('song');
+  }, [setActiveTabIfDifferent]);
+
+  const handleActivateSongInfo = useCallback(() => {
+    const current = currentTrackIdRef.current;
+    if (current) setSongInfoTrackId(prev => (prev === current ? prev : current));
+    setActiveTabIfDifferent('song');
+  }, [setActiveTabIfDifferent]);
+
+  const handleSelectAlbum = useCallback((id?: string) => {
+    if (!id) return;
+    setAlbumInfoAlbumId(prev => (prev === id ? prev : id));
+    setActiveTabIfDifferent('album');
+  }, [setActiveTabIfDifferent]);
+
+  const handleSelectPlaylist = useCallback((id?: string) => {
+    if (!id) return;
+    setPlaylistInfoPlaylistId(prev => (prev === id ? prev : id));
+    setActiveTabIfDifferent('playlist');
+  }, [setActiveTabIfDifferent]);
+
+  const handleSelectArtist = useCallback((id?: string) => {
+    if (!id) return;
+    setArtistInfoArtistId(prev => (prev === id ? prev : id));
+    setActiveTabIfDifferent('artist');
+  }, [setActiveTabIfDifferent]);
+
+  // TitleBar window actions memoized to avoid object recreation on each render
+  const windowStatus = useMemo(() => ({
+    maximize: async () => await appWindow?.maximize?.().catch((e: any) => { console.error(e); }),
+    restore: async () => await appWindow?.unmaximize?.().catch((e: any) => { console.error(e); }),
+    minimize: async () => await appWindow?.minimize?.().catch((e: any) => { console.error(e); }),
+    close: async () => await appWindow?.close?.().catch((e: any) => { console.error(e); }),
+  }), [appWindow]);
+
+  // Global fallback listener for legacy 'freely:select-artist' event (attach once)
+  useEffect(() => {
+    const onGlobalSelect = (e: any) => {
+      const id = e?.detail;
+      if (!id) return;
+      setArtistInfoArtistId(prev => (prev === String(id) ? prev : String(id)));
+      setActiveTabIfDifferent('artist');
+    };
+    window.addEventListener('freely:select-artist', onGlobalSelect as EventListener);
+    return () => window.removeEventListener('freely:select-artist', onGlobalSelect as EventListener);
+  }, [setActiveTabIfDifferent]);
+
+  // Drag handlers for left / right panels (stable references)
+  const onDragLeft = useCallback((e: React.MouseEvent) => {
     if (leftCollapsed) return;
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = leftWidth;
-    let frame = 0;
+    let rafId = 0;
     setDraggingLeft(true);
     const move = (ev: MouseEvent) => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
         const delta = ev.clientX - startX;
         let candidate = startWidth + delta;
         if (candidate > maxPanel) candidate = maxPanel;
-        if (candidate < minPanel) candidate = minPanel; // don't render below min
+        if (candidate < minPanel) candidate = minPanel;
         setLeftWidth(candidate);
-        const raw = startWidth + delta;
-  setCollapseIntentLeft(raw < collapseIntentThreshold);
+        setCollapseIntentLeft(startWidth + delta < collapseIntentThreshold);
       });
     };
     const up = (ev: MouseEvent) => {
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       window.removeEventListener('mouseleave', up);
@@ -307,7 +313,6 @@ function Main() {
       const finalRaw = startWidth + delta;
       if (finalRaw < collapseThreshold) {
         setLeftCollapsed(true);
-        // restore width for when expanded again
         setLeftWidth(minPanel);
       }
       setDraggingLeft(false);
@@ -316,29 +321,28 @@ function Main() {
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     window.addEventListener('mouseleave', up);
-  };
+  }, [leftCollapsed, leftWidth]);
 
-  const onDragRight = (e: React.MouseEvent) => {
+  const onDragRight = useCallback((e: React.MouseEvent) => {
     if (rightCollapsed) return;
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = rightWidth;
-    let frame = 0;
+    let rafId = 0;
     setDraggingRight(true);
     const move = (ev: MouseEvent) => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
         const delta = startX - ev.clientX; // moving left increases width
         let candidate = startWidth + delta;
         if (candidate > maxPanel) candidate = maxPanel;
         if (candidate < minPanel) candidate = minPanel;
         setRightWidth(candidate);
-        const raw = startWidth + delta;
-  setCollapseIntentRight(raw < collapseIntentThreshold);
+        setCollapseIntentRight(startWidth + delta < collapseIntentThreshold);
       });
     };
     const up = (ev: MouseEvent) => {
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       window.removeEventListener('mouseleave', up);
@@ -354,24 +358,81 @@ function Main() {
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     window.addEventListener('mouseleave', up);
-  };
+  }, [rightCollapsed, rightWidth]);
 
-  if (!ready) return (
-    <div className="app-loading">
-      <div className="splash-box" role="status" aria-live="polite">
-        <img src={"splash.png"} alt={t('app.title')} />
-        <div className="splash-status">
-          { !states.dbReady && t('loading.db') }
-          { states.dbReady && !states.fontsReady && t('loading.fonts') }
-          { states.fontsReady && !states.preloadReady && t('loading.services') }
-          { states.preloadReady && !states.warmupDone && t('loading.warmup') }
+  // Expose memoized props for CenterTabs so it only re-renders when relevant values change.
+  const centerTabsProps = useMemo(() => ({
+    searchQuery,
+    searchTrigger: searchTriggeredAt,
+    searchResults,
+    searchLoading,
+    activeTab,
+    onTabChange: setActiveTabIfDifferent,
+    songTrackId: songInfoTrackId,
+    albumId: albumInfoAlbumId,
+    playlistId: playlistInfoPlaylistId,
+    artistId: artistInfoArtistId,
+    onSelectArtist: handleSelectArtist,
+    onSelectAlbum: handleSelectAlbum,
+    onSelectPlaylist: handleSelectPlaylist,
+    onSelectTrack: handleSelectTrack,
+  }), [
+    searchQuery,
+    searchTriggeredAt,
+    searchResults,
+    searchLoading,
+    activeTab,
+    setActiveTabIfDifferent,
+    songInfoTrackId,
+    albumInfoAlbumId,
+    playlistInfoPlaylistId,
+    artistInfoArtistId,
+    handleSelectArtist,
+    handleSelectAlbum,
+    handleSelectPlaylist,
+    handleSelectTrack,
+  ]);
+
+  // BottomPlayer handlers (memoized)
+  const toggleLyrics = useCallback(() => setLyricsOpen(o => !o), []);
+  const [lyricsOpen, setLyricsOpen] = useState<boolean>(false);
+
+  const toggleQueueTab = useCallback(() => {
+    setRightTab(t => (t === 'queue' ? 'artist' : 'queue'));
+  }, []);
+
+  // Provide global AddToPlaylist modal via a small wrapper component
+  function GlobalAddToPlaylistModal() {
+    const { isOpen, track, fromBottomPlayer, closeModal } = useGlobalAddToPlaylistModal();
+    return (
+      <AddToPlaylistModal
+        track={track}
+        isOpen={isOpen}
+        onClose={closeModal}
+        fromBottomPlayer={fromBottomPlayer}
+      />
+    );
+  }
+
+  // If app not ready show splash
+  if (!ready) {
+    return (
+      <div className="app-loading">
+        <div className="splash-box" role="status" aria-live="polite">
+          <img src="splash.png" alt={t('app.title')} />
+          <div className="splash-status">
+            {!states.dbReady && t('loading.db')}
+            {states.dbReady && !states.fontsReady && t('loading.fonts')}
+            {states.fontsReady && !states.preloadReady && t('loading.services')}
+            {states.preloadReady && !states.warmupDone && t('loading.warmup')}
+          </div>
         </div>
       </div>
-    </div>
-  )
+    );
+  }
 
   return (
-      <div className={"app" + (draggingLeft || draggingRight ? ' is-resizing' : '') + (maximized ? ' maximized' : '')}>
+    <div className={`${'app'}${(draggingLeft || draggingRight) ? ' is-resizing' : ''}${maximized ? ' maximized' : ''}`}>
       <PromptProvider>
         <div className="bg" />
         <TitleBar
@@ -380,13 +441,7 @@ function Main() {
           onSearch={handleSearch}
           onNavigate={handleNavigate}
           activeTab={activeTab}
-          // Provide safe wrappers so buttons don't throw if appWindow is not ready
-          windowStatus={{
-            maximize: async () => await (appWindow)?.maximize?.().catch?.((e: any) => {console.error(e)}),
-            restore:  async () => await (appWindow)?.unmaximize?.().catch?.((e: any) => {console.error(e)}),
-            minimize: async () => await (appWindow)?.minimize?.().catch?.((e: any) => {console.error(e)}),
-            close:    async () => await (appWindow)?.close?.().catch?.((e: any) => {console.error(e)})
-          }}
+          windowStatus={windowStatus}
           isMaximized={maximized}
         />
         <div className="window-body">
@@ -395,15 +450,14 @@ function Main() {
               collapsed={leftCollapsed}
               onToggle={() => setLeftCollapsed(prev => !prev)}
               width={leftWidth}
-              extraClass={draggingLeft ? `panel-dragging ${collapseIntentLeft ? 'collapse-intent': ''}` : ''}
-              activePlaylistId={activeTab==='playlist' ? playlistInfoPlaylistId : undefined}
-              onSelectPlaylist={(pid)=> { setPlaylistInfoPlaylistId(prev => { if(prev===pid) return prev; return pid; }); setActiveTab('playlist'); }}
-              onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
-              // Provide currently active artist id so the left panel can highlight it
+              extraClass={draggingLeft ? `panel-dragging ${collapseIntentLeft ? 'collapse-intent' : ''}` : ''}
+              activePlaylistId={activeTab === 'playlist' ? playlistInfoPlaylistId : undefined}
+              onSelectPlaylist={(pid) => { handleSelectPlaylist(pid); }}
+              onSelectArtist={(id) => { handleSelectArtist(id); }}
               onSelectArtistActiveId={artistInfoArtistId}
               activeArtistVisible={activeTab === 'artist'}
             />
-            {/* Left resize handle */}
+
             <div
               className={`resize-handle left ${leftCollapsed ? 'disabled' : ''}`}
               onMouseDown={onDragLeft}
@@ -412,26 +466,12 @@ function Main() {
               aria-hidden={leftCollapsed}
               aria-label="Resize left panel"
             />
+
             <div className="center-area main-panels">
-              <CenterTabs
-                searchQuery={searchQuery}
-                searchTrigger={searchTriggeredAt}
-                searchResults={searchResults}
-                searchLoading={searchLoading}
-                activeTab={activeTab}
-                onTabChange={setActiveTab}
-                songTrackId={songInfoTrackId}
-                albumId={albumInfoAlbumId}
-                playlistId={playlistInfoPlaylistId}
-                artistId={artistInfoArtistId}
-                onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
-                onSelectAlbum={(id)=> { setAlbumInfoAlbumId(id); setActiveTab('album'); }}
-                onSelectPlaylist={(id)=> { setPlaylistInfoPlaylistId(prev => { if(prev===id) return prev; return id; }); setActiveTab('playlist'); }}
-                onSelectTrack={(id)=> { handleSelectTrack(id); }}
-              />
+              <CenterTabs {...centerTabsProps} />
               <LyricsOverlay open={lyricsOpen} onClose={() => setLyricsOpen(false)} />
             </div>
-            {/* Right resize handle */}
+
             <div
               className={`resize-handle right ${rightCollapsed ? 'disabled' : ''}`}
               onMouseDown={onDragRight}
@@ -440,47 +480,43 @@ function Main() {
               aria-hidden={rightCollapsed}
               aria-label="Resize right panel"
             />
+
             <RightPanel
               collapsed={rightCollapsed}
               onToggle={() => setRightCollapsed(prev => !prev)}
               width={rightWidth}
               activeRightTab={rightTab}
               onRightTabChange={setRightTab}
-              extraClass={draggingRight ? `panel-dragging ${collapseIntentRight ? 'collapse-intent': ''}` : ''}
-              onSelectAlbum={(id) => { setAlbumInfoAlbumId(id); setActiveTab('album'); }}
-              onSelectPlaylist={(id) => { setPlaylistInfoPlaylistId(prev => { if(prev===id) return prev; return id; }); setActiveTab('playlist'); }}
+              extraClass={draggingRight ? `panel-dragging ${collapseIntentRight ? 'collapse-intent' : ''}` : ''}
+              onSelectAlbum={(id) => { handleSelectAlbum(id); }}
+              onSelectPlaylist={(id) => { handleSelectPlaylist(id); }}
             />
           </div>
+
           <BottomPlayer
             lyricsOpen={lyricsOpen}
-            onToggleLyrics={() => setLyricsOpen(o => !o)}
-            onActivateSongInfo={() => { handleActivateSongInfo(); }}
-            onToggleQueueTab={() => {
-              // Toggle between queue and artist tabs without forcing expansion.
-              // Previously we auto-expanded the right panel when activating the queue;
-              // requirement change: preserve collapsed state.
-              setRightTab(t => t==='queue' ? 'artist' : 'queue');
-            }}
-            queueActive={rightTab==='queue'}
-            onSelectArtist={(id)=> { setArtistInfoArtistId(id); setActiveTab('artist'); }}
+            onToggleLyrics={toggleLyrics}
+            onActivateSongInfo={() => handleActivateSongInfo()}
+            onToggleQueueTab={toggleQueueTab}
+            queueActive={rightTab === 'queue'}
+            onSelectArtist={(id) => handleSelectArtist(id)}
           />
         </div>
-  <AlertsHost />
-  <GlobalAddToPlaylistModal />
-  </PromptProvider>
+
+        <AlertsHost />
+        <GlobalAddToPlaylistModal />
+      </PromptProvider>
     </div>
-  )
+  );
 }
 
-// Debounced search effect (placed after Main for clarity)
-function useDebouncedSearch(query: string | undefined, trigger: number | undefined, onUpdate: (res: any) => void, setLoading: (b: boolean) => void){
-  const last = React.useRef<string | null>(null);
-  const lastTrigger = React.useRef<number | null>(null);
-  const timer = React.useRef<any>(null);
+function useDebouncedSearch(query: string | undefined, trigger: number | undefined, onUpdate: (res: any) => void, setLoading: (b: boolean) => void) {
+  const last = useRef<string | null>(null);
+  const lastTrigger = useRef<number | null>(null);
+  const timer = useRef<any>(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!query || !query.trim()) {
-      // clear results if empty
       onUpdate(undefined);
       setLoading(false);
       last.current = null;
@@ -488,18 +524,16 @@ function useDebouncedSearch(query: string | undefined, trigger: number | undefin
       return;
     }
     const q = query.trim();
-    // If same as last requested and same trigger, skip
     if (last.current === q && lastTrigger.current === (trigger ?? null)) return;
 
-    // Debounce 300ms
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
       last.current = q;
       lastTrigger.current = trigger ?? null;
       setLoading(true);
       try {
-        const res = await (await import('./core/spotify-client')).search(q, ['track','artist','album','playlist'], { limit: 50 });
-        console.log('[search] query=', q, 'response=', res);
+        const client = await import('./core/spotify-client');
+        const res = await client.search(q, ['track', 'artist', 'album', 'playlist'], { limit: 50 });
         onUpdate(res);
       } catch (e) {
         console.warn('search failed', e);
@@ -511,28 +545,4 @@ function useDebouncedSearch(query: string | undefined, trigger: number | undefin
 
     return () => { clearTimeout(timer.current); };
   }, [query, trigger, onUpdate, setLoading]);
-}
-
-
-// Global modal component that renders the AddToPlaylistModal using context
-function GlobalAddToPlaylistModal() {
-  const { isOpen, track, fromBottomPlayer, closeModal } = useGlobalAddToPlaylistModal();
-
-  return (
-    <AddToPlaylistModal
-      track={track}
-      isOpen={isOpen}
-      onClose={closeModal}
-      fromBottomPlayer={fromBottomPlayer}
-      onAdded={(playlistId, playlistName) => {
-        // Modal handles its own alerts, no need for duplicate here
-      }}
-      // Easy animation customization - uncomment and modify as needed:
-      animationDurations={{
-        regular: 1.5,        // Very slow to test if it works
-        bottomPlayer: 1.0,   // Slow bottom player modal
-        backdrop: 2.0        // Very slow backdrop fade
-      }}
-    />
-  );
 }

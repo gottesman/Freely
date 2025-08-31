@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../core/i18n';
 import type { SpotifyAlbum, SpotifyArtist, SpotifyTrack } from '../core/spotify';
-import { invoke } from '@tauri-apps/api/core';
+import { runTauriCommand } from '../core/tauriCommands';
 
 export default function TrackSources({ track, album, primaryArtist }: { track?: SpotifyTrack, album?: SpotifyAlbum, primaryArtist?: SpotifyArtist }) {
   const { t } = useI18n();
@@ -72,45 +72,26 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
       let results: any[] = [];
 
       try {
-        // Make access to an imported `invoke` safe: `typeof` won't throw for undeclared vars.
-        const importedInvoke =
-          typeof invoke === "function" ? (invoke as any) : undefined;
+        const cmd = "torrent_search";
+        console.debug("🎵 TrackSources: calling invoke command=", cmd);
 
-        // fallback to window/global tauri core invoke if available
-        const globalInvoke =
-          (globalThis as any).__TAURI__?.core?.invoke ||
-          (globalThis as any).__TAURI__?.invoke;
+        try {
+          // wrap with a timeout to avoid hanging the UI indefinitely
+          const resp = await runTauriCommand(cmd, { query, page: 1 }) as any;
+          if (cancelled) return;
 
-        const tauriInvoke = importedInvoke ?? globalInvoke ?? null;
-
-        if (!tauriInvoke) {
-          console.warn("🎵 TrackSources: no tauri invoke() available");
-          errors.push("no-tauri-invoke");
-        } else {
-          const cmd = "torrent_search";
-          console.debug("🎵 TrackSources: calling invoke command=", cmd);
-
-          try {
-            // wrap with a timeout to avoid hanging the UI indefinitely
-            const resp = await withTimeout(
-              (tauriInvoke as Function)(cmd, { query, page: 1 }),
-              10_000
-            ) as any;
-            if (cancelled) return;
-
-            // normalize possible response shapes
-            results = Array.isArray(resp)
-              ? resp
-              : (resp?.results ?? resp?.items ?? resp ?? []);
-            console.debug(
-              "🎵 TrackSources: invoke response normalized length=",
-              Array.isArray(results) ? results.length : 0
-            );
-          } catch (e: any) {
-            const msg = e?.message ?? String(e);
-            console.warn("🎵 TrackSources: invoke failed:", msg);
-            errors.push(`tauri-invoke-${cmd}: ${msg}`);
-          }
+          // normalize possible response shapes
+          results = Array.isArray(resp)
+            ? resp
+            : (resp?.results ?? resp?.items ?? resp ?? []);
+          console.debug(
+            "🎵 TrackSources: invoke response normalized length=",
+            Array.isArray(results) ? results.length : 0
+          );
+        } catch (e: any) {
+          const msg = e?.message ?? String(e);
+          console.warn("🎵 TrackSources: invoke failed:", msg);
+          errors.push(`tauri-invoke-${cmd}: ${msg}`);
         }
 
         if (!cancelled) {
@@ -150,13 +131,8 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
       const id = s.magnetURI ?? s.infoHash ?? s.url ?? '';
       let files: any[] = [];
 
-      // Prefer Tauri invoke when available
-      const importedInvoke = typeof invoke === 'function' ? (invoke as any) : undefined;
-      const globalInvoke = (globalThis as any).__TAURI__?.core?.invoke || (globalThis as any).__TAURI__?.invoke || (globalThis as any).__TAURI__?.tauri?.invoke;
-      const tauriInvoke = importedInvoke ?? globalInvoke ?? null;
-
-      if (tauriInvoke) {
-        const resp = await withTimeout((tauriInvoke as Function)('torrent_get_files', { id, timeoutMs: 8000 }), 8000) as any;
+      const resp = await runTauriCommand('torrent_get_files', { id, timeoutMs: 8000 }) as any;
+      if (resp) {
         files = Array.isArray(resp) ? resp : (resp?.results ?? resp?.items ?? resp ?? []);
       } else {
         // Fallback: dynamically import the client helper to avoid static electron-only import
@@ -252,7 +228,7 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
                         <>
                           <button
                             type="button"
-                            className={`btn-icon ${torrentErrors[t_key] ? (torrentErrors[t_key].includes('Error')?'btn-error':'btn-warning') : ''}`}
+                            className={`btn-icon ${torrentErrors[t_key] ? (torrentErrors[t_key].includes('Error') ? 'btn-error' : 'btn-warning') : ''}`}
                             disabled={!!torrentLoadingKeys[t_key] && !torrentFileLists[t_key]}
                             onClick={async () => {
                               // If we already have files, toggle visibility. Otherwise trigger fetch.

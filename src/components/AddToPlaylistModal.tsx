@@ -273,8 +273,8 @@ export default function AddToPlaylistModal({
               )}
             </div>
             <div className="track-info-meta">
-              <div className="track-info-name">{track.name}</div>
-              <div className="track-info-artist">{track.artists?.map((a: any) => a.name).join(', ')}</div>
+              <div className="track-info-name overflow-ellipsis">{track.name}</div>
+              <div className="track-info-artist overflow-ellipsis">{track.artists?.map((a: any) => a.name).join(', ')}</div>
             </div>
           </div>
         )}
@@ -296,7 +296,7 @@ export default function AddToPlaylistModal({
                 <span className="material-symbols-rounded" style={{fontSize: 18}}>add</span>
               </div>
               <div className="playlist-item-info">
-                <div className="playlist-item-name">{t('addToPlaylist.createNew', 'Create New Playlist')}</div>
+                <div className="playlist-item-name overflow-ellipsis">{t('addToPlaylist.createNew', 'Create New Playlist')}</div>
               </div>
             </div>
           )}
@@ -366,7 +366,7 @@ export default function AddToPlaylistModal({
                     : playlist.name
                   }
                 </div>
-                <div className="playlist-item-meta">
+                <div className="playlist-item-meta overflow-ellipsis">
                   {(playlist.track_count || 0)} {t('pl.tracks', 'tracks')}
                   {playlist.tags.length > 0 && ` • ${playlist.tags.join(', ')}`}
                 </div>

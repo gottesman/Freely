@@ -30,21 +30,23 @@
 .resize-handle:active + .main-panels,
 .main-panels + .resize-handle:active,
 .resize-handle:active ~ .main-panels { transition: none !important; }
-.main-panels.collapsed { width:56px; overflow-x: hidden; }
+.main-panels.collapsed { width:54px; overflow-x: hidden; }
 .main-panels .panel-collapse-toggle { cursor:pointer; font-size:12px; padding:4px; }
 
 /* Resize Handle */
 .resize-handle { width:10px; flex:0 0 10px; cursor:col-resize; position:relative; display:flex; align-items:center; justify-content:center; user-select:none; background:transparent; z-index:30; touch-action:none; min-width:6px !important; }
-.resize-handle::before { content:""; width:2px; height:100%; border-radius:2px; background: linear-gradient(#fff, color-mix(in srgb,#fff 70%, #000)); opacity:0; transition:opacity .2s; }
+.resize-handle::before { content:""; width:1px; height:100%; border-radius:2px; background: linear-gradient(#fff0,#fffa 20%, #fffa 80%, #fff0); opacity:0; transition:opacity .2s; }
 .resize-handle:hover::before, .resize-handle:focus::before, .resize-handle:active::before { opacity:.85; }
 .resize-handle.disabled { cursor:default; }
 .resize-handle.disabled::before { opacity:0; }
 .resize-handle::after { content:""; position:absolute; left:-4px; right:-4px; top:0; bottom:0; }
 
 /* Splash */
-.app-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:transparent; z-index:1000; }
+.app-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:transparent; z-index:10000; }
 .app-loading img { filter: drop-shadow(0 8px 28px rgba(0 0 0 / .55)); }
 .app-loading .splash-box { position:relative; width:400px; height:300px; display:flex; align-items:center; justify-content:center; }
 .app-loading .splash-box img { width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none; }
 .app-loading .splash-status { position:absolute; bottom:10px; left:0; right:0; text-align:center; font-size:12px; letter-spacing:.5px; font-family: system-ui, sans-serif; color:#cfe4ff; text-shadow:0 2px 4px rgba(0 0 0 / .6); opacity:.9; animation:splash-status-pulse 2.4s ease-in-out infinite; }
 @keyframes splash-status-pulse { 0%,100% { opacity:.9 } 50% { opacity:.55 } }
+
+.overflow-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

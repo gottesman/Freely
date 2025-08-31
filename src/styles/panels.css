@@ -5,7 +5,19 @@
 .right-tabs-header button:hover { background:var(--glass-bg-hover); border-color:var(--glass-border-hover); }
 .right-tabs-header button.active { background:var(--accent); border-color:var(--accent); color:#021; box-shadow:0 2px 10px -4px rgba(0,0,0,.5); }
 .right-tabs-body { display:flex; flex-direction:column; gap:16px; min-height:0; flex:1 1 auto; overflow-y:auto; overflow-x:hidden; /* mask: linear-gradient(to bottom, #fff0 0, #fff 16px); -webkit-mask: linear-gradient(to bottom, #fff0 0, #fff 16px); */ }
-.rt-panel { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; }
+.rt-panel { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; gap: 6px; }
+.queue-title {
+    padding: 0 8px;
+    font-weight: 700;
+    opacity: 1;
+    overflow: hidden;
+    height: 21px;
+    transition: opacity 0.2s ease, height 0.2s ease;
+}
+.collapsed .queue-title {
+    opacity: 0;
+    height: 0;
+}
 .rt-placeholder { font-size:12px; opacity:.7; padding:4px var(--padding-md); text-align:center; color:var(--text); }
 .panel-title { font-size:18px; margin:0 0 4px; letter-spacing:.5px; }
 .rt-subheading { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; margin-top:-4px; }
@@ -137,16 +149,38 @@
   overflow: hidden;
   height: 100%;
 }
+.left-panel .left-playlist{
+  transition: all 0.2s ease;
+}
 .left-panel.collapsed .left-playlist, .left-panel.collapsed .left-artists{
   padding: 0;
+  gap:0;
 }
 .pl-controls{
   display: flex;
   gap: 6px;
   align-items: center;
-  padding: 0 var(--padding-md)
+  padding: 0 var(--padding-md);
+  height: 28px;
+  opacity: 1;
+  transition: opacity 0.2s ease, height 0.2s ease;
+  overflow: hidden;
 }
-.left-panel.collapsed .pl-controls, .left-panel.collapsed .left-artists-header, .left-panel.collapsed .pl-add, .left-panel.collapsed .pl-meta { display: none; }
+
+.pl-add{
+    cursor: pointer;
+    opacity: 0.9;
+    border-style: dashed;
+    height: 54px;
+    overflow: hidden;
+    transition: all 0.2s ease;
+}
+.left-panel.collapsed .pl-container{
+  gap: 0;
+}
+
+.left-panel.collapsed .pl-controls, .left-panel.collapsed .left-artists-header, .left-panel.collapsed .pl-add, .left-panel.collapsed .pl-meta { opacity: 0!important; height: 0!important; padding:0!important; gap: 0; border-width: 0;}
+.left-panel.collapsed .pl-meta { display: none!important; }
 
 .left-panel.collapsed .pl-list .pl-item {
     justify-content: center;
