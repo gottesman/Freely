@@ -1,26 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useI18n } from '../core/i18n';
 import { SpotifyTrack, SpotifyPlaylist } from '../core/spotify'
 import { useSpotifyClient } from '../core/spotify-client'
 import { usePlaylists } from '../core/playlists';
 import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
+import InfoHeader from './InfoHeader';
 import { usePrompt } from '../core/PromptContext';
 import { useAlerts } from '../core/alerts';
 
-function fmt(ms?: number){ // track-level mm:ss
-  if(ms === undefined) return '--:--';
-  const total = Math.floor(ms/1000); const m = Math.floor(total/60); const s = total%60; return m+':' + (s<10?'0':'')+s;
-}
-function fmtTotal(ms?: number){ // playlist-level formatting per spec
-  if(ms === undefined) return '--';
-  const totalSec = Math.max(0, Math.floor(ms/1000));
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if(h >= 1) return `${h}h ${m}m`;
-  return `${m}m ${s}s`;
-}
+import { fmtMs, fmtTotalMs, useHeroImage } from './tabHelpers';
 
 export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelectTrack }: { playlistId?: string; onSelectPlaylist?: (id: string) => void; onSelectTrack?: (id: string) => void }){
   const { t } = useI18n();
@@ -192,7 +181,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
     return ()=>{ cancelled = true; };
   }, [playlistId, playlists, getPlaylistTracks, getPlaylistTrackIds, t]);
 
-  const heroImage = useMemo(()=> playlist?.images?.[0]?.url || '', [playlist]);
+  const heroImage = useMemo(() => useHeroImage(playlist?.images, 0), [playlist?.images]);
   const totalDuration = useMemo(()=> tracks?.reduce((a,b)=> a + (b.durationMs||0),0) || 0, [tracks]);
   // artist col width handled by TrackList
 
@@ -202,10 +191,6 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
       console.log('❌ Delete track failed: not a local playlist or no record', { isLocalPlaylist, localPlaylistRecord });
       return;
     }
-    
-    console.log('🗑️ Delete track called:', trackId, 'from playlist:', localPlaylistRecord.id);
-    
-    // Confirm deletion
     if (confirm(t('pl.removeTrackConfirm', 'Remove track from playlist?'))) {
       console.log('🗑️ User confirmed deletion, calling removeTrack');
       
@@ -222,131 +207,102 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
     }
   }, [isLocalPlaylist, localPlaylistRecord, removeTrack, t, refresh]);
 
+  const actions: React.ReactNode[] = [];
+
+  if (!isLocalPlaylist) {
+    actions.push(
+      <button key="clone" className="np-icon" aria-label={t('player.addPlaylist')} disabled={!playlist || !tracks?.length} onClick={async ()=>{
+        if(isLocalPlaylist || !playlist) return;
+        const defaultName = playlist.name || t('pl.new.item','New Playlist');
+        const name = (await prompt.prompt(t('pl.clonePrompt','Save playlist as'), defaultName))?.trim();
+        if(!name) return;
+        const trackObjects = tracks || [];
+        try {
+          const newId = await createPlaylistWithTracks(name, trackObjects);
+          if(newId && onSelectPlaylist) {
+            setTimeout(() => { onSelectPlaylist(`local:${newId}`); }, 50);
+          }
+          pushAlert(t('pl.created','Playlist created'), 'info');
+        } catch(error) {
+          console.error('Error during playlist cloning:', error);
+          pushAlert(t('pl.createFailed','Failed to create playlist'), 'error');
+        }
+      }}>
+        <span className="material-symbols-rounded">add_circle</span>
+      </button>
+    );
+  }
+
+  if (canModify) {
+    actions.push(
+      <button key="edit" className="np-icon" aria-label={t('pl.editPlaylist','Edit playlist')} onClick={async ()=>{
+        if(!localPlaylistRecord) return;
+        const newName = await prompt.prompt(t('pl.renamePlaylist','Rename playlist'), localPlaylistRecord.name || '');
+        if(!newName) return;
+        const trimmed = newName.trim();
+        if(trimmed && trimmed !== localPlaylistRecord.name){
+          await updatePlaylist(localPlaylistRecord.id, { name: trimmed });
+          pushAlert(t('pl.updated','Playlist renamed'), 'info');
+        }
+      }}>
+        <span className="material-symbols-rounded filled" aria-hidden="true">edit</span>
+      </button>
+    );
+
+    actions.push(
+      <button key="delete" className="np-icon" aria-label={t('pl.deletePlaylist','Delete playlist')} onClick={async ()=>{
+        if(!localPlaylistRecord) return;
+        const ok = await prompt.confirm(t('pl.deleteConfirm','Delete playlist?'));
+        if(!ok) return;
+        try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
+        try {
+          await deletePlaylist(localPlaylistRecord.id);
+          pushAlert(t('pl.deleted','Playlist deleted'), 'info');
+        } catch(e) { console.warn('deletePlaylist failed', e); pushAlert(t('pl.deleteFailed','Failed to delete playlist'), 'error'); }
+        setPlaylist(undefined); setTracks(undefined); refresh();
+      }}>
+        <span className="material-symbols-rounded filled" aria-hidden="true">delete</span>
+      </button>
+    );
+  }
+
+  actions.push(
+    <button key="play" className="np-icon" aria-label={t('player.playPlaylist')} disabled={!tracks?.length} onClick={()=>{
+      if(!tracks?.length) return;
+      const currentSegment = (queueIds || []).slice(currentIndex || 0);
+      const trackIds = tracks.map(t=> t.id).filter(Boolean);
+      const dedupSet = new Set(trackIds);
+      const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));
+      const newQueue = [...trackIds, ...filteredCurrent];
+      setQueue(newQueue, 0);
+    }}>
+      <span className="material-symbols-rounded filled" aria-hidden="true">play_arrow</span>
+    </button>
+  );
+
+  actions.push(
+    <button key="queue" className="np-icon" aria-label={t('player.addToQueue')} disabled={!tracks?.length} onClick={()=>{
+      if(!tracks?.length) return;
+      const trackIds = tracks.map(t=> t.id).filter(Boolean);
+      const existing = new Set(queueIds);
+      const toAppend = trackIds.filter(id => !existing.has(id));
+      if(toAppend.length) enqueue(toAppend);
+    }}>
+      <span className="material-symbols-rounded" aria-hidden="true">queue</span>
+    </button>
+  );
+
   return (
     <section className="now-playing" aria-labelledby="playlist-heading">
-      <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
-        <div className="np-hero-inner">
-          <h1 id="playlist-heading" className="np-title" style={{display:'flex', alignItems:'center'}}>
-            {playlist && isFavorites && (
-              <span className="material-symbols-rounded filled" aria-hidden="true" style={{fontSize:31, display:'inline-flex', alignItems:'center', justifyContent:'center'}}>star</span>
-            )}
-            { playlist ? (
-              <>
-                {playlist.name}
-              </>
-            ) : (playlistId ? t('np.loading') : t('np.noTrack')) }
-          </h1>          
-            <div className="np-meta-line">
-                {playlist && (
-                  <>
-                    {playlist.totalTracks !== undefined && <><span className="np-album-trackcount">{t('np.tracks', undefined, { count: playlist.totalTracks })}</span></>}
-                    <span className="np-dot" />
-                    <span className="np-album-year">{fmtTotal(totalDuration)}</span>
-                  </>
-                )}
-            </div>
-          <div className="np-extras">
-            <div className="np-tags disabled" aria-label={t('pl.playlistType','Playlist Type')}>{playlist && <span className="tag">{ isLocalPlaylist ? t('pl.local','Local playlist') : t('pl.remote','Remote playlist')}</span>}</div>
-            <div className="np-actions" aria-label={t('np.playlistActions','Playlist actions')}>
-      {!isLocalPlaylist && (
-                <button
-                  className="np-icon"
-                  aria-label={t('player.addPlaylist')}
-                  disabled={!playlist || !tracks?.length}
-                    onClick={async ()=>{
-                    if(isLocalPlaylist || !playlist) return;
-                    const defaultName = playlist.name || t('pl.new.item','New Playlist');
-                    const name = (await prompt.prompt(t('pl.clonePrompt','Save playlist as'), defaultName))?.trim();
-                    if(!name) return;
-                    // Pass the full track objects instead of just IDs
-                    const trackObjects = tracks || [];
-                    try {
-                      const newId = await createPlaylistWithTracks(name, trackObjects);
-                      if(newId && onSelectPlaylist) {
-                        setTimeout(() => { onSelectPlaylist(`local:${newId}`); }, 50);
-                      }
-                      pushAlert(t('pl.created','Playlist created'), 'info');
-                    } catch(error) {
-                      console.error('Error during playlist cloning:', error);
-                      pushAlert(t('pl.createFailed','Failed to create playlist'), 'error');
-                    }
-                  }}
-                >
-                  <span className="material-symbols-rounded">add_circle</span>
-                </button>
-              )}
-              {canModify && (
-                <>
-                  <button
-                    className="np-icon"
-                    aria-label={t('pl.editPlaylist','Edit playlist')}
-                    onClick={async ()=>{
-                      if(!localPlaylistRecord) return;
-                      const newName = await prompt.prompt(t('pl.renamePlaylist','Rename playlist'), localPlaylistRecord.name || '');
-                      if(!newName) return;
-                      const trimmed = newName.trim();
-                      if(trimmed && trimmed !== localPlaylistRecord.name){
-                        await updatePlaylist(localPlaylistRecord.id, { name: trimmed });
-                        pushAlert(t('pl.updated','Playlist renamed'), 'info');
-                      }
-                    }}
-                  >
-                    <span className="material-symbols-rounded filled" aria-hidden="true">edit</span>
-                  </button>
-                  <button
-                    className="np-icon"
-                    aria-label={t('pl.deletePlaylist','Delete playlist')}
-                    onClick={async ()=>{
-                      if(!localPlaylistRecord) return;
-                      const ok = await prompt.confirm(t('pl.deleteConfirm','Delete playlist?'));
-                      if(!ok) return;
-                      try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
-                      try {
-                        await deletePlaylist(localPlaylistRecord.id);
-                        pushAlert(t('pl.deleted','Playlist deleted'), 'info');
-                      } catch(e) { console.warn('deletePlaylist failed', e); pushAlert(t('pl.deleteFailed','Failed to delete playlist'), 'error'); }
-                      setPlaylist(undefined); setTracks(undefined); refresh();
-                    }}
-                  >
-                    <span className="material-symbols-rounded filled" aria-hidden="true">delete</span>
-                  </button>
-                </>
-              )}
-                <button
-                    className="np-icon"
-                    aria-label={t('player.playPlaylist')}
-                    disabled={!tracks?.length}
-                    onClick={()=>{
-                    if(!tracks?.length) return;
-                    const currentSegment = (queueIds || []).slice(currentIndex || 0); // trimmed queue (playback may already trim older items)
-                    const trackIds = tracks.map(t=> t.id).filter(Boolean);
-                    // Avoid duplicating: remove any of these ids already in current segment before prepending
-                    const dedupSet = new Set(trackIds);
-                    const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));
-                    const newQueue = [...trackIds, ...filteredCurrent];
-                    setQueue(newQueue, 0);
-                    }}
-                >
-                    <span className="material-symbols-rounded filled" aria-hidden="true">play_arrow</span>
-                </button>
-                <button
-                    className="np-icon"
-                    aria-label={t('player.addToQueue')}
-                    disabled={!tracks?.length}
-                    onClick={()=>{
-                    if(!tracks?.length) return;
-                    const trackIds = tracks.map(t=> t.id).filter(Boolean);
-                    const existing = new Set(queueIds);
-                    const toAppend = trackIds.filter(id => !existing.has(id));
-                    if(toAppend.length) enqueue(toAppend);
-                    }}
-                >
-                    <span className="material-symbols-rounded" aria-hidden="true">queue</span>
-                </button>
-            </div>
-          </div>
-        </div>
-      </header>
+      <InfoHeader
+        id="playlist-heading"
+        title={(playlist && isFavorites) ? (<><span className="material-symbols-rounded filled" aria-hidden="true" style={{fontSize:31, display:'inline-flex', alignItems:'center', justifyContent:'center'}}>star</span>{' '}{playlist.name}</>) : (playlist ? playlist.name : (playlistId ? t('np.loading') : t('np.noTrack')))}
+  meta={playlist ? (<><span className="np-album-trackcount">{t('np.tracks', undefined, { count: playlist.totalTracks ?? 0 })}</span><span className="np-dot" /><span className="np-album-year">{fmtTotalMs(totalDuration)}</span></>) : undefined}
+  tags={playlist ? isLocalPlaylist ? [t('pl.local','Local')] : [t('pl.remote','Remote')] : []}
+        actions={actions}
+        heroImage={heroImage}
+        ariaActionsLabel={t('np.playlistActions','Playlist actions')}
+      />
       <div className="np-section np-album-tracks" aria-label={t('np.playlistTrackList','Playlist track list')}>
         <h4 className="np-sec-title">{t('np.tracksList','Tracks')}</h4>
         {loading && <p className="np-hint">{t('np.loadingTracks')}</p>}

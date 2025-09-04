@@ -23,6 +23,22 @@
 .btn-icon:active {
     transform: scale(.92);
 }
+.ts-select {
+  width:34px;
+  height:34px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:10px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text);
+}
+.ts-select.active, .ts-select[aria-pressed="true"] {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 80%, #fff), var(--accent));
+  color: #021;
+  border-color: var(--accent);
+}
 .btn-warning {
     background: var(--warning-bg);
     color: var(--warning)
@@ -680,17 +696,7 @@ nav.left-nav {
   }
 }
 
-/* Lyrics overlay: keep close button fixed while lyrics content scrolls */
-.np-lyrics-overlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 903;
-  pointer-events: auto;
-}
-
+/* Now Playing Lyrics Overlay */
 .np-lyrics-scroll {
   /* scroll container — allow the body content to scroll while the close button remains fixed */
   max-height: 85vh;
@@ -731,17 +737,17 @@ nav.left-nav {
 
 /* Search Results */
 .search-results {
-  padding: var(--padding-xl);
   display:flex;
   flex-direction:column;
   gap:12px;
-  max-height: 100%;
-  overflow: hidden;
+}
+.search-results .np-hero::before{
+  mask: none;
+  -webkit-mask: none;
 }
 .sr-results {
-    overflow: auto;
-    mask: linear-gradient(to bottom, #fff0, #fff 3%, #fff 97%, #fff0);
-    -webkit-mask: linear-gradient(to bottom, #fff0, #fff 3%, #fff 97%, #fff0);
+    padding: var(--padding-xl);
+    padding-top:0;
 }
 .sr-section-header > *, .search-results h1 {
     padding: 0;

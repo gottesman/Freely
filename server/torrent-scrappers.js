@@ -1,31 +1,31 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function (o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
     if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
         desc = {
             enumerable: true,
-            get: function() {
+            get: function () {
                 return m[k];
             }
         };
     }
     Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
+}) : (function (o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     o[k2] = m[k];
 }));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function (o, v) {
     Object.defineProperty(o, "default", {
         enumerable: true,
         value: v
     });
-}) : function(o, v) {
+}) : function (o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || (function() {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function(o) {
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function (o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
             var ar = [];
             for (var k in o)
                 if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function() {
         };
         return ownKeys(o);
     };
-    return function(mod) {
+    return function (mod) {
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null)
@@ -50,6 +50,8 @@ exports.createAndRegisterScraper = createAndRegisterScraper;
 exports.listScrapers = listScrapers;
 exports.searchAll = searchAll;
 const cheerio = __importStar(require("cheerio"));
+
+const MIN_SCORE = 1;
 
 // --- CORE INFRASTRUCTURE ---
 
@@ -91,7 +93,7 @@ async function tryFetchAny(urls, init, timeoutMs = 3000) {
         try {
             const res = await Promise.race([fetchWithOpts(url, init), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))]);
             if (res?.ok) return res;
-        } catch {}
+        } catch { }
     }
     return null;
 }
@@ -189,6 +191,63 @@ function listScrapers() {
     }));
 }
 
+
+// Regex to identify common video-related terms in a torrent title.
+const VIDEO_TERMS_REGEX = /\b(?:1080p|720p|2160p|4k|8k|480p|576p|1080i|bluray|blu-ray|bdrip|brrip|webrip|web-dl|webdl|hdtv|dvdrip|dvd-r|dvdr|x264|x265|h264|h265|hevc|hd|sd|cam|telesync|ts|xvid|divx|mkv|mp4|avi|movie|season|episode|s\d{1,2}e\d{1,2})\b/i;
+
+// Regex to identify common audio-related terms, used to override the video filter.
+const AUDIO_TERMS_REGEX = /\b(?:flac|alac|wav|ape|dsd|sacd|mp3|aac|ogg|opus|m4a|soundtrack|ost|album|discography|lp|ep|320k|v0|24bit|16bit|cd)\b/i;
+
+
+function contentTypePenalty(title) {
+    const t = String(title || '');
+    const isVideo = VIDEO_TERMS_REGEX.test(t);
+    const isAudio = AUDIO_TERMS_REGEX.test(t);
+
+    // If clearly audio -> no penalty
+    if (isAudio) return 0;
+
+    // If video-like -> return moderate penalty (but not exclude)
+    if (isVideo) {
+        // Some terms are weaker signals (cam, hdtv) => lower penalty
+        if (/\b(?:cam|telesync|ts|telecine|camrip)\b/i.test(t)) return 12;
+        if (/\b(?:bluray|bdrip|brrip|web-dl|webdl|hdtv|dvd|dvdrip)\b/i.test(t)) return 18;
+        return 15;
+    }
+
+    return 0;
+}
+
+function levenshtein(a, b) {
+    a = String(a || '');
+    b = String(b || '');
+    if (a === b) return 0;
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const v0 = new Array(n + 1), v1 = new Array(n + 1);
+    for (let j = 0; j <= n; j++) v0[j] = j;
+    for (let i = 0; i < m; i++) {
+        v1[0] = i + 1;
+        for (let j = 0; j < n; j++) {
+            const cost = a[i] === b[j] ? 0 : 1;
+            v1[j + 1] = Math.min(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
+        }
+        for (let j = 0; j <= n; j++) v0[j] = v1[j];
+    }
+    return v1[n];
+}
+
+function fuzzyRatio(a, b) {
+    a = normalizeStr(a);
+    b = normalizeStr(b);
+    if (!a || !b) return 0;
+    const dist = levenshtein(a, b);
+    const maxLen = Math.max(a.length, b.length);
+    if (maxLen === 0) return 1;
+    return 1 - (dist / maxLen); // 0..1
+}
+
 function normalizeStr(s) {
     return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 }
@@ -196,25 +255,48 @@ function normalizeStr(s) {
 function getWords(s) {
     return (String(s || '').match(/[a-z0-9]+/g) || []);
 }
-const MIN_SCORE = 40;
 
 function calcScore(query, title, seeds = 0) {
-    const qNorm = normalizeStr(query);
+    const qRaw = String(query || '');
+    const qNorm = normalizeStr(qRaw);
     let qWords = getWords(qNorm);
     if (!qWords.length) {
         const alt = String(query || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').trim();
         qWords = (alt.match(/[a-z0-9]+/g) || []);
     }
     if (!qWords.length) return 0;
+
     const coreWords = qWords.filter(w => w.length > 3);
-    const titleNorm = normalizeStr(title);
-    const titleWords = new Set(getWords(titleNorm));
+    const titleNorm = normalizeStr(title || '');
+    const titleWordsArr = getWords(titleNorm);
+    const titleWords = new Set(titleWordsArr);
+
+    // overlap ratios
     const matchRatio = qWords.filter(w => titleWords.has(w)).length / qWords.length;
-    const coreMatched = coreWords.length ? coreWords.filter(w => titleWords.has(w)).length / coreWords.length : matchRatio;
+    const coreMatched = coreWords.length ? (coreWords.filter(w => titleWords.has(w)).length / coreWords.length) : matchRatio;
+
+    // phrase match (query contained in title)
     const phraseMatch = titleNorm.includes(qNorm) ? 1 : 0;
-    const base = (matchRatio * 0.7) + (coreMatched * 0.2) + (phraseMatch * 0.1);
+
+    // year match: if a 4-digit year appears in both query and title, boost
+    const yearMatch = (() => {
+        const y = (qRaw.match(/\b(19|20)\d{2}\b/) || [null])[0];
+        if (!y) return 0;
+        return (titleNorm.includes(y) ? 1 : 0);
+    })();
+
+    // fuzzy similarity for near-miss titles (important for soundtrack naming variants)
+    const fuzz = fuzzyRatio(qRaw, title);
+
+    // seeders: small logarithmic boost
     const seedFactor = Math.min(Math.log10(Math.max(1, seeds)) / 3, 1.0);
-    const score = (base * 80) + (seedFactor * 20);
+
+    // combine: weights tuned to prefer token overlap & core words but allow fuzzy rescue
+    const base = (matchRatio * 0.55) + (coreMatched * 0.25) + (phraseMatch * 0.1) + (yearMatch * 0.05);
+    // incorporate fuzz as rescue: if fuzz high but token overlap low -> help
+    const fuzzBoost = Math.max(0, (fuzz - 0.75)) * 0.5; // only above 0.75 matters
+    const score = (base + fuzzBoost) * 80 + (seedFactor * 20);
+
     return Math.round(score);
 }
 
@@ -241,135 +323,210 @@ function dedupeMagnets(results) {
     deduped.sort((a, b) => (b._score || 0) - (a._score || 0) || (b.seeders || 0) - (a.seeders || 0));
     return deduped;
 }
+function buildQueryVariants({ albumTitle, artist, year, query }) {
+  // prefer structured inputs; fall back to raw query if structured not provided
+  const baseTitle = (albumTitle || '').trim();
+  const baseArtist = (artist || '').trim();
+  const raw = (query || `${baseTitle} ${baseArtist}`).trim();
+
+  const variants = new Set();
+  if (raw) variants.add(raw);
+  if (baseTitle && baseArtist) variants.add(`${baseTitle} ${baseArtist}`);
+  if (baseTitle) variants.add(baseTitle);
+  if (baseArtist) variants.add(`${baseArtist} ${baseTitle}`);
+  // soundtrack synonyms
+  if (!/soundtrack|original soundtrack|ost/i.test(baseTitle)) {
+    if (baseTitle && baseArtist) variants.add(`${baseTitle} soundtrack ${baseArtist}`);
+    if (baseTitle && baseArtist) variants.add(`${baseTitle} original soundtrack ${baseArtist}`);
+  }
+  // strip parentheticals
+  if (raw) variants.add(raw.replace(/\(.*?\)/g, '').trim());
+  // year variants
+  if (year && raw) variants.add(`${raw} ${year}`);
+  // limit variants to a manageable number
+  return Array.from(variants).slice(0, 6);
+}
+
 async function searchAll(opts, timeoutMs = 3000) {
-    const qRaw = String(opts?.query || '').trim();
-    if (!qRaw || qRaw.toLowerCase() === 'ping') return [];
-    const scrapersArr = Array.from(registry.values()).filter(s => s.add && typeof s.search === 'function');
-    const scraperPromises = scrapersArr.map(s => s.search(opts).catch((err) => {
-        console.error(`[searchAll] Scraper "${s.id}" failed:`, err.message);
-        return [];
-    }));
-    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({
-        timeout: true
-    }), timeoutMs));
-    const allPromises = Promise.all(scraperPromises);
-    const winner = await Promise.race([allPromises, timeoutPromise]);
-    let flatResults;
-    if (winner.timeout) {
-        console.log(`Global search timeout of ${timeoutMs}ms exceeded. Processing results gathered so far.`);
-        const settled = await Promise.allSettled(scraperPromises);
-        flatResults = settled.filter(s => s.status === 'fulfilled').flatMap(s => s.value || []);
-    } else {
-        flatResults = winner.flatMap(arr => arr || []);
+  // support structured inputs
+  const albumTitle = opts?.albumTitle;
+  const artist = opts?.artist;
+  const year = opts?.year;
+  const rawQuery = String(opts?.query || '').trim();
+
+  // build variants
+  const variants = buildQueryVariants({ albumTitle, artist, year, query: rawQuery });
+
+  // collect scrapers that are enabled
+  const scrapersArr = Array.from(registry.values()).filter(s => s.add && typeof s.search === 'function');
+
+  // for each variant, call each scraper's search (we keep these parallel)
+  const scraperTasks = [];
+  for (const s of scrapersArr) {
+    for (const qVariant of variants) {
+      // call scraper.search with the variant
+      scraperTasks.push(
+        s.search({ query: qVariant, page: opts?.page || 1 })
+          .then(results => ({ scraper: s, query: qVariant, results }))
+          .catch(err => {
+            console.error(`[searchAll] Scraper "${s.id}" failed for query "${qVariant}":`, err?.message ?? err);
+            return { scraper: s, query: qVariant, results: [] };
+          })
+      );
     }
-    for (const r of flatResults) {
-        setInfoForResult(r, r.magnetURI, qRaw);
+  }
+
+  // wait with overall timeout similar to your previous approach
+  const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ timeout: true }), timeoutMs));
+  const allPromise = Promise.all(scraperTasks);
+  const winner = await Promise.race([allPromise, timeoutPromise]);
+
+  let collectedPartialResults = [];
+  if (winner.timeout) {
+    console.log(`Global search timeout of ${timeoutMs}ms exceeded. Processing results gathered so far.`);
+    const settled = await Promise.allSettled(scraperTasks);
+    const fulfilled = settled.filter(s => s.status === 'fulfilled').map(s => s.value);
+    for (const item of fulfilled) {
+      const { scraper, query, results } = item;
+      for (const r of results) {
+        r._queryVariant = query;
+        r._scraper = scraper;
+      }
+      collectedPartialResults.push(...(results || []));
     }
-    let final = flatResults.filter(r => (r._score || 0) >= MIN_SCORE);
-    if (!final.length && flatResults.length > 0) {
-        final = flatResults.sort((a, b) => (b._score || 0) - (a._score || 0)).slice(0, 15);
+  } else {
+    const winnerResults = winner; // array of {scraper, query, results}
+    for (const item of winnerResults) {
+      const { scraper, query, results } = item;
+      for (const r of results) {
+        r._queryVariant = query;
+        r._scraper = scraper;
+      }
+      collectedPartialResults.push(...(results || []));
     }
-    return dedupeMagnets(final);
+  }
+
+  // PROVISIONAL SCORING: compute score from title+query (no magnet fetch)
+  for (const r of collectedPartialResults) {
+    // Use setInfoForResult to compute _score; pass undefined magnet (it only uses title+seeders)
+    setInfoForResult(r, undefined, r._queryVariant || rawQuery);
+  }
+
+  // Select candidates that pass MIN_SCORE for detail magnet fetch
+  let magnetCandidates = collectedPartialResults.filter(r => (r._score || 0) >= MIN_SCORE);
+
+  // Adaptive fallback: if none pass, pick top-K across all partials (use top by provisional score)
+  if (!magnetCandidates.length) {
+    const topK = Math.min(15, Math.max(5, Math.round(collectedPartialResults.length * 0.25)));
+    magnetCandidates = collectedPartialResults
+      .slice()
+      .sort((a,b) => (b._score||0) - (a._score||0))
+      .slice(0, topK);
+  }
+
+  // Fetch magnets only for selected candidates (group by scraper so we can reuse its definition)
+  const detailFetchPromises = magnetCandidates.map(async r => {
+    try {
+      const scraper = r._scraper;
+      const def = scraper?.definition;
+      const fetchOptions = def?.fetchOptions?.(registry.get(scraper.id)?.data) || {};
+      if (def?.magnetSelector && r.url) {
+        const magnet = await fetchDetailMagnet(r.url, def.magnetSelector, fetchOptions);
+        if (magnet) r.magnetURI = magnet;
+      }
+      // update info after magnet/seeders known
+      setInfoForResult(r, r.magnetURI, r._queryVariant || rawQuery);
+      // Apply soft content-type penalty if you have that helper
+      if (typeof contentTypePenalty === 'function') {
+        const penalty = contentTypePenalty(r.title || '');
+        r._score = Math.max(0, (r._score || 0) - penalty);
+      }
+    } catch (err) {
+      console.error('[searchAll] detailFetch error', err);
+    }
+    return r;
+  });
+
+  await Promise.all(detailFetchPromises);
+
+  // Now build final set: prefer those with magnetURI (and _score >= MIN_SCORE); if none, fallback to magnetCandidates that now have magnetURI
+  let final = collectedPartialResults.filter(r => (r._score || 0) >= MIN_SCORE && r.magnetURI);
+
+  if (!final.length) {
+    final = magnetCandidates.filter(r => r.magnetURI).sort((a,b) => (b._score||0) - (a._score||0)).slice(0, 15);
+  }
+
+  // Deduplicate & sort using your existing dedupeMagnets
+  return dedupeMagnets(final);
 }
 
-// --- CONTENT-TYPE FILTERING LOGIC ---
-
-// Regex to identify common video-related terms in a torrent title.
-const VIDEO_TERMS_REGEX = /\b(?:1080p|720p|2160p|4k|8k|480p|576p|1080i|bluray|blu-ray|bdrip|brrip|webrip|web-dl|webdl|hdtv|dvdrip|dvd-r|dvdr|x264|x265|h264|h265|hevc|hd|sd|cam|telesync|ts|xvid|divx|mkv|mp4|avi|movie|season|episode|s\d{1,2}e\d{1,2})\b/i;
-
-// Regex to identify common audio-related terms, used to override the video filter.
-const AUDIO_TERMS_REGEX = /\b(?:flac|alac|wav|ape|dsd|sacd|mp3|aac|ogg|opus|m4a|soundtrack|ost|album|discography|lp|ep|320k|v0|24bit|16bit|cd)\b/i;
-
-/**
- * Determines if a result should be excluded based on its title and the desired filter.
- * The core logic: exclude if it looks like video, UNLESS it also explicitly looks like audio.
- * @param {TorrentResult} result The torrent result object.
- * @param {'video' | 'none'} excludeType The content type to exclude.
- * @returns {boolean} True if the result should be excluded, false otherwise.
- */
-function isVideo(title) {
-    const isVideo = VIDEO_TERMS_REGEX.test(title);
-    const isAudio = AUDIO_TERMS_REGEX.test(title);
-
-    // Exclude if it's a video UNLESS it's also clearly an audio release (e.g., Soundtrack, Music Video).
-    return isVideo && !isAudio;
-}
 
 // --- SCRAPER FACTORY ---
-
 function createAndRegisterScraper(definition) {
-    const scraper = {
-        id: definition.id,
-        name: definition.name,
-        add: definition.add ?? true,
-        data: definition.data,
-        login: definition.login,
-        search: async (opts) => { // <-- Accept the full options object
-            const { query, page = 1 } = opts;
-            // ... (rest of the initial search logic is the same)
-            let searchUrl;
-            if (typeof definition.searchUrl === 'function') { searchUrl = definition.searchUrl({ query, page }); }
-            else { searchUrl = definition.searchUrl.replace('{query}', encodeURIComponent(query)).replace('{page}', page); }
-            const fetchOptions = definition.fetchOptions?.(registry.get(definition.id)?.data) || {};
-            const res = await tryFetchAny(Array.isArray(searchUrl) ? searchUrl : [searchUrl], fetchOptions);
-            if (!res) throw new Error(`${definition.name} fetch failed`);
-            const body = await res.text();
-            let $;
-            if (definition.responseType === 'htmlFragment') { const wrappedBody = `<table><tbody>${body}</tbody></table>`; $ = cheerio.load(wrappedBody); }
-            else { $ = cheerio.load(body); }
+  const scraper = {
+    id: definition.id,
+    name: definition.name,
+    add: definition.add ?? true,
+    data: definition.data,
+    definition, // keep original definition available for later (used by searchAll)
+    login: definition.login,
+    search: async (opts) => {
+      const { query, page = 1 } = opts;
+      let searchUrl;
+      if (typeof definition.searchUrl === 'function') {
+        searchUrl = definition.searchUrl({ query, page });
+      } else {
+        searchUrl = definition.searchUrl.replace('{query}', encodeURIComponent(query)).replace('{page}', page);
+      }
+      const fetchOptions = definition.fetchOptions?.(registry.get(definition.id)?.data) || {};
+      const res = await tryFetchAny(Array.isArray(searchUrl) ? searchUrl : [searchUrl], fetchOptions);
+      if (!res) throw new Error(`${definition.name} fetch failed`);
+      const body = await res.text();
+      let $;
+      if (definition.responseType === 'htmlFragment') {
+        const wrappedBody = `<table><tbody>${body}</tbody></table>`;
+        $ = cheerio.load(wrappedBody);
+      } else {
+        $ = cheerio.load(body);
+      }
 
-            const results = [];
-            $(definition.listSelector).each((_, el) => {
-                try {
-                    const $el = $(el);
-                    const partialResult = definition.resultBuilder($, $el, res);
-                    if (!partialResult || !partialResult.title) return;
-                    const result = { source: definition.name, ...partialResult };
-                    setInfoForResult(result, result.magnetURI, query);
-                    if(!isVideo(result.title)) results.push(result);
-                } catch (e) {
-                    console.error(`[${definition.id}] Error parsing a row`, e);
-                }
-            });
-            
-            if (definition.magnetSelector) {
-                // MODIFIED: Apply content-type filter before creating fetch promises
-                const detailFetches = results
-                    .map(async (r) => {
-                        const magnet = await fetchDetailMagnet(r.url, definition.magnetSelector, fetchOptions);
-                        if (magnet) r.magnetURI = magnet;
-                    });
-                await Promise.all(detailFetches);
-            }
+      const partials = [];
+      $(definition.listSelector).each((_, el) => {
+        try {
+          const $el = $(el);
+          const partialResult = definition.resultBuilder($, $el, res);
+          if (!partialResult || !partialResult.title) return;
+          // do NOT fetch magnet here; return partial object with URL, title, seeders, size if available
+          const result = { source: definition.name, ...partialResult };
+          partials.push(result);
+        } catch (e) {
+          console.error(`[${definition.id}] Error parsing a row`, e);
+        }
+      });
 
-            return results.filter(r => r.magnetURI);
-        },
-    };
-    registerScraper(scraper);
+      // return partials (no magnets). searchAll will fetch magnets selectively.
+      return partials;
+    }
+  };
+  registerScraper(scraper);
 }
 
 // --- SCRAPER DEFINITIONS ---
-
 createAndRegisterScraper({
     id: 'tpb',
     name: 'The Pirate Bay',
     searchUrl: `https://tpb.party/search/{query}/{page}/99/100`, /* the last 100 part is filter for audio */
     listSelector: '#searchResult tr:not(.header)',
     resultBuilder: ($, $el) => {
-        let title = $el.find('.detName a').text().trim();
-        let url = $el.find('.detName a').attr('href');
-        if (!title) {
-            const a = $el.find('td').eq(1).find('a').first();
-            title = a.text().trim();
-            url = url || a.attr('href');
-        }
+        let title = $el.find('td a').eq(1).text().trim();
+        let url = $el.find('td a').eq(1).attr('href')
         return {
             title,
             url,
-            magnetURI: $el.find('a[title="Download this torrent using magnet"]').attr('href'),
-            size: $el.find('font.detDesc').text().match(/Size ([\d.]+.*[KMGT]i?B)/)?.[1] || '',
-            seeders: parseInt($el.find('td').eq(2).text()) || 0,
-            leechers: parseInt($el.find('td').eq(3).text()) || 0,
+            magnetURI: $el.find('a[href^="magnet:"]').attr('href'),
+            size: $el.find('td').eq(4).text().match(/Size ([\d.]+.*[KMGT]i?B)/)?.[1] || '',
+            seeders: parseInt($el.find('td').eq(5).text()) || 0,
+            leechers: parseInt($el.find('td').eq(6).text()) || 0,
         };
     },
 });
@@ -378,9 +535,9 @@ createAndRegisterScraper({
     id: '1337x',
     name: '1337x',
     add: false,
-    searchUrl: ({query,page}) => [
-        `https://www.1337x.to/search/${query.replace(/\s+/g,'+')}/${page}/`,
-        `https://1337x.st/search/${query.replace(/\s+/g,'+')}/${page}/`
+    searchUrl: ({ query, page }) => [
+        `https://www.1337x.to/search/${query.replace(/\s+/g, '+')}/${page}/`,
+        `https://1337x.st/search/${query.replace(/\s+/g, '+')}/${page}/`
     ],
     listSelector: 'table.table-list tbody tr',
     resultBuilder: ($, $el, res) => {
@@ -399,7 +556,7 @@ createAndRegisterScraper({
 createAndRegisterScraper({
     id: 'kickass',
     name: 'KickassTorrents',
-    searchUrl: ({query, page}) => [
+    searchUrl: ({ query, page }) => [
         `https://kickasst.net/usearch/${encodeURIComponent(query)}%20category:music/`,
         `https://kickasstorrents.cc/search?query=${encodeURIComponent(query)}`,
     ],
@@ -533,7 +690,7 @@ createAndRegisterScraper({
         attempts: 0,
         maxAttempts: 3
     },
-    searchUrl: ({query,page}) => `https://rutracker.org/forum/tracker.php?nm=${encodeURIComponent(query)}&start=${(page - 1) * 50}`,
+    searchUrl: ({ query, page }) => `https://rutracker.org/forum/tracker.php?nm=${encodeURIComponent(query)}&start=${(page - 1) * 50}`,
     fetchOptions: (data) => ({
         headers: {
             'Cookie': data?.cookies || ''

@@ -8,24 +8,7 @@ interface LyricsOverlayProps {
   title?: string
 }
 
-const defaultLyrics = `[Verse 1]
-Neon lights in the rearview fade
-Echoes drift through the midnight haze
-Heartbeat syncs with the passing lines
-Chasing fragments of borrowed time
-
-[Chorus]
-And we run, we run through electric sky
-Falling forward as the moments fly
-Holding on to the fading glow
-Till the waveform lets us go
-
-[Bridge]
-Static whispers under violet rain
-Fragments looping in a soft refrain
-`
-
-export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, title }: LyricsOverlayProps){
+export default function LyricsOverlay({ open, onClose, lyrics, title }: LyricsOverlayProps){
   const { t } = useI18n();
   const resolvedTitle = title || t('lyrics.title');
   // Close on Escape
@@ -37,6 +20,8 @@ export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, t
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [handleKey])
+
+  lyrics = lyrics || t('lyrics.unavailable');
 
   return (
     <div
@@ -56,7 +41,7 @@ export default function LyricsOverlay({ open, onClose, lyrics = defaultLyrics, t
             <span className="material-symbols-rounded filled">close</span>
           </button>
           <h2 style={{marginTop:0}}>{resolvedTitle}</h2>
-          <pre style={{margin:0}}>{lyrics}</pre>
+          <div className="lyrics-body" style={{margin:0}} dangerouslySetInnerHTML={{ __html: lyrics || '' }} />
         </div>
       </div>
     </div>

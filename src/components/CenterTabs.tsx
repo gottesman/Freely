@@ -69,6 +69,12 @@ export default function CenterTabs({
     currentTabRef.current = tab;
   }, [tab]);
 
+  // Refs for previous ids to detect changes
+  const prevSongTrackIdRef = useRef<string | undefined>(songTrackId);
+  const prevAlbumIdRef = useRef<string | undefined>(albumId);
+  const prevPlaylistIdRef = useRef<string | undefined>(playlistId);
+  const prevArtistIdRef = useRef<string | undefined>(artistId);
+
   // setTab: only act if requested tab differs from current effective tab
   const setTab = useCallback(
     (t: string) => {
@@ -89,22 +95,34 @@ export default function CenterTabs({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTrigger]);
 
-  // Reset scroll position to top whenever the visible tab actually changes (not when same)
   useEffect(() => {
-    const prev = prevTabRef.current;
-    if (prev === tab) return; // guard - do nothing if same as previous
-    console.log('CenterTabs: tab changed from', prev, 'to', tab);
-    prevTabRef.current = tab;
+    let shouldReset = false;
+    if (tab === 'song' && songTrackId !== prevSongTrackIdRef.current) {
+      shouldReset = true;
+      prevSongTrackIdRef.current = songTrackId;
+    } else if (tab === 'album' && albumId !== prevAlbumIdRef.current) {
+      shouldReset = true;
+      prevAlbumIdRef.current = albumId;
+    } else if (tab === 'playlist' && playlistId !== prevPlaylistIdRef.current) {
+      shouldReset = true;
+      prevPlaylistIdRef.current = playlistId;
+    } else if (tab === 'artist' && artistId !== prevArtistIdRef.current) {
+      shouldReset = true;
+      prevArtistIdRef.current = artistId;
+    }
 
-    // Defer to next frame to ensure DOM updates completed
-    requestAnimationFrame(() => {
-      const body = tabsBodyRef.current ?? document.querySelector('.center-tabs .tabs-body');
-      if (body instanceof HTMLElement && body.scrollTop !== 0) body.scrollTop = 0;
+    if (shouldReset) {
+      console.log('CenterTabs: id changed for tab', tab, 'resetting scroll');
+      // Defer to next frame to ensure DOM updates completed
+      requestAnimationFrame(() => {
+        const body = tabsBodyRef.current ?? document.querySelector('.center-tabs .tabs-body');
+        if (body instanceof HTMLElement && body.scrollTop !== 0) body.scrollTop = 0;
 
-      const mainEl = containerRef.current ?? document.querySelector('.center-tabs');
-      if (mainEl instanceof HTMLElement && mainEl.scrollTop !== 0) mainEl.scrollTop = 0;
-    });
-  }, [tab]);
+        const mainEl = containerRef.current ?? document.querySelector('.center-tabs');
+        if (mainEl instanceof HTMLElement && mainEl.scrollTop !== 0) mainEl.scrollTop = 0;
+      });
+    }
+  }, [tab, songTrackId, albumId, playlistId, artistId]);
 
   // Memoize normalized search results so downstream components don't get new object refs unnecessarily
   const normalizedSearchResults = useMemo(() => {

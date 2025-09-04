@@ -2,6 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../core/i18n';
 import type { SpotifyAlbum, SpotifyArtist, SpotifyTrack } from '../core/spotify';
 import { runTauriCommand } from '../core/tauriCommands';
+import * as tc from '../core/torrentClient'; // static import to get types
+
+// Module-level caches and inflight maps to ensure one-shot Tauri calls across
+// component remounts (React StrictMode can mount/unmount during dev).
+const tauriSearchInflight = new Map<string, Promise<any>>();
+const tauriSearchCache = new Map<string, any[]>();
+
+const torrentFileListInflight = new Map<string, Promise<any[]>>();
+const torrentFileListCache = new Map<string, any[]>();
 
 export default function TrackSources({ track, album, primaryArtist }: { track?: SpotifyTrack, album?: SpotifyAlbum, primaryArtist?: SpotifyArtist }) {
   const { t } = useI18n();
@@ -13,23 +22,11 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
   const [torrentLoadingKeys, setTorrentLoadingKeys] = useState<Record<string, boolean>>({});
   const [torrentErrors, setTorrentErrors] = useState<Record<string, string | undefined>>({});
   const [visibleOutputs, setVisibleOutputs] = useState<Record<string, boolean>>({});
+  const [selectedSourceKey, setSelectedSourceKey] = useState<string | undefined>(undefined);
   const timeoutsRef = useRef<Record<string, number>>({});
   const [lastQuery, setLastQuery] = useState<string | undefined>();
   const [loadError, setLoadError] = useState<string | undefined>();
   const fetchedQueriesRef = useRef<Record<string, boolean>>({});
-
-  function withTimeout<T>(p: Promise<T>, ms = 10000) {
-    return new Promise<T>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("timeout")), ms);
-      p.then((v) => {
-        clearTimeout(t);
-        resolve(v);
-      }).catch((e) => {
-        clearTimeout(t);
-        reject(e);
-      });
-    });
-  }
 
   useEffect(() => {
     return () => {
@@ -44,68 +41,62 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
     };
   }, []);
 
+  // build separate fields and send them to the backend
   useEffect(() => {
     let cancelled = false;
-
-    // compute the query once per effect run, keep the effect deps small & explicit
     const albumTitle = album?.name ?? track?.album?.name ?? track?.name ?? "";
     const artist = track?.artists?.[0]?.name ?? primaryArtist?.name ?? "";
-    const query = `${albumTitle} ${artist}`.trim();
-    setLastQuery(query || undefined);
+    // try to extract year if available (optional)
+    const year = album?.releaseDate ?? track?.album?.releaseDate ?? undefined;
+    setLastQuery(`${albumTitle} ${artist}`.trim() || undefined);
 
     async function loadSources() {
       setLoadError(undefined);
       setSources(undefined);
-
-      if (!track || !query) {
-        // nothing to search for
-        if (!query) {
-          console.debug("🎵 TrackSources: empty query, skipping search");
-          setSources([]);
-        }
+      if (!track || (!albumTitle && !artist)) {
+        setSources([]);
         return;
       }
 
-      console.info("🎵 TrackSources: start loadSources for query=", query);
-
       const errors: string[] = [];
       let results: any[] = [];
-
       try {
-        const cmd = "torrent_search";
-        console.debug("🎵 TrackSources: calling invoke command=", cmd);
-
-        try {
-          // wrap with a timeout to avoid hanging the UI indefinitely
-          const resp = await runTauriCommand(cmd, { query, page: 1 }) as any;
-          if (cancelled) return;
-
-          // normalize possible response shapes
-          results = Array.isArray(resp)
-            ? resp
-            : (resp?.results ?? resp?.items ?? resp ?? []);
-          console.debug(
-            "🎵 TrackSources: invoke response normalized length=",
-            Array.isArray(results) ? results.length : 0
-          );
-        } catch (e: any) {
-          const msg = e?.message ?? String(e);
-          console.warn("🎵 TrackSources: invoke failed:", msg);
-          errors.push(`tauri-invoke-${cmd}: ${msg}`);
+        const key = `${String(albumTitle||'')}::${String(artist||'')}::${String(year||'')}`;
+        // If we already have a cached result, use it
+        if (tauriSearchCache.has(key)) {
+          results = tauriSearchCache.get(key) || [];
+        } else {
+          // If an inflight promise exists, await it; otherwise start one
+          let p = tauriSearchInflight.get(key);
+          if (!p) {
+            p = (async () => {
+              const cmd = 'torrent_search';
+              const resp = await runTauriCommand(cmd, { payload: { albumTitle, artist, year, page: 1 } }) as any;
+              const r = Array.isArray(resp) ? resp : (resp?.results ?? resp?.items ?? resp ?? []);
+              // cache result
+              tauriSearchCache.set(key, r);
+              tauriSearchInflight.delete(key);
+              return r;
+            })();
+            tauriSearchInflight.set(key, p);
+          }
+          try {
+            results = await p;
+          } catch (e) {
+            tauriSearchInflight.delete(key);
+            errors.push(`tauri-invoke-torrent_search: ${String(e)}`);
+          }
         }
 
         if (!cancelled) {
-          if (results && results.length > 0) {
-            setSources(results.slice(0, 50));
-            console.info("🎵 TrackSources: loaded", results.length, "results");
-          } else {
-            console.warn("🎵 TrackSources: no results found", errors);
+          if (results && results.length > 0) setSources(results.slice(0, 50));
+          else {
             setSources([]);
-            setLoadError(errors.join(" | ") || undefined);
+            setLoadError(errors.join(' | ') || undefined);
           }
         }
-      } catch (err: any) {
-        console.error("🎵 TrackSources: unexpected error", err);
+      } catch (err) {
+        console.error('🎵 TrackSources: unexpected error', err);
         if (!cancelled) {
           setSources([]);
           setLoadError(String(err));
@@ -114,61 +105,71 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
     }
 
     loadSources();
-
-    return () => {
-      cancelled = true;
-    };
-    // Depend only on stable pieces required to produce the query
+    return () => { cancelled = true; };
   }, [track?.id, track?.name, album?.name, primaryArtist?.name]);
+
 
   async function handleSourceData(s: any, i: number, t_key: any) {
     // Prevent concurrent fetches for the same key or if files already present
     setTorrentErrors(e => ({ ...e, [t_key]: undefined }));
     setTorrentLoadingKeys(k => ({ ...k, [t_key]: true }));
-
-    // call centralized helper
     try {
       const id = s.magnetURI ?? s.infoHash ?? s.url ?? '';
-      let files: any[] = [];
+      if (!id) throw new Error('Missing torrent id');
 
-      const resp = await runTauriCommand('torrent_get_files', { id, timeoutMs: 8000 }) as any;
-      if (resp) {
-        files = Array.isArray(resp) ? resp : (resp?.results ?? resp?.items ?? resp ?? []);
-      } else {
-        // Fallback: dynamically import the client helper to avoid static electron-only import
-        try {
-          const tc = await import('../core/torrentClient');
-          files = await tc.getTorrentFileList(id, { timeoutMs: 8000 });
-        } catch (e) {
-          throw e;
-        }
+      const DEFAULT_TIMEOUT = 10000;
+
+      // Return cached files if available
+      if (torrentFileListCache.has(id)) {
+        const cached = torrentFileListCache.get(id) || [];
+        setTorrentFileLists(l => ({ ...l, [t_key]: cached }));
+        setTorrentLoadingKeys(k => ({ ...k, [t_key]: false }));
+        return;
       }
-      // Normalize & dedupe by filename (preserve first occurrence order)
-      const seen = new Set<string>();
-      const uniqueFiles = (files || []).filter((f: any) => {
-        const name = String(f.name || '').trim();
-        if (!name) return false;
-        if (seen.has(name)) return false;
-        seen.add(name);
-        return true;
-      });
-      // Prefer common audio files
-      const audioExt = /\.(mp3|m4a|flac|wav|ogg|aac|opus|webm)$/i;
-      const audioFiles = uniqueFiles.filter(f => audioExt.test(f.name));
-      setTorrentFileLists(l => ({ ...l, [t_key]: (audioFiles.length ? audioFiles : uniqueFiles) }));
+
+      // If inflight, await the existing promise
+      let p = torrentFileListInflight.get(id);
+      if (!p) {
+        p = (async () => {
+          const files = await tc.getTorrentFileList(id, { timeoutMs: DEFAULT_TIMEOUT });
+          // Normalize & dedupe by filename (preserve first occurrence order)
+          const seen = new Set();
+          const uniqueFiles = (files || []).filter((f: any) => {
+            const name = String(f.name || '').trim();
+            if (!name) return false;
+            if (seen.has(name)) return false;
+            seen.add(name);
+            return true;
+          });
+          // Prefer common audio files
+          const audioExt = /\.(mp3|m4a|flac|wav|ogg|aac|opus|webm)$/i;
+          const audioFiles = uniqueFiles.filter(f => audioExt.test(f.name));
+          const chosen = (audioFiles.length ? audioFiles : uniqueFiles);
+          torrentFileListCache.set(id, chosen);
+          torrentFileListInflight.delete(id);
+          return chosen;
+        })();
+        torrentFileListInflight.set(id, p);
+      }
+
+      let files: any[] = [];
+      try {
+        files = await p;
+      } catch (firstErr) {
+        torrentFileListInflight.delete(id);
+        throw firstErr;
+      }
+
+      setTorrentFileLists(l => ({ ...l, [t_key]: files }));
       setTorrentLoadingKeys(k => ({ ...k, [t_key]: false }));
     } catch (e: any) {
       const msg = e?.message ?? String(e);
-      setTorrentErrors(err => ({
-        ...err, [t_key]: (
-          msg.indexOf('timeout') >= 0 ?
-            'Timeout' :
-            msg || 'Error'
-        ) + " - Retry"
-      }));
+      console.error('🎵 TrackSources: getTorrentFileList error', msg);
+      setTorrentErrors(err => ({ ...err, [t_key]: msg }));
       setTorrentLoadingKeys(k => ({ ...k, [t_key]: false }));
     }
   }
+
 
   // Auto-fetch file lists for all sources once per query so the Files button
   // can toggle stored data without re-fetching.
@@ -226,11 +227,25 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
                     <div className="source-actions">
                       {s.magnetURI && (
                         <>
+                          {/* Select this source for playback - only show when files are loaded and no error */}
+                          {torrentFileLists[t_key] && !torrentErrors[t_key] && (
+                            <button
+                              type="button"
+                              className={`btn-icon ts-select ${selectedSourceKey === t_key ? 'active' : ''}`}
+                              aria-pressed={selectedSourceKey === t_key}
+                              aria-label={selectedSourceKey === t_key ? t('np.selectedSource', 'Selected source') : t('np.selectSource', 'Select this source')}
+                              onClick={(ev) => { ev.stopPropagation(); ev.preventDefault(); setSelectedSourceKey(prev => prev === t_key ? undefined : t_key); }}
+                            >
+                              <span className="material-symbols-rounded">{selectedSourceKey === t_key ? 'check' : 'radio_button_unchecked'}</span>
+                            </button>
+                          )}
+
                           <button
                             type="button"
-                            className={`btn-icon ${torrentErrors[t_key] ? (torrentErrors[t_key].includes('Error') ? 'btn-error' : 'btn-warning') : ''}`}
+                            className={`btn-icon ts-files ${torrentErrors[t_key] ? (torrentErrors[t_key].includes('Error') ? 'btn-error' : 'btn-warning') : ''}`}
                             disabled={!!torrentLoadingKeys[t_key] && !torrentFileLists[t_key]}
-                            onClick={async () => {
+                            onClick={async (ev) => {
+                              ev.stopPropagation();
                               // If we already have files, toggle visibility. Otherwise trigger fetch.
                               if (torrentFileLists[t_key]) {
                                 setVisibleOutputs(v => ({ ...v, [t_key]: !v[t_key] }));
@@ -244,11 +259,15 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
                           >
                             {torrentFileLists[t_key] ? (visibleOutputs[t_key] ? t('np.hide', 'Hide') : t('np.filesSource', 'Show')) : (torrentLoadingKeys[t_key] ? t('np.loading', 'Loading') : (torrentErrors[t_key] ? torrentErrors[t_key] : t('np.filesSource', 'Load')))}
                           </button>
-                          <button
-                            type="button"
-                            className="btn-icon">
-                            <span className="material-symbols-rounded">more_horiz</span>
-                          </button>
+                          {
+                            /*
+                            <button
+                              type="button"
+                              className="btn-icon">
+                              <span className="material-symbols-rounded">more_horiz</span>
+                            </button>
+                            */
+                          }
                         </>
                       )}
                     </div>
@@ -267,7 +286,7 @@ export default function TrackSources({ track, album, primaryArtist }: { track?: 
                                   // Normalize: lowercase, remove punctuation, trim
                                   const normalize = (str: string) => str
                                     .toLowerCase()
-                                    .replace(/\s+/g, ' ')
+                                    .replace(/\s+|_+|-+/g, ' ')
                                     .replace(/[\p{P}\p{S}]/gu, '')
                                     .trim();
                                   const normTrack = normalize(currentTrackName);

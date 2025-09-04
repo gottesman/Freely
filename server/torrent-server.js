@@ -21,6 +21,7 @@ const upload = multer({ dest: path.join(__dirname, subdir) });
 const client = new WebTorrent();
 const app = express();
 const PORT = process.env.PORT || 9000;
+const CACHE = false;
 
 // --- MODIFIED SECTION START ---
 
@@ -108,6 +109,7 @@ const searchCache = new Map(); // key -> { ts: number, value: any }
 // Persistence helpers: load on startup, debounce saves, flush on exit
 let _saveTimer = null;
 function scheduleCacheSave() {
+  if(!CACHE) return;
   if (_saveTimer) return;
   _saveTimer = setTimeout(() => {
     try {
@@ -122,6 +124,7 @@ function scheduleCacheSave() {
 }
 
 function loadSearchCacheFromDisk() {
+  if(!CACHE) return;
   try {
     if (!fs.existsSync(SEARCH_CACHE_FILE)) return;
     const raw = fs.readFileSync(SEARCH_CACHE_FILE, 'utf8');
@@ -141,16 +144,17 @@ function loadSearchCacheFromDisk() {
 }
 
 function flushSearchCacheToDiskSync() {
+  if(!CACHE) return;
   try {
     const serial = JSON.stringify(Array.from(searchCache.entries()));
     fs.writeFileSync(SEARCH_CACHE_FILE, serial, { encoding: 'utf8' });
   } catch (e) {
-    /* ignore */
   }
 }
 
 // Load existing cache now
-// loadSearchCacheFromDisk();
+loadSearchCacheFromDisk();
+
 
 app.get('/ping', (req, res) => {
   console.log('Received ping request');
@@ -158,47 +162,117 @@ app.get('/ping', (req, res) => {
 });
 
 app.get('/api/torrent-search', async (req, res) => {
+  // Accept either legacy `q` param or structured params: albumTitle, artist, year
   const q = String(req.query.q || '').trim();
+  const albumTitle = String(req.query.albumTitle || req.query.album_title || '').trim();
+  const artist = String(req.query.artist || '').trim();
+  const year = String(req.query.year || '').trim();
   const page = parseInt(req.query.page || '1', 10) || 1;
+
   if (!torrentSearchHelper || !torrentSearchHelper.searchAll) {
     return res.status(501).json({ error: 'torrent search not available on server' });
   }
 
-  // Build a normalized cache key to avoid collisions caused by casing/spacing
-  const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z]+/g, ' ').trim().split(/\s+/).filter(Boolean).join(' ');
-  const rawKey = `${String(q)}::${page}`;
-  const normKey = `${normalize(q)}::${page}`;
+  // Normalize helper to build cache keys (preserve tokens only a..z and numbers)
+  const normalize = (s) => String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+
+  // Build both rawKey (for exact-match caching) and normKey (normalized)
+  const rawKey = `${String(q)}::${String(albumTitle)}::${String(artist)}::${String(year)}::${page}`;
+  const normKey = `${normalize(q)}::${normalize(albumTitle)}::${normalize(artist)}::${normalize(year)}::${page}`;
+
   const now = Date.now();
 
-  // Check both raw and normalized cache entries for backward compatibility
-  const cachedRaw = searchCache.get(rawKey);
-  if (cachedRaw && (now - cachedRaw.ts) < SEARCH_CACHE_TTL_SECONDS * 1000) {
-    console.log(`[torrent-search] cache hit rawKey=${rawKey} q="${q}" page=${page} items=${(cachedRaw.value||[]).length}`);
-    return res.json(Array.isArray(cachedRaw.value) ? cachedRaw.value.slice() : cachedRaw.value);
+  // Support query flags for forcing or clearing cache from the client:
+  const force = (String(req.query.force || req.query.f || '').toLowerCase() === '1' || String(req.query.force || req.query.f || '').toLowerCase() === 'true');
+  const clearCacheParam = (String(req.query.clear_cache || req.query.clearCache || '').toLowerCase() === '1' || String(req.query.clear_cache || req.query.clearCache || '').toLowerCase() === 'true');
+  const clearIdParam = (req.query.clear_id || req.query.clearId || req.query.clearKey || req.query.clear) || null;
+
+  if (clearCacheParam) {
+    try {
+      if (fs.existsSync(SEARCH_CACHE_FILE)) fs.unlinkSync(SEARCH_CACHE_FILE);
+    } catch (e) {
+      console.warn('[torrent-search] failed to clear cache file', e && e.message ? e.message : e);
+      return res.status(500).json({ error: String(e) });
+    }
+    searchCache.clear();
+    console.log('[torrent-search] cache cleared via API');
+    return res.json({ cleared: true });
   }
-  const cachedNorm = searchCache.get(normKey);
-  if (cachedNorm && (now - cachedNorm.ts) < SEARCH_CACHE_TTL_SECONDS * 1000) {
-    console.log(`[torrent-search] cache hit normKey=${normKey} q="${q}" page=${page} items=${(cachedNorm.value||[]).length}`);
-    return res.json(Array.isArray(cachedNorm.value) ? cachedNorm.value.slice() : cachedNorm.value);
+
+  if (clearIdParam) {
+    const key = String(clearIdParam);
+    if (searchCache.has(key)) {
+      searchCache.delete(key);
+      scheduleCacheSave();
+      console.log('[torrent-search] cleared cache key via API:', key);
+      return res.json({ cleared: true, id: key });
+    }
+    // also attempt to remove normalized/raw variants if present
+    const normKeyCandidate = normKey;
+    const rawKeyCandidate = rawKey;
+    let removed = false;
+    if (key === normKeyCandidate && searchCache.has(normKeyCandidate)) { searchCache.delete(normKeyCandidate); removed = true; }
+    if (key === rawKeyCandidate && searchCache.has(rawKeyCandidate)) { searchCache.delete(rawKeyCandidate); removed = true; }
+    if (removed) {
+      scheduleCacheSave();
+      return res.json({ cleared: true, id: key });
+    }
+    return res.json({ cleared: false, id: key, reason: 'not-found' });
   }
-  console.log(`[torrent-search] cache miss q="${q}" page=${page}`);
+
+  // Check cache - prefer normalized key first (keeps compatibility with earlier behavior)
+  if (!force) {
+    const cachedNorm = searchCache.get(normKey);
+    if (cachedNorm && (now - cachedNorm.ts) < SEARCH_CACHE_TTL_SECONDS * 1000) {
+      console.log(`[torrent-search] cache hit normKey=${normKey} q="${q}" album="${albumTitle}" artist="${artist}" year="${year}" page=${page} items=${(cachedNorm.value||[]).length}`);
+      return res.json(Array.isArray(cachedNorm.value) ? cachedNorm.value.slice() : cachedNorm.value);
+    }
+
+    const cachedRaw = searchCache.get(rawKey);
+    if (cachedRaw && (now - cachedRaw.ts) < SEARCH_CACHE_TTL_SECONDS * 1000) {
+      console.log(`[torrent-search] cache hit rawKey=${rawKey} q="${q}" album="${albumTitle}" artist="${artist}" year="${year}" page=${page} items=${(cachedRaw.value||[]).length}`);
+      return res.json(Array.isArray(cachedRaw.value) ? cachedRaw.value.slice() : cachedRaw.value);
+    }
+
+    console.log(`[torrent-search] cache miss q="${q}" album="${albumTitle}" artist="${artist}" year="${year}" page=${page}`);
+  } else {
+    console.log('[torrent-search] force refresh requested; skipping cache for', { q, albumTitle, artist, year, page });
+  }
 
   try {
-    const results = await torrentSearchHelper.searchAll({ query: String(q), page });
-    // Deep-clone before caching to prevent future mutation affecting cached copy
+    // Build structured options object for searchAll. Keep `query` for backward compatibility.
+    const opts = {
+      query: q || undefined,
+      albumTitle: albumTitle || undefined,
+      artist: artist || undefined,
+      year: year || undefined,
+      page
+    };
+
+    // Call the search helper (which should understand structured opts)
+    const results = await torrentSearchHelper.searchAll(opts);
+
+    // Deep-clone before caching to avoid later mutation
     let cacheValue;
-    try { cacheValue = JSON.parse(JSON.stringify(results)); } catch (_) { cacheValue = results.slice(); }
+    try { cacheValue = JSON.parse(JSON.stringify(results)); } catch (_) { cacheValue = Array.isArray(results) ? results.slice() : results; }
 
     try {
       // Save normalized key going forward and also preserve raw key for compatibility
       searchCache.set(normKey, { ts: now, value: cacheValue });
       try { searchCache.set(rawKey, { ts: now, value: cacheValue }); } catch (_) {}
       scheduleCacheSave();
-    } catch (_) {}
+    } catch (_) { /* ignore caching errors */ }
 
     // Return a fresh copy to the client
     return res.json(results);
   } catch (e) {
+    console.error('[torrent-search] searchAll error', e && e.stack ? e.stack : e);
     res.status(500).json({ error: e?.message || String(e) });
   }
 });

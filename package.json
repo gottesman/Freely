@@ -26,7 +26,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "utp-native": "^2.5.3",
-    "webtorrent": "^1.0.0"
+    "webtorrent": "^1.9.7"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.0.0-beta.18",

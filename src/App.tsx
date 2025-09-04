@@ -4,6 +4,7 @@ import CenterTabs from './components/CenterTabs';
 import RightPanel from './components/RightPanel';
 import BottomPlayer from './components/BottomPlayer';
 import LyricsOverlay from './components/LyricsOverlay';
+import GeniusClient from './core/musicdata';
 import AddToPlaylistModal from './components/AddToPlaylistModal';
 import { DBProvider, useDB } from './core/dbIndexed';
 import { PlaybackProvider, usePlaybackSelector } from './core/playback';
@@ -92,7 +93,7 @@ function Main() {
   }, []);
 
   // App-ready / DB ready
-  const { ready: dbReady, getSetting, setSetting } = useDB();
+  const { ready: dbReady, getSetting, setSetting, getApiCache, setApiCache } = useDB();
   const { ready, states } = useAppReady(dbReady);
 
   // Playback current track (to keep references and id sync)
@@ -396,6 +397,73 @@ function Main() {
   // BottomPlayer handlers (memoized)
   const toggleLyrics = useCallback(() => setLyricsOpen(o => !o), []);
   const [lyricsOpen, setLyricsOpen] = useState<boolean>(false);
+  const [lyricsText, setLyricsText] = useState<string | undefined>(undefined);
+  const [lyricsTitle, setLyricsTitle] = useState<string | undefined>(undefined);
+  const [lyricsLoading, setLyricsLoading] = useState<boolean>(false);
+
+  // Fetch lyrics when overlay opens for the current playing track
+  const playbackCurrentTrack = usePlaybackSelector(s => s.currentTrack);
+  useEffect(() => {
+    let cancelled = false;
+    if (!lyricsOpen) return undefined;
+    (async () => {
+      if (!playbackCurrentTrack) return;
+      setLyricsLoading(true);
+      setLyricsText(undefined);
+      setLyricsTitle(undefined);
+      try {
+        const gc = new GeniusClient();
+        // Attempt to find a Genius song via search using track + primary artist
+        const q = `${playbackCurrentTrack.name} ${playbackCurrentTrack.artists?.[0]?.name || ''}`.trim();
+        const res = await gc.search(q);
+        const hit = res.hits && res.hits.length ? res.hits[0] : undefined;
+
+        // Check DB cache first (best-effort). Keys:
+        // - LYRICS:GENIUS:<songId>
+        // - LYRICS:URL:<trackUrl>
+        let cachedLyrics: any = null;
+        try {
+          if (hit && hit.id) cachedLyrics = await getApiCache(`LYRICS:GENIUS:${hit.id}`);
+        } catch (_) { cachedLyrics = null; }
+        try {
+          if (!cachedLyrics && playbackCurrentTrack?.url) cachedLyrics = await getApiCache(`LYRICS:URL:${playbackCurrentTrack.url}`);
+        } catch (_) { /* ignore */ }
+
+        if (cachedLyrics && cachedLyrics.lyrics) {
+          if (!cancelled) {
+            setLyricsText(cachedLyrics.lyrics);
+            setLyricsTitle(cachedLyrics.title || `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}`);
+          }
+        } else {
+          let lyricsRes: any = null;
+          if (hit && hit.id) {
+            lyricsRes = await gc.getLyricsForSong(hit.id);
+          }
+          
+          const finalLyrics = lyricsRes?.lyrics || undefined;
+          if (!cancelled) {
+            setLyricsText(finalLyrics);
+            setLyricsTitle(finalLyrics ? `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}` : undefined);
+          }
+
+          // Persist into DB for future use (best-effort)
+          try {
+            if (lyricsRes && lyricsRes.lyrics && hit && hit.id) {
+              await setApiCache(`LYRICS:GENIUS:${hit.id}`, { lyrics: lyricsRes.lyrics, title: `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}` });
+            }
+            if (finalLyrics && playbackCurrentTrack?.url) {
+              await setApiCache(`LYRICS:URL:${playbackCurrentTrack.url}`, { lyrics: finalLyrics, title: `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}` });
+            }
+          } catch (e) { /* ignore persistence errors */ }
+        }
+      } catch (e) {
+        // ignore errors; lyricsText stays undefined
+      } finally {
+        if (!cancelled) setLyricsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lyricsOpen, playbackCurrentTrack, getApiCache, setApiCache]);
 
   const toggleQueueTab = useCallback(() => {
     setRightTab(t => (t === 'queue' ? 'artist' : 'queue'));
@@ -469,7 +537,12 @@ function Main() {
 
             <div className="center-area main-panels">
               <CenterTabs {...centerTabsProps} />
-              <LyricsOverlay open={lyricsOpen} onClose={() => setLyricsOpen(false)} />
+              <LyricsOverlay
+                open={lyricsOpen}
+                onClose={() => setLyricsOpen(false)}
+                lyrics={lyricsLoading ? t('np.loading') : lyricsText}
+                title={lyricsTitle}
+              />
             </div>
 
             <div

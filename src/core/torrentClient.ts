@@ -1,8 +1,12 @@
+// TorrentClient.ts
 import { runTauriCommand } from "./tauriCommands";
 
 type FileInfo = { name: string; length: number };
 
 let client: any = null;
+const inflight = new Map<string, Promise<FileInfo[]>>();
+
+// WebSocket trackers used only if running in a browser (rare)
 const BROWSER_WS_TRACKERS = [
     'wss://tracker.openwebtorrent.com',
     'wss://tracker.btorrent.xyz',
@@ -11,7 +15,7 @@ const BROWSER_WS_TRACKERS = [
 ];
 
 async function ensureClient(): Promise<any> {
-    // Node import
+    if (client) return client;
     let wt: any = null;
     try {
         wt = await import('webtorrent');
@@ -34,83 +38,81 @@ async function ensureClient(): Promise<any> {
     return client;
 }
 
+function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
 /**
  * Get file list for a torrent identified by magnet/infoHash/url.
  * Waits up to timeoutMs for metadata/ready. Returns array of {name,length}.
+ *
+ * This implementation coalesces concurrent calls for the same id,
+ * retries the native helper a few times (good for transient failures),
+ * and only falls back to Node-side webtorrent in non-browser contexts.
  */
+
+function errorToString(e: any): string {
+    const prev = 'ERR: ';
+    const errStr = (typeof e === 'string' ? e : (e && e.message) ? e.message : String(e || '')).trim();
+    const lower = errStr.toLowerCase();
+    if (!errStr) return prev + 'NULL';
+    if (lower.includes('timed out') || lower.includes('timeout')) return prev + 'TIMEOUT';
+    if (lower.includes('no torrent with that info hash') || lower.includes('no torrent')) return prev + 'NO-TORRENT';
+    if (lower.includes('no torrent id') || lower.includes('no id')) return prev + 'NO-ID';
+    // fallback: produce a short, safe token from the message
+    const safe = errStr.split(/\s+/).slice(0,3).join('_').replace(/[^A-Za-z0-9_-]/g,'').toUpperCase() || 'UNKNOWN';
+    return prev + safe;
+}
+
+// Create an Error instance from various response shapes returned by the native helper
+function makeErrorFromRes(res: any): Error {
+    if (!res) return new Error('Unknown error');
+    if (typeof res === 'string') return new Error(res);
+    try {
+        // Prefer explicit message fields if present
+        const msg = res.message ?? res.err ?? res.error;
+        if (msg && typeof msg === 'string' && msg.trim()) return new Error(msg);
+        // If message is an object, stringify it for debugging
+        return new Error(JSON.stringify(res));
+    } catch (e) {
+        return new Error(String(res));
+    }
+}
+
 export async function getTorrentFileList(id: string, opts?: { timeoutMs?: number }): Promise<FileInfo[]> {
     if (!id) throw new Error('No torrent id provided');
     const timeoutMs = opts?.timeoutMs ?? 20000;
 
-    runTauriCommand<any>('torrent_get_files', { id, timeoutMs }).then(res => {
-        if (Array.isArray(res)) return res;
-        return [];
-    }).catch(() => []);
+    // If there's already an inflight request, return it (coalescing)
+    if (inflight.has(id)) {
+        return inflight.get(id)!;
+    }
 
-    const client = await ensureClient();
-
-    return new Promise<FileInfo[]>((resolve, reject) => {
-        console.log('Fetching torrent file list...');
-        let resolved = false;
-        const onResolve = (files: FileInfo[]) => {
-            if (resolved) return;
-            resolved = true;
-            clearTimeout(tid);
-            resolve(files);
-        };
-        const onReject = (err: any) => {
-            if (resolved) return;
-            resolved = true;
-            clearTimeout(tid);
-            reject(err);
-        };
-
-        const tid = setTimeout(() => {
-            onReject(new Error('Failed to fetch torrent metadata (timeout)'));
-        }, timeoutMs) as unknown as number;
-
+    const task = (async (): Promise<FileInfo[]> => {
         try {
-            let torrent: any = client.get(id);
-
-            const handleReady = () => {
-                try {
-                    const files = (torrent.files || []).map((f: any) => ({ name: f.name, length: f.length }));
-                    onResolve(files);
-                } catch (e) {
-                    onReject(e);
-                }
-            };
-
-            const handleError = (err: any) => {
-                onReject(err || new Error('Torrent error'));
-            };
-
-            if (torrent) {
-                if (torrent.files && torrent.files.length) {
-                    handleReady();
-                } else {
-                    torrent.once && torrent.once('ready', handleReady);
-                    torrent.once && torrent.once('metadata', handleReady);
-                    torrent.once && torrent.once('error', handleError);
-                }
+            // call tauri helper
+            const res = await runTauriCommand<any>('torrent_get_files', { id, timeoutMs });
+            // if helper returned structured error, surface it with a readable message
+            if (res && !Array.isArray(res) && (res.error || res.err || res.message)) {
+                throw makeErrorFromRes(res);
+            }
+            if (Array.isArray(res)) {
+                return res;
             } else {
-                try {
-                    // If running in the browser, pass websocket trackers to help metadata discovery
-                    const isBrowser = (typeof window !== 'undefined') && !(window as any).electron;
-                    const addOpts: any = { destroyStoreOnDestroy: true };
-                    if (isBrowser) addOpts.trackers = BROWSER_WS_TRACKERS;
-                    torrent = client.add(id, addOpts);
-                    torrent.once && torrent.once('ready', handleReady);
-                    torrent.once && torrent.once('metadata', handleReady);
-                    torrent.once && torrent.once('error', handleError);
-                } catch (e) {
-                    onReject(e);
-                }
+                // unexpected shape from helper, stringify for clarity
+                throw makeErrorFromRes(res);
             }
         } catch (e) {
-            onReject(e);
+            throw new Error(errorToString(e));
         }
-    });
+    })();
+
+    // store in inflight and ensure it's removed after completion
+    inflight.set(id, task);
+    try {
+        const out = await task;
+        return out;
+    } finally {
+        inflight.delete(id);
+    }
 }
 
 export function _getClientForDebug() {

@@ -1,9 +1,65 @@
-/* Now Playing */
-.now-playing { display:flex; flex-direction:column; gap:24px; }
-.np-hero { position:relative; min-height:320px; width:100%; display:flex; align-items:flex-end; overflow:hidden; isolation:isolate; }
-.np-hero::before { content:""; position:absolute; inset:0; z-index:0; mask:linear-gradient(to bottom,#fff 20%, #fff3 70%, #fff0); -webkit-mask:linear-gradient(to bottom,#fff 20%, #fff3 70%, #fff0); background: linear-gradient(140deg, rgba(0,0,0,.6), rgba(0,0,0,.2)), var(--hero-image) center / cover no-repeat; }
-.np-hero-inner { position:relative; z-index:1; display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:32px 32px 28px; width:100%; }
-.np-title { font-size:56px; font-weight:500; margin:0; line-height:1.05; letter-spacing:-.5px; max-width:100%; text-wrap:balance; }
+.now-playing { display:flex; flex-direction:column; gap:24px; padding-top: var(--np-hero-height, 320px); }
+.np-hero {
+    /* adjustable via JS: --np-hero-height will be set between min/max */
+    --np-hero-max-height: 320px;
+    --np-hero-min-height: 64px;
+    --np-hero-padding-top: 32px;
+    --np-hero-padding-bottom: 28px;
+    --np-title-size: 56px;
+
+    position:fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--np-hero-height);
+    display:flex;
+    align-items:flex-end;
+    overflow:hidden;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    isolation:isolate;
+    z-index:200; /* keep above page content when fixed */
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+
+    /* transition: height 160ms linear, box-shadow 160ms linear, backdrop-filter 160ms linear; */
+}
+.np-hero::before { content:""; position:absolute; inset:0; z-index:-1; mask:linear-gradient(to bottom,#fff 20%, #fff3 70%, #fff0); -webkit-mask:linear-gradient(to bottom,#fff 20%, #fff3 70%, #fff0); background: linear-gradient(140deg, rgba(0,0,0,.6), rgba(0,0,0,.2)), var(--hero-image) center / cover no-repeat; box-shadow: inset 0 0 400px var(--color-bg-solid);}
+.np-hero-inner { position:relative; z-index:1; display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:var(--np-hero-padding-top) 32px var(--np-hero-padding-bottom); width:100%; transition: padding 160ms linear; }
+
+/* Switch header inner layout to row when shrunk beyond threshold */
+.np-hero[data-np-shrink-state="large"] .np-hero-inner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.np-hero[data-np-shrink-state="large"] .np-extras {
+    width: auto; /* don't stretch across the header when shrunk */
+}
+
+/* Extras layout and shrink behavior */
+.np-hero .np-extras {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+}
+
+.np-hero .np-tags {
+    transition: opacity 160ms linear, max-height 160ms linear, margin 160ms linear;
+    max-height: 40px;
+    overflow: hidden;
+}
+
+.np-hero .np-meta-line {
+    transition: opacity 160ms linear, transform 160ms ease, margin 160ms ease;
+}
+
+/* Small helper: when using inline styles to set --np-shrink, meta and tags will animate smoothly */
+.np-hero .np-actions { display:flex; gap:4px; align-items:center; }
+.np-title { font-size:var(--np-title-size); font-weight:500; margin:0; line-height:1.05; letter-spacing:-.5px; max-width:100%; text-wrap:balance;}
 .np-art-wrapper { position:relative; width:240px; max-width:60%; aspect-ratio:1/1; border-radius:18px; overflow:hidden; box-shadow: var(--shadow-lg), 0 2px 6px rgba(0 0 0 / .4); }
 .np-meta-line { display:flex; align-items:center; gap:10px; font-size:14px; opacity:.85; }
 .np-dot { width:4px; height:4px; border-radius:50%; background:rgba(255,255,255,0.4); }
@@ -92,13 +148,54 @@
 @media (max-width:600px){ .np-title { font-size:26px; } .np-hero { min-height:240px; } .np-hero-inner { padding:24px 20px 20px; } }
 
 /* Lyrics Overlay */
-.np-lyrics-overlay { position:absolute; inset:0; z-index:40; pointer-events:none; opacity:0; display:flex; justify-content:center; background: radial-gradient(circle at 50% 50%, rgba(var(--bg),0.6), rgba(0,0,0,0.8)); backdrop-filter: blur(60px) saturate(120%); transition: opacity .35s; border-radius:inherit; box-shadow:0 0 0 1px rgba(255,255,255,0.04) inset; }
+.np-lyrics-overlay {
+    align-items: center;
+    position:absolute;
+    inset:0;
+    z-index:903;
+    pointer-events:none;
+    opacity:0;
+    display:flex;
+    justify-content:center;
+    background: radial-gradient(circle at 50% 50%, rgba(var(--bg),0.6), rgba(0,0,0,0.8));
+    backdrop-filter: blur(60px) saturate(120%);
+    transition: opacity .35s;
+    border-radius:inherit;
+    box-shadow:0 0 0 1px rgba(255,255,255,0.04) inset;
+}
 .np-lyrics-overlay.active { pointer-events:auto; opacity:1; }
-.np-lyrics-overlay pre {
-	font-family: Poppins, var(--font-ui), system-ui, sans-serif;
+.lyrics-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--padding-xs);
+}
+.lyrics-section span {
+    --this-border: transparent;
+    --this-background: transparent;
+    font-family: Poppins, var(--font-ui), system-ui, sans-serif;
 	font-weight:500;
 	letter-spacing:1px;
 	text-wrap: auto;
+    padding: var(--padding-xs) var(--padding-md);
+    border-radius: var(--radius-lg);
+    width: fit-content;
+    border: solid 1px var(--this-border);
+    background: var(--this-background);
+    position: relative;
+    z-index: 0;
+    scale: 1;
+    opacity: 0.85;
+    transition: background-color 160ms ease, border-color 160ms ease, scale 160ms ease, opacity 160ms ease;
+}
+.lyrics-section span.active {
+    --this-border: var(--glass-bg-hover);
+    --this-background: var(--glass-bg);
+    padding: var(--padding-xs) var(--padding-md);
+    border-radius: var(--radius-lg);
+    width: fit-content;
+    z-index: 1;
+    scale: 1.1;
+    opacity: 1;
 }
 .np-lyrics-scroll { max-width:860px; width:100%; max-height:80vh; overflow:auto; position:relative; }
 .np-lyrics-body { white-space:pre-wrap; font-family:inherit; font-size:16px; line-height:1.6; padding:60px 40px; }
@@ -146,7 +243,7 @@
 
 /* Audio source chooser (SongInfoTab) */
 .np-audio-sources { 
-    height: calc(100vh - var(--header-height) - var(--footer-height) - var(--footer-gap) - var(--app-shadow-size) * 2);
+    height: calc(100vh - var(--header-height) - var(--footer-height) - var(--footer-gap) - var(--app-shadow-size) * 2) - var(--np-hero-height);
     background: var(--surface-alt2);
     padding: var(--padding-lg); 
 }

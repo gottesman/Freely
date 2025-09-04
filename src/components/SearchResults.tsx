@@ -4,6 +4,7 @@ import { useI18n } from '../core/i18n';
 import { usePlaybackActions } from '../core/playback';
 import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers';
+import InfoHeader from './InfoHeader';
 
 type Image = { url: string };
 type ArtistStub = { name: string };
@@ -233,20 +234,38 @@ export default function SearchResults({ query, results, onSelectArtist, onSelect
   const fullAlbumGrid = useMemo(() => albums.map(a => <AlbumCard key={String(a.id)} album={a} query={query} layout="full" onSelect={() => handleSelect(onSelectAlbum, a.id)} onPlay={handlePlayNow} />), [albums, query, onSelectAlbum, handlePlayNow, handleSelect]);
   const fullPlaylistGrid = useMemo(() => playlists.map(p => <PlaylistCard key={String(p.id)} playlist={p} query={query} layout="full" onSelect={() => handleSelect(onSelectPlaylist, p.id)} onPlay={handlePlayNow} />), [playlists, query, onSelectPlaylist, handlePlayNow, handleSelect]);
 
-  if (!query) return <section className="search-results"><h1>{t('search.results')}</h1><div className="sr-empty">{t('search.resultsEmpty')}</div></section>;
+ // if (!query) return <section className="search-results"><h1>{t('search.results')}</h1><div className="sr-empty">{t('search.resultsEmpty')}</div></section>;
 
   return (
     <section className="search-results">
-      <div className='sr-header'>
-        <h1>{t('search.resultsFor', undefined, { query })}</h1>
-        <div className="sr-tabs">
-          <button className={`sr-tab ${tab==='all'?'active':''}`} onClick={()=>setTab('all')}>{t('search.tab.all','All')}</button>
-          <button className={`sr-tab ${tab==='songs'?'active':''}`} onClick={()=>setTab('songs')}>{t('search.songs','Songs')}</button>
-          <button className={`sr-tab ${tab==='artists'?'active':''}`} onClick={()=>setTab('artists')}>{t('search.artists','Artists')}</button>
-          <button className={`sr-tab ${tab==='albums'?'active':''}`} onClick={()=>setTab('albums')}>{t('search.albums','Albums')}</button>
-          <button className={`sr-tab ${tab==='playlists'?'active':''}`} onClick={()=>setTab('playlists')}>{t('search.playlists','Playlists')}</button>
+      <InfoHeader
+          id="artist-heading"
+          title={t('search.results')}
+          meta={query ? t('search.resultsFor', undefined, { query }) : undefined}
+          actions={
+            [
+              <button className={`sr-tab ${tab==='all'?'active':''}`} onClick={()=>setTab('all')}>{t('search.tab.all','All')}</button>,
+              <button className={`sr-tab ${tab==='songs'?'active':''}`} onClick={()=>setTab('songs')}>{t('search.songs','Songs')}</button>,
+              <button className={`sr-tab ${tab==='artists'?'active':''}`} onClick={()=>setTab('artists')}>{t('search.artists','Artists')}</button>,
+              <button className={`sr-tab ${tab==='albums'?'active':''}`} onClick={()=>setTab('albums')}>{t('search.albums','Albums')}</button>,
+              <button className={`sr-tab ${tab==='playlists'?'active':''}`} onClick={()=>setTab('playlists')}>{t('search.playlists','Playlists')}</button>
+            ]
+          }
+          initialShrink={1}
+      />
+      {
+        /*
+        <div className='sr-header'>
+          <div className="sr-tabs">
+            <button className={`sr-tab ${tab==='all'?'active':''}`} onClick={()=>setTab('all')}>{t('search.tab.all','All')}</button>
+            <button className={`sr-tab ${tab==='songs'?'active':''}`} onClick={()=>setTab('songs')}>{t('search.songs','Songs')}</button>
+            <button className={`sr-tab ${tab==='artists'?'active':''}`} onClick={()=>setTab('artists')}>{t('search.artists','Artists')}</button>
+            <button className={`sr-tab ${tab==='albums'?'active':''}`} onClick={()=>setTab('albums')}>{t('search.albums','Albums')}</button>
+            <button className={`sr-tab ${tab==='playlists'?'active':''}`} onClick={()=>setTab('playlists')}>{t('search.playlists','Playlists')}</button>
+          </div>
         </div>
-      </div>
+        */
+      }
       <div className='sr-results'>
         {!hasAny ? <div className="sr-no-results">{t('search.noResults', 'No items found')}</div> :
           <>

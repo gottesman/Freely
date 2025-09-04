@@ -29,6 +29,7 @@ export interface SongDetails {
 	id: number;
 	title: string;
 	fullTitle: string;
+	embed_content?: string;
 	url: string;
 	releaseDate?: string;
 	headerImageUrl?: string;
@@ -64,7 +65,7 @@ export interface LyricsResult {
 	songId: number;
 	url: string;
 	lyrics?: string;
-	source: 'parsed-html' | 'unavailable' | 'cached-error';
+	source: 'parsed-html' | 'embed-js' | 'unavailable' | 'cached-error';
 	error?: string;
 	fetchedAt: number;
 }
@@ -145,6 +146,7 @@ export class GeniusClient {
 		return { query, hits, raw: json };
 	}
 
+
 	async getSong(id: number, { includeRelationships = false } = {}): Promise<SongDetails> {
 		const json: any = await http(this.cfg, `/songs/${id}`, { text_format: 'plain' });
 		const s = json.response?.song;
@@ -153,6 +155,7 @@ export class GeniusClient {
 			id: s.id,
 			title: s.title,
 			fullTitle: s.full_title,
+			embed_content: s.embed_content,
 			url: s.url,
 			releaseDate: s.release_date || s.release_date_for_display,
 			headerImageUrl: s.header_image_url,
@@ -215,24 +218,218 @@ export class GeniusClient {
 		};
 	}
 
-	/** Retrieve lyrics by scraping song HTML page (best-effort). */
+
+	/** Retrieve lyrics by scraping song HTML page or embed.js (best-effort).
+	 * Will attempt embed.js approach and use it only if it yields better results
+	 * than the regular HTML scraping method.
+	 */
 	async getLyricsForSong(song: { id: number; url: string } | number): Promise<LyricsResult> {
 		const s = typeof song === 'number' ? await this.getSong(song) : song;
 		const url = s.url;
 		const cacheMap = this.cfg.cache ?? internalCache;
 		const ck = key(['LYRICS', url]);
-		const cached = cacheMap.get(ck);
-		if (cached) return cached;
+		//const cached = cacheMap.get(ck);
+		//if (cached) return cached;
 		try {
+			// Helper: attempt embed.js method if we have a numeric song id
+			let embedLyrics: string | undefined;
+			if (s && typeof s.id === 'number') {
+				try {
+					const embedUrl = `https://genius.com/songs/${s.id}/embed.js`;
+					const res = await fetch(embedUrl, { headers: { 'User-Agent': this.cfg.userAgent ?? 'FreelyPlayer/0.1' } });
+					if (res.ok) {
+						const txt = await res.text();
+						// Try to extract a JSON.parse("...") argument
+						let extractedHtml: string | undefined;
+						const m = txt.match(/JSON\.parse\((['\"`])([\s\S]*?)\1\)/m);
+						
+						if (m && m[2]) {
+							try {
+								const quote = m[1] || '"';
+								const inner = m[2];
+								// Strategy A: evaluate the reconstructed quoted literal (handles most JS escapes)
+								try {
+									extractedHtml = Function('"use strict"; return ' + quote + inner + quote)();
+								} catch (e) {
+									// ignore - will try other strategies below
+								}
+								// Helper to detect remaining escape sequences like "\n" or unicode escapes
+								const looksEscaped = (s?: string) => !!s && /\\n|\\r|\\t|\\u[0-9a-fA-F]{4}|\\\"|\\'/.test(s);
+								// If the result still looks escaped or is empty, try JSON.parse on a safely-quoted candidate
+								if (!extractedHtml || looksEscaped(extractedHtml) || (/^['"`].*['"`]$/.test(String(extractedHtml)))) {
+									let candidate = inner;
+									// If the captured inner already begins/ends with a quote, strip it
+									if ((candidate.startsWith('"') && candidate.endsWith('"')) || (candidate.startsWith("'") && candidate.endsWith("'")) || (candidate.startsWith('`') && candidate.endsWith('`'))) {
+										candidate = candidate.slice(1, -1);
+									}
+									// Try JSON.parse by wrapping candidate in double-quotes and escaping inner double-quotes/backslashes
+									try {
+										extractedHtml = JSON.parse('"' + candidate.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
+									} catch (_) {
+										// Last resort: simple unescape of common sequences
+										try {
+											extractedHtml = candidate.replace(/(\\*)\\n/g, '\n').replace(/(\\*)\\r/g, '\r').replace(/(\\*)\\t/g, '\t').replace(/(\\*)\\"/g, '"').replace(/(\\*)\\'/g, "'");
+										} catch (_) { /* ignore */ }
+									}
+								}
+								// Normalize common JS escape sequences. Some embed.js payloads are
+								// double-escaped ("\\n"), so run a few iterations to fully unescape
+								// them into real characters.
+								if (typeof extractedHtml === 'string') {
+									const unescapeJs = (input: string) => {
+										let out = input;
+										for (let i = 0; i < 6; i++) {
+											const prev = out;
+											// First collapse double-escaped backslashes then common escapes
+											out = out
+												.replace(/\\\\/g, '\\')   // \\\\ -> \\\ -> \\
+												.replace(/\\n/g, '\n')
+												.replace(/\\r/g, '\r')
+												.replace(/\\t/g, '\t')
+												.replace(/\\"/g, '\"')
+												.replace(/\\'/g, "\\'")
+												// Then convert single-escaped sequences into real characters
+												.replace(/\\n/g, '\n')
+												.replace(/\\r/g, '\r')
+												.replace(/\\t/g, '\t')
+												.replace(/\\"/g, '"')
+												.replace(/\\'/g, "'")
+												// unicode escapes
+												.replace(/\\u([0-9a-fA-F]{4})/g, (_, u) => String.fromCharCode(parseInt(u, 16)));
+											if (out === prev) break;
+										}
+										// Strip surrounding quotes if present
+										if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith("'") && out.endsWith("'"))) {
+											out = out.slice(1, -1);
+										}
+										return out;
+									};
+									extractedHtml = unescapeJs(extractedHtml);
+								}
+							} catch (_) { /* ignore parse */ }
+						}
+						
+						// Fallback: try to find a JS object with an "html" property
+						if (!extractedHtml) {
+							const objMatch = txt.match(/var\s+\w+\s*=\s*(\{[\s\S]*?\});/);
+							if (objMatch && objMatch[1]) {
+								try {
+									const obj = JSON.parse(objMatch[1]);
+									if (obj && typeof obj.html === 'string') extractedHtml = obj.html;
+								} catch (_) { /* ignore */ }
+							}
+						}
+						// Another fallback: document.write('...') literal
+						if (!extractedHtml) {
+							const dw = txt.match(/document\.write\((['\"`])([\s\S]*?)\1\)/);
+							if (dw && dw[2]) {
+								extractedHtml = dw[2];
+							}
+						}
+						if (extractedHtml) {
+							// Prefer parsing the extracted payload as HTML so we can reliably
+							// select the embed body element (.rg_embed_body). Use DOMParser
+							// in browser-like environments, fall back to creating a temporary
+							// element if `document` is available, and finally fall back to
+							// the previous regex heuristic when no DOM APIs exist.
+							let inner: string = extractedHtml;
+							try {
+								if (typeof DOMParser !== 'undefined') {
+									const doc = new DOMParser().parseFromString(extractedHtml, 'text/html');
+									// remove any footer elements before extracting the body
+									const footers = doc.querySelectorAll('.rg_embed_footer');
+									footers.forEach(f => f.remove());
+									const node = doc.querySelector('.rg_embed_body');
+									inner = node ? (node as HTMLElement).innerHTML : (doc.body?.innerHTML || extractedHtml);
+								} else if (typeof document !== 'undefined') {
+									const wrapper = document.createElement('div');
+									wrapper.innerHTML = extractedHtml;
+									// remove any footer elements from the wrapper
+									const footers = wrapper.querySelectorAll('.rg_embed_footer');
+									footers.forEach(f => f.remove());
+									const node = wrapper.querySelector('.rg_embed_body');
+									inner = node ? (node as HTMLElement).innerHTML : wrapper.innerHTML;
+								} else {
+									// No DOM available; fall back to regex
+									const bodyMatch = extractedHtml.match(/<div[^>]*class=(?:'|\")?[^'\"\>]*rg_embed_body[^'\"\>]*(?:'|\")?[^>]*>([\s\S]*?)<\/div>/i);
+									inner = bodyMatch && bodyMatch[1] ? bodyMatch[1] : extractedHtml;
+									// strip any rg_embed_footer markup if present
+									inner = inner.replace(/<div[^>]*class=(?:'|\")?[^'\"\>]*rg_embed_footer[^'\"\>]*(?:'|\")?[^>]*>[\s\S]*?<\/div>/gi, '');
+								}
+							} catch (e) {
+								// Parsing failed; fall back to regex as last resort
+								const bodyMatch = extractedHtml.match(/<div[^>]*class=(?:'|\")?[^'\"\>]*rg_embed_body[^'\"\>]*(?:'|\")?[^>]*>([\s\S]*?)<\/div>/i);
+								inner = bodyMatch && bodyMatch[1] ? bodyMatch[1] : extractedHtml;
+								// strip any rg_embed_footer markup if present
+								inner = inner.replace(/<div[^>]*class=(?:'|\")?[^'\"\>]*rg_embed_footer[^'\"\>]*(?:'|\")?[^>]*>[\s\S]*?<\/div>/gi, '');
+							}
+							// Decode HTML entities (some embed payloads escape HTML as entities)
+							const decodeHtml = (html: string) => {
+								try {
+									if (typeof document !== 'undefined') {
+										const ta = document.createElement('textarea');
+										ta.innerHTML = html;
+										return ta.value;
+									}
+								} catch (_) { /* ignore */ }
+								// Fallback decoder for non-DOM environments
+								return html
+									.replace(/&lt;/g, '<')
+									.replace(/&gt;/g, '>')
+									.replace(/&amp;/g, '&')
+									.replace(/&quot;/g, '"')
+									.replace(/&#39;/g, "'")
+									.replace(/&nbsp;/g, ' ')
+									.replace(/&mdash;/g, '—')
+									.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+									.replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)));
+							};
+
+							let cleaned = decodeHtml(inner);
+							// Remove stray backslashes before tag characters that sometimes remain (e.g. <\/a>)
+							cleaned = cleaned.replace(/\\(?=[\/<\>])/g, '');
+							const text = parseLyricsFromHtml(cleaned) || stripTags(cleaned) || undefined;
+							if (text && text.trim().length) embedLyrics = text.trim();
+						}
+					}
+				} catch (e) {
+					// ignore embed errors and fall back to HTML scraping
+				}
+			}
+			/*
+			// Now perform the original HTML scraping method
 			const htmlRes = await fetch(url, { headers: { 'User-Agent': this.cfg.userAgent ?? 'FreelyPlayer/0.1' } });
 			if (!htmlRes.ok) throw new Error(`Lyrics page HTTP ${htmlRes.status}`);
 			const html = await htmlRes.text();
-			const lyrics = parseLyricsFromHtml(html);
-			const result: LyricsResult = { songId: typeof song === 'number' ? song : song.id, url, lyrics, source: lyrics ? 'parsed-html' : 'unavailable', fetchedAt: Date.now() };
+			const parsed = parseLyricsFromHtml(html);
+			*/
+
+			// Decide which result to use: prefer embedLyrics if it appears "better"
+			let chosenLyrics: string | undefined = embedLyrics;
+			let source: LyricsResult['source'] = 'embed-js';
+			/*
+			if (embedLyrics && embedLyrics.length > 40 && (!parsed || embedLyrics.length > (parsed.length || 0))) {
+				chosenLyrics = embedLyrics;
+				source = 'embed-js';
+				// note: mark as 'parsed-html' for compatibility, but we could use 'embed-js'
+				// use 'embed-js' if you'd like explicit source
+				// prefer embed when it's substantially longer
+				// fallthrough
+			}
+			if (!chosenLyrics) {
+				if (parsed && parsed.length) {
+					chosenLyrics = parsed;
+					source = 'parsed-html';
+				}
+			}
+			*/
+
+			const formatted = chosenLyrics ? formatLyricsAsHtml(chosenLyrics) : undefined;
+			const result: LyricsResult = { songId: typeof song === 'number' ? song : song.id, url, lyrics: formatted, source: chosenLyrics ? source : 'unavailable', fetchedAt: Date.now() };
 			cacheMap.set(ck, result);
 			return result;
 		} catch (err: any) {
-			const fail: LyricsResult = { songId: typeof song === 'number' ? song : song.id, url, source: 'cached-error', error: err.message, fetchedAt: Date.now() };
+			const fail: LyricsResult = { songId: typeof song === 'number' ? song : song.id, url, source: 'cached-error', error: err?.message || String(err), fetchedAt: Date.now() };
 			cacheMap.set(ck, fail);
 			return fail;
 		}
@@ -336,3 +533,28 @@ function escapeHtml(s: string): string {
 // genius.getLyricsForSong(123).then(console.log);
 
 export default GeniusClient;
+
+// Convert a plain lyrics block into structured HTML with sections and spans.
+function formatLyricsAsHtml(raw: string): string {
+	if (!raw) return '';
+	const lines = raw.replace(/\r/g, '').split('\n').map(l => l.trim());
+	const sections: { name: string; lines: string[] }[] = [];
+	let current = { name: 'Lyrics', lines: [] as string[] };
+	for (const line of lines) {
+		if (!line) continue; // skip blank lines (removes double line breaks)
+		const m = line.match(/^\s*\[(.+?)\]\s*$/);
+		if (m) {
+			// new section
+			if (current.lines.length) sections.push(current);
+			current = { name: m[1].trim(), lines: [] };
+		} else {
+			current.lines.push(line);
+		}
+	}
+	if (current.lines.length) sections.push(current);
+	// Build HTML
+	return sections.map(s => {
+		const inner = s.lines.map(l => `<span>${escapeHtml(l)}</span>`).join('');
+		return `<div class="lyrics-section" data-section="${escapeHtml(s.name)}">${inner}</div>`;
+	}).join('\n');
+}

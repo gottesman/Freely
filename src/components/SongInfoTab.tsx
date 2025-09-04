@@ -1,19 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useI18n } from '../core/i18n';
 import { usePlaybackSelector, usePlaybackActions } from '../core/playback';
+import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext';
 import { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import TrackList from './TrackList';
 import GeniusClient from '../core/musicdata';
 import TrackSources from './TrackSources';
-
-function fmt(ms?: number) {
-  if (ms === undefined || ms === null) return '--:--';
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m + ':' + (s < 10 ? '0' : '') + s;
-}
+import InfoHeader from './InfoHeader';
+import { fmtMs, useHeroImage } from './tabHelpers';
 
 type Props = {
   trackId?: string;
@@ -30,6 +25,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
   const playbackTrack = usePlaybackSelector(s => (trackId === undefined ? s.currentTrack : undefined), [trackId]) as any;
   // actions for play/queue
   const { setQueue, enqueue } = usePlaybackActions();
+  const { openModal: openPlaylistModal } = useGlobalAddToPlaylistModal();
   const currentIndex = usePlaybackSelector(s => (trackId === undefined ? s.currentIndex : undefined), [trackId]) as number | undefined;
   const queueIds = usePlaybackSelector(s => (trackId === undefined ? s.queueIds : undefined), [trackId]) as string[] | undefined;
 
@@ -53,7 +49,6 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
 
   // Refs for preserving scroll position and container
   const containerRef = useRef<HTMLElement | null>(null);
-  const scrollPositionRef = useRef<number>(0);
 
   // Helpers: unified spotify and genius accessors
   const api = useMemo(() => {
@@ -114,23 +109,6 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
       active = false;
     };
   }, [selectedTrackId, playbackTrack, api]);
-
-  // Preserve scroll position when selectedTrackId changes
-  useEffect(() => {
-    if (containerRef.current) {
-      scrollPositionRef.current = containerRef.current.scrollTop;
-    }
-  }, [selectedTrackId]);
-
-  // Restore scroll after data loads
-  useEffect(() => {
-    if (!containerRef.current) return;
-    // schedule on next frame to allow DOM updates
-    requestAnimationFrame(() => {
-      if (!containerRef.current) return;
-      containerRef.current.scrollTop = scrollPositionRef.current;
-    });
-  }, [track, albumTracks]);
 
   // Load album and primary artist for the current track
   useEffect(() => {
@@ -236,6 +214,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     };
   }, [track?.name, primaryArtist?.name, api]);
 
+  /*
   // Wheel / smooth scroll behavior: run once
   useEffect(() => {
     const tabsBody = document.querySelector('.tabs-body') as HTMLElement | null;
@@ -296,22 +275,20 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
         refs.wheelAccum = 0;
       }
     };
+    
 
     tabsBody.addEventListener('wheel', onWheel as EventListener, { passive: true });
     return () => {
       tabsBody.removeEventListener('wheel', onWheel as EventListener);
     };
   }, []);
-
+  */
   // Derived values (memoized)
-  const heroImage = useMemo(
-    () => album?.images?.[0]?.url ?? track?.album?.images?.[0]?.url ?? '',
-    [album, track?.album?.images]
-  );
+  const heroImage = useMemo(() => useHeroImage(album?.images ?? track?.album?.images, 0), [album?.images, track?.album?.images]);
 
   const releaseYear = useMemo(() => (album?.releaseDate ? album.releaseDate.split('-')[0] : undefined), [album?.releaseDate]);
 
-  const genres = useMemo(() => primaryArtist?.genres?.slice(0, 3) ?? [], [primaryArtist?.genres]);
+  const genres = useMemo(() => primaryArtist?.genres ?? [], [primaryArtist?.genres]);
 
   const artistColWidth = useMemo(() => {
     if (!albumTracks?.length) return undefined;
@@ -342,88 +319,64 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     if (toAppend.length) enqueue(toAppend);
   }, [track?.id, queueIds, enqueue]);
 
+  const onAddToPlaylist = useCallback(() => {
+    if (!track) return;
+    openPlaylistModal(track, false);
+  }, [track, openPlaylistModal]);
+
+  const headerActions = [
+  <button key="add-playlist" className="np-icon" aria-label={t('player.addPlaylist')} disabled={!track?.id} onClick={onAddToPlaylist}>
+      <span className="material-symbols-rounded">add_circle</span>
+    </button>,
+    <button key="play" className="np-icon" aria-label={t('player.playTrack')} disabled={!track?.id} onClick={handlePlayTrack}>
+      <span className="material-symbols-rounded filled">play_arrow</span>
+    </button>,
+    <button key="queue" className="np-icon" aria-label={t('player.addToQueue')} disabled={!track?.id} onClick={handleAddToQueue}>
+      <span className="material-symbols-rounded">queue</span>
+    </button>
+  ];
+
   return (
     <section ref={containerRef} className="now-playing" aria-labelledby="np-heading">
-      <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
-        <div className="np-hero-inner">
-          <h1 id="np-heading" className="np-title">
-            {track ? track.name : selectedTrackId ? t('np.loading') : t('np.noTrack')}
-          </h1>
-
-          {track && (
-            <div className="np-meta-line">
-              <span className="np-artists">
-                {track.artists.map((a, i) => (
-                  <React.Fragment key={a.id ?? a.name}>
-                    {i > 0 && <span className="np-sep">, </span>}
-                    <button
-                      type="button"
-                      className="np-link artist"
-                      onClick={() => {
-                        if (onSelectArtist && a.id) onSelectArtist(a.id);
-                        else if (a.url) window.open(a.url, '_blank');
-                      }}
-                    >
-                      {a.name}
-                    </button>
-                  </React.Fragment>
-                ))}
-              </span>
-
-              {track.album?.name && (
-                <>
-                  <span className="np-dot" />
-                  {track.album.id && onSelectAlbum ? (
-                    <button
-                      type="button"
-                      className="np-link np-album"
-                      onClick={() => onSelectAlbum && track.album?.id && onSelectAlbum(track.album.id)}
-                    >
-                      {track.album.name}
-                    </button>
-                  ) : (
-                    <span className="np-album">{track.album.name}</span>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          <div className="np-extras">
-            <div className="np-tags" aria-label={t('np.genresTags')}>
-              {genres.length ? genres.map((g) => <span key={g} className="tag">{g}</span>) : <span className="tag">—</span>}
-            </div>
-
-            <div className="np-actions" aria-label={t('np.trackActions')}>
-              <button className="np-icon" aria-label={t('player.addPlaylist')} disabled>
-                <span className="material-symbols-rounded">add_circle</span>
-              </button>
-
-              <button className="np-icon" aria-label={t('np.like', 'Like')} disabled>
-                <span className="material-symbols-rounded">favorite</span>
-              </button>
-
-              <button
-                className="np-icon"
-                aria-label={t('player.playTrack')}
-                disabled={!track?.id}
-                onClick={handlePlayTrack}
-              >
-                <span className="material-symbols-rounded filled">play_arrow</span>
-              </button>
-
-              <button
-                className="np-icon"
-                aria-label={t('player.addToQueue')}
-                disabled={!track?.id}
-                onClick={handleAddToQueue}
-              >
-                <span className="material-symbols-rounded">queue</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
+      <InfoHeader
+        id="np-heading"
+        title={track ? track.name : selectedTrackId ? t('np.loading') : t('np.noTrack')}
+        meta={track ? (
+          <>
+            <span className="np-artists">
+              {track.artists.map((a, i) => (
+                <React.Fragment key={a.id ?? a.name}>
+                  {i > 0 && <span className="np-sep">, </span>}
+                  <button
+                    type="button"
+                    className="np-link artist"
+                    onClick={() => {
+                      if (onSelectArtist && a.id) onSelectArtist(a.id);
+                      else if (a.url) window.open(a.url, '_blank');
+                    }}
+                  >
+                    {a.name}
+                  </button>
+                </React.Fragment>
+              ))}
+            </span>
+            {track.album?.name && (
+              <>
+                <span className="np-dot" />
+                {track.album.id && onSelectAlbum ? (
+                  <button type="button" className="np-link np-album" onClick={() => onSelectAlbum && track.album?.id && onSelectAlbum(track.album.id)}>{track.album.name}</button>
+                ) : (
+                  <span className="np-album">{track.album.name}</span>
+                )}
+              </>
+            )}
+          </>
+        ) : undefined}
+        tags={genres}
+        actions={headerActions}
+        heroImage={heroImage}
+        ariaActionsLabel={t('np.trackActions')}
+      />
 
       {/* Audio source chooser */}
       <TrackSources track={track} album={album} primaryArtist={primaryArtist} />
@@ -494,7 +447,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
 
             <li>
               <span className="cl-label">{t('np.duration', 'Duration')}</span>:
-              <span className="cl-value">{fmt(track.durationMs)}</span>
+              <span className="cl-value">{fmtMs(track.durationMs)}</span>
             </li>
 
             {typeof track.explicit === 'boolean' && (

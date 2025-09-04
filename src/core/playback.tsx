@@ -101,6 +101,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [trackCache, setTrackCache] = useState<Record<string, SpotifyTrack | undefined>>({});
   
   const { getApiCache, setApiCache, ready } = useDB();
+  const { addPlay, getPlayCountForTrack } = useDB();
 
   const spotifyClient = ready ? createCachedSpotifyClient({ getApiCache, setApiCache }) : new SpotifyClient();
 
@@ -126,6 +127,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => { fetchTrack(trackId); }, [trackId]);
+
+  // Record play history when a new trackId is set (track started)
+  useEffect(() => {
+    if (!trackId) return;
+    let mounted = true;
+    (async () => {
+      try {
+        // best-effort: record when playback switches to a track
+        await addPlay(trackId, Date.now());
+      } catch (e) {
+        // ignore DB errors
+        console.warn('Failed to record play:', e);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [trackId, addPlay]);
 
   useEffect(()=>{
     const idx = queueIds.indexOf(trackId);

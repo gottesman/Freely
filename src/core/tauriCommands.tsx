@@ -24,18 +24,46 @@ function findInvoke(): ((cmd: string, args?: any) => Promise<any>) | undefined {
     return undefined;
 }
 
-export async function runTauriCommand<T = any>(command: string, args?: {}): Promise<T | false> {
+export async function runTauriCommand<T = any>(command: string, args?: {}): Promise<T | false | any> {
+    // coalesce identical command+args to a single inflight invoke
+    const key = command + '::' + JSON.stringify(args ?? {});
+    if (!(globalThis as any).__tauri_inflight) (globalThis as any).__tauri_inflight = new Map<string, Promise<any>>();
+    const inflight: Map<string, Promise<any>> = (globalThis as any).__tauri_inflight;
+    if (inflight.has(key)) return inflight.get(key);
+
     const inv = findInvoke();
     if (!inv) {
         console.warn('Tauri invoke not available in this environment');
         return false;
     }
 
+    const task = (async () => {
+        try {
+            const res = await inv(command, args ?? {});
+            return res as T;
+        } catch (err) {
+            // If Tauri returned a structured error object, return it directly.
+            // Sometimes the runtime surfaces the error as a JSON string — try to parse it.
+            try {
+                if (typeof err === 'string') {
+                    const parsed = JSON.parse(err);
+                    return parsed;
+                }
+                if (err && typeof err === 'object') return err;
+            } catch (e) {
+                // fallthrough
+            }
+
+            // Fallback: return a simple object with error/message for consumers to inspect
+            return { error: String(err), message: (err && (err as any).message) || String(err) };
+        }
+    })();
+
+    inflight.set(key, task);
     try {
-        const res = await inv(command, args ?? {});
-        return res as T;
-    } catch (err) {
-        console.warn('Tauri invoke failed', err);
-        return false;
+        const out = await task;
+        return out;
+    } finally {
+        inflight.delete(key);
     }
 }

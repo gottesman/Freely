@@ -12,9 +12,21 @@ export interface SpotifyConfig {
 export interface SpotifySearchResult<T> { query: string; type: string; items: T[]; raw: any; }
 export interface SpotifyArtist { id: string; name: string; url: string; genres: string[]; images: { url: string; width?: number; height?: number }[]; followers?: number; popularity?: number; }
 export interface SpotifyAlbum { id: string; name: string; url: string; albumType: string; releaseDate: string; totalTracks: number; images: { url: string; width?: number; height?: number }[]; artists: SpotifyArtistRef[]; label?: string; copyrights?: string[]; }
-export interface SpotifyTrack { id: string; name: string; url: string; durationMs: number; explicit: boolean; trackNumber: number; discNumber: number; previewUrl?: string; popularity?: number; artists: SpotifyArtistRef[]; album?: SpotifyAlbumRef; }
+export interface SpotifyTrack {
+  id: string;
+  name: string;
+  url: string;
+  durationMs: number;
+  explicit: boolean;
+  trackNumber: number;
+  discNumber: number;
+  previewUrl?: string;
+  popularity?: number;
+  artists: SpotifyArtistRef[];
+  album?: SpotifyAlbum;
+  linked_from?: { id: string; type: string; uri: string; };
+}
 export interface SpotifyArtistRef { id: string; name: string; url: string; }
-export interface SpotifyAlbumRef { id: string; name: string; url: string; images?: { url: string; width?: number; height?: number }[]; }
 export interface SpotifyPlaylist { id: string; name: string; url: string; images: { url: string; width?: number; height?: number }[]; description?: string; ownerName?: string; totalTracks?: number; }
 
 const API_BASE = 'https://api.spotify.com/v1';
@@ -42,6 +54,18 @@ export class SpotifyClient {
   // Inject database cache functions
   setDatabaseCache(db: { getApiCache: (key: string) => Promise<any | null>; setApiCache: (key: string, data: any) => Promise<void> }) {
     this.db = db;
+  }
+
+  // Helper to build per-entity cache keys
+  private entityCacheKey(kind: 'TRACK' | 'ALBUM' | 'ARTIST', id: string) {
+    return `SPOTIFY:${kind}:${id}`;
+  }
+
+  // Extract a Spotify id (22 alnum chars) from a spotify uri or url if present
+  private extractSpotifyId(href?: string) {
+    if (!href || typeof href !== 'string') return undefined;
+    const m = href.match(/(?:open\.spotify\.com\/(?:track|tracks)\/|spotify:track:|spotify:)([A-Za-z0-9]{22})/i);
+    return m ? m[1] : undefined;
   }
 
   setCredentials(clientId: string, clientSecret: string) { this.cfg.clientId = clientId; this.cfg.clientSecret = clientSecret; }
@@ -253,8 +277,164 @@ export class SpotifyClient {
     return { playlist, tracks: collected, raw: raws };
   }
 
-  async getTrack(id: string): Promise<SpotifyTrack> { const json = await this.get('/tracks/' + id, { market: this.cfg.market }); return mapTrack(json); }
-  async getAlbum(id: string): Promise<SpotifyAlbum> { const json = await this.get('/albums/' + id, { market: this.cfg.market }); return mapAlbum(json); }
+  async getTrack(id: string): Promise<SpotifyTrack> {
+    // Check DB for cached track first
+    if (this.db) {
+      try {
+        const key = this.entityCacheKey('TRACK', id);
+        const cached = await this.db.getApiCache(key);
+        if (cached) {
+          // cached is the raw API shape
+          return mapTrack(cached);
+        }
+      } catch (e) {
+        // ignore cache errors and fall back to network
+      }
+    }
+    const json = await this.get('/tracks/' + id, { market: this.cfg.market });
+    // Persist to DB (best-effort)
+    if (this.db && json && json.id) {
+      try {
+        this.db.setApiCache(this.entityCacheKey('TRACK', String(json.id)), json).catch(() => {});
+        // Also persist nested album and artists when available
+        try {
+          if (json.album && json.album.id) {
+            this.db.setApiCache(this.entityCacheKey('ALBUM', String(json.album.id)), json.album).catch(() => {});
+          }
+        } catch {}
+
+        // Persist any linked_from id(s) so lookups by redirected id hit the cache
+        try {
+          const linked = (json as any).linked_from?.id || (json as any).linked_from?.uri || undefined;
+          const linkedId = this.extractSpotifyId(String(linked)) || (typeof linked === 'string' ? linked : undefined);
+          if (linkedId && String(linkedId) !== String(json.id)) {
+            this.db.setApiCache(this.entityCacheKey('TRACK', String(linkedId)), json).catch(() => {});
+          }
+        } catch {}
+      } catch { /* ignore */ }
+    }
+    return mapTrack(json);
+  }
+  /**
+   * Fetch multiple tracks by id. Handles batching (Spotify max 50 ids per request)
+   * Returns an array of SpotifyTrack in the same order as requested (skips missing/nulls).
+   */
+  async getTracks(ids: string[] | string): Promise<SpotifyTrack[]> {
+    const arr = Array.isArray(ids) ? ids.map(String).filter(Boolean) : String(ids || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!arr.length) return [];
+    const MAX = 50;
+    const out: SpotifyTrack[] = [];
+    for (let i = 0; i < arr.length; i += MAX) {
+      const batch = arr.slice(i, i + MAX);
+
+      // If DB present, attempt to read cached entries and skip them from network request
+      const cachedById = new Map<string, SpotifyTrack>();
+      const missingIds: string[] = [];
+      if (this.db) {
+        try {
+          const reads = await Promise.all(batch.map(id => this.db!.getApiCache(this.entityCacheKey('TRACK', id)).catch(() => null)));
+          for (let idx = 0; idx < batch.length; idx++) {
+            const id = batch[idx];
+            const cached = reads[idx];
+            if (cached) {
+              try { cachedById.set(id, mapTrack(cached)); } catch { /* ignore malformed cache */ }
+            } else missingIds.push(id);
+          }
+        } catch (e) {
+          // on cache failure, fall back to requesting all
+          missingIds.push(...batch);
+        }
+      } else {
+        missingIds.push(...batch);
+      }
+
+      // If there are missing ids, call Spotify for those only
+      let apiItems: any[] = [];
+      if (missingIds.length) {
+        try {
+          const json = await this.get('/tracks', { ids: missingIds.join(','), market: this.cfg.market });
+          apiItems = (json.tracks || []).filter(Boolean);
+          // persist each returned track into DB (best-effort), including nested album/artists
+          if (this.db && Array.isArray(apiItems)) {
+            for (const t of apiItems) {
+              try {
+                if (t && t.id) this.db.setApiCache(this.entityCacheKey('TRACK', String(t.id)), t).catch(() => {});
+                try {
+                  if (t && t.album && t.album.id) this.db.setApiCache(this.entityCacheKey('ALBUM', String(t.album.id)), t.album).catch(() => {});
+                } catch {}
+                try {
+                  if (t && Array.isArray(t.artists)) {
+                    for (const a of t.artists) {
+                      if (a && a.id) this.db.setApiCache(this.entityCacheKey('ARTIST', String(a.id)), a).catch(() => {});
+                    }
+                  }
+                } catch {}
+                try {
+                  // linked_from handling: persist under linked id as well
+                  const linked = (t as any).linked_from?.id || (t as any).linked_from?.uri || undefined;
+                  const lid = this.extractSpotifyId(String(linked)) || (typeof linked === 'string' ? linked : undefined);
+                  if (lid && t && t.id && String(lid) !== String(t.id)) {
+                    this.db.setApiCache(this.entityCacheKey('TRACK', String(lid)), t).catch(() => {});
+                  }
+                } catch {}
+              } catch { }
+            }
+          }
+        } catch (e) {
+          console.warn('getTracks batch failed:', e);
+        }
+      }
+
+      // Build lookup: include API results (map) and cachedById entries
+      const byId = new Map<string, SpotifyTrack>();
+      const apiMapped: SpotifyTrack[] = apiItems.map((t: any) => mapTrack(t));
+      for (const t of apiMapped) {
+        if (!t || !t.id) continue;
+        byId.set(String(t.id), t);
+        try {
+          const linked = (t as any).linked_from?.id || (t as any).linked_from?.uri || undefined;
+          if (linked) byId.set(String(linked), t);
+        } catch {}
+      }
+      // add cached entries
+      for (const [id, t] of cachedById.entries()) {
+        byId.set(id, t);
+      }
+
+      // Preserve requested order
+      for (const id of batch) {
+        const t = byId.get(id);
+        if (t) out.push(t);
+      }
+    }
+    return out;
+  }
+  async getAlbum(id: string): Promise<SpotifyAlbum> {
+    if (this.db) {
+      try {
+        const key = this.entityCacheKey('ALBUM', id);
+        const cached = await this.db.getApiCache(key);
+        if (cached) return mapAlbum(cached);
+      } catch (e) {
+        // ignore
+      }
+    }
+    const json = await this.get('/albums/' + id, { market: this.cfg.market });
+    if (this.db && json && json.id) {
+      try {
+        this.db.setApiCache(this.entityCacheKey('ALBUM', String(json.id)), json).catch(() => {});
+        // Persist nested artists from the album record
+        try {
+          if (Array.isArray(json.artists)) {
+            for (const a of json.artists) {
+              if (a && a.id) this.db.setApiCache(this.entityCacheKey('ARTIST', String(a.id)), a).catch(() => {});
+            }
+          }
+        } catch {}
+      } catch { }
+    }
+    return mapAlbum(json);
+  }
   /** Retrieve tracks for an album (auto-paginates until all tracks or maxPages reached). */
   async getAlbumTracks(id: string, opts: { limit?: number; market?: string; fetchAll?: boolean; maxPages?: number } = {}): Promise<{ albumId: string; total: number; items: SpotifyTrack[]; raw: any[] }> {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50); // Spotify max 50 for album tracks
@@ -278,7 +458,22 @@ export class SpotifyClient {
     } while (offset < total && page < maxPages);
     return { albumId: id, total, items, raw: raws };
   }
-  async getArtist(id: string): Promise<SpotifyArtist> { const json = await this.get('/artists/' + id); return mapArtist(json); }
+  async getArtist(id: string): Promise<SpotifyArtist> {
+    if (this.db) {
+      try {
+        const key = this.entityCacheKey('ARTIST', id);
+        const cached = await this.db.getApiCache(key);
+        if (cached) return mapArtist(cached);
+      } catch (e) {
+        // ignore
+      }
+    }
+    const json = await this.get('/artists/' + id);
+    if (this.db && json && json.id) {
+      try { this.db.setApiCache(this.entityCacheKey('ARTIST', String(json.id)), json).catch(() => {}); } catch { }
+    }
+    return mapArtist(json);
+  }
   /** Fetch an artist's top tracks (market required by API; uses configured market). */
   async getArtistTopTracks(id: string, market?: string): Promise<SpotifyTrack[]> {
     const json = await this.get(`/artists/${id}/top-tracks`, { market: market || this.cfg.market });
@@ -506,8 +701,9 @@ function normalizeLocale(l: string) {
 function mapArtist(a: any): SpotifyArtist { return { id: a.id, name: a.name, url: a.external_urls?.spotify, genres: a.genres || [], images: a.images || [], followers: a.followers?.total, popularity: a.popularity }; }
 function mapArtistRef(a: any): SpotifyArtistRef { return { id: a.id, name: a.name, url: a.external_urls?.spotify }; }
 function mapAlbum(a: any): SpotifyAlbum { return { id: a.id, name: a.name, url: a.external_urls?.spotify, albumType: a.album_type, releaseDate: a.release_date, totalTracks: a.total_tracks, images: a.images || [], artists: (a.artists || []).map(mapArtistRef), label: a.label, copyrights: (a.copyrights || []).map((c: any) => c.text).filter(Boolean) }; }
-function mapAlbumRef(a: any): SpotifyAlbumRef { return { id: a.id, name: a.name, url: a.external_urls?.spotify, images: a.images || [] }; }
-function mapTrack(t: any): SpotifyTrack { return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url || undefined, popularity: t.popularity, artists: (t.artists || []).map(mapArtistRef), album: t.album ? mapAlbumRef(t.album) : undefined }; }
+function mapTrack(t: any): SpotifyTrack {
+  return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url || undefined, popularity: t.popularity, artists: (t.artists || []).map(mapArtistRef), album: t.album ? mapAlbum(t.album) : undefined , linked_from: t.linked_from || undefined };
+}
 function mapPlaylist(p: any): SpotifyPlaylist { return { id: p.id, name: p.name, url: p.external_urls?.spotify, images: p.images || [], description: p.description, ownerName: p.owner?.display_name || p.owner?.id, totalTracks: p.tracks?.total }; }
 
 async function safeReadText(res: Response) { try { return await res.text(); } catch { return ''; } }

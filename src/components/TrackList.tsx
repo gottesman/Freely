@@ -2,12 +2,7 @@ import React, { useMemo } from 'react';
 import { useI18n } from '../core/i18n';
 import { usePlaybackSelector, usePlaybackActions } from '../core/playback';
 import type { SpotifyTrack } from '../core/spotify';
-
-// Duration formatting helper (mm:ss)
-function fmt(ms?: number){
-  if(!ms && ms!==0) return '--:--';
-  const total = Math.floor(ms/1000); const m = Math.floor(total/60); const s = total%60; return m+':' + (s<10?'0':'')+s;
-}
+import { fmtMs } from './tabHelpers';
 
 export interface TrackListProps {
   tracks?: SpotifyTrack[];
@@ -71,7 +66,7 @@ export default function TrackList({ tracks, selectedTrackId, playingTrackId, sho
             <span className="t-title" title={tr.name}>{tr.name}</span>
             <span className="t-artist-col" title={tr.artists?.map(a=>a.name).join(', ') || ''}>{tr.artists?.[0]?.name || '—'}</span>
             <div className="tl-actions">
-              <span className="duration">{fmt(tr.durationMs)}</span>
+              <span className="duration">{fmtMs(tr.durationMs)}</span>
               <button
                 type="button"
                 className="queue-track-btn track-action"

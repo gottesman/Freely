@@ -16,14 +16,20 @@ type DBContext = {
   clearCache: () => Promise<void>
   clearLocalData: () => Promise<void>
   saveNow: () => Promise<void>
+  // play history helpers
+  addPlay: (trackId: string, startedAt?: number) => Promise<number>
+  getPlayCountForTrack: (trackId: string) => Promise<number>
+  getRecentPlays: (limit?: number) => Promise<Array<{ id: number; track_id: string; played_at: number }>>
+  getTopPlayed: (limit?: number) => Promise<Array<{ track_id: string; count: number }>>
 }
 
 // Default context values are no-ops, as before.
-const ctx = createContext<DBContext>({ db: null, ready: false, exportJSON: async () => '{}', importJSON: async () => { }, exportDB: async () => null, importDB: async () => { }, getSetting: async () => null, setSetting: async () => { }, getApiCache: async () => null, setApiCache: async () => { }, clearCache: async () => { }, clearLocalData: async () => { }, saveNow: async () => { } })
+const ctx = createContext<DBContext>({ db: null, ready: false, exportJSON: async () => '{}', importJSON: async () => { }, exportDB: async () => null, importDB: async () => { }, getSetting: async () => null, setSetting: async () => { }, getApiCache: async () => null, setApiCache: async () => { }, clearCache: async () => { }, clearLocalData: async () => { }, saveNow: async () => { }, addPlay: async () => 0, getPlayCountForTrack: async () => 0, getRecentPlays: async () => [], getTopPlayed: async () => [] })
 
 const DB_NAME = 'freely-db'
 // Bump this when changing object stores or indexes so onupgradeneeded runs
-const DB_VERSION = 2
+// Bump when changing object stores or indexes so onupgradeneeded runs
+const DB_VERSION = 3
 const STORE_NAMES = ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'api_cache'] as const
 type StoreName = typeof STORE_NAMES[number];
 
@@ -50,6 +56,17 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
           // Use the upgrade transaction's object store; creating a new transaction here can conflict.
           const store = upgradeTx.objectStore('plays');
           store.createIndex('played_at', 'played_at');
+          // index by track id makes counting plays per track efficient
+          store.createIndex('track_id', 'track_id');
+        } else {
+          try {
+            const existingPlays = upgradeTx.objectStore('plays');
+            if (!existingPlays.indexNames.contains('track_id')) {
+              existingPlays.createIndex('track_id', 'track_id');
+            }
+          } catch (e) {
+            // ignore if transaction access fails
+          }
         }
       if (!dbInstance.objectStoreNames.contains('favorites')) {
         dbInstance.createObjectStore('favorites', { keyPath: 'id', autoIncrement: true });
@@ -284,11 +301,96 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
     return Promise.resolve();
   };
 
+  // --- Play history helpers ---
+  // Record that a track started playing at a given timestamp (ms since epoch).
+  const addPlay = (trackId: string, startedAt: number = Date.now()): Promise<number> =>
+    performTx('plays', 'readwrite', async ({ plays }) => {
+      const rec = { track_id: trackId, played_at: startedAt } as any;
+      const key = await promisifyRequest(plays.add(rec) as IDBRequest<number>);
+      return key as number;
+    });
+
+  // Return how many times a track has been played (counts entries with matching track_id)
+  const getPlayCountForTrack = (trackId: string): Promise<number> =>
+    performTx('plays', 'readonly', async ({ plays }) => {
+      // Use the track_id index if present
+      try {
+        const idx = plays.index('track_id');
+        const range = IDBKeyRange.only(trackId);
+        // Count request
+        const cntReq = idx.count(range);
+        const cnt = await promisifyRequest(cntReq as IDBRequest<number>);
+        return cnt || 0;
+      } catch (e) {
+        // Fallback: scan all plays (should be rare)
+        let count = 0;
+        const cursorReq = plays.openCursor();
+        await new Promise<void>((resolve, reject) => {
+          cursorReq.onsuccess = () => {
+            const cur = cursorReq.result;
+            if (cur) {
+              if (cur.value && cur.value.track_id === trackId) count++;
+              cur.continue();
+            } else resolve();
+          };
+          cursorReq.onerror = () => reject(cursorReq.error);
+        });
+        return count;
+      }
+    });
+
+  // Return recent plays ordered by played_at desc. limit optional.
+  const getRecentPlays = (limit: number = 50): Promise<Array<{ id: number; track_id: string; played_at: number }>> =>
+    performTx('plays', 'readonly', async ({ plays }) => {
+      const res: Array<any> = [];
+      // Use played_at index to iterate backward
+      try {
+        const idx = plays.index('played_at');
+        const cursorReq = idx.openCursor(null, 'prev');
+        await new Promise<void>((resolve, reject) => {
+          cursorReq.onsuccess = () => {
+            const cur = cursorReq.result;
+            if (cur) {
+              res.push(cur.value);
+              if (res.length >= limit) return resolve();
+              cur.continue();
+            } else resolve();
+          };
+          cursorReq.onerror = () => reject(cursorReq.error);
+        });
+      } catch (e) {
+        // Fallback: getAll and sort
+        const all = await promisifyRequest(plays.getAll());
+        all.sort((a: any, b: any) => b.played_at - a.played_at);
+        return all.slice(0, limit);
+      }
+      return res;
+    });
+
+  // Return top-played tracks by scanning plays and aggregating counts.
+  // This is a simple in-memory aggregation; for very large play tables you may want an aggregated store.
+  const getTopPlayed = (limit: number = 20): Promise<Array<{ track_id: string; count: number }>> =>
+    performTx('plays', 'readonly', async ({ plays }) => {
+      // Fetch all plays (could be large); we fetch all and then aggregate in JS.
+      const all = await promisifyRequest(plays.getAll()) as any[];
+      const map = new Map<string, number>();
+      for (const p of all) {
+        if (!p || !p.track_id) continue;
+        const key = String(p.track_id);
+        map.set(key, (map.get(key) || 0) + 1);
+      }
+      const arr = Array.from(map.entries()).map(([track_id, count]) => ({ track_id, count }));
+      arr.sort((a, b) => b.count - a.count);
+      return arr.slice(0, limit);
+    });
+
 
   const value: DBContext = {
     db, ready, exportJSON, importJSON, exportDB, importDB,
     getSetting, setSetting, getApiCache, setApiCache,
-    clearCache, clearLocalData, saveNow
+  clearCache, clearLocalData, saveNow,
+  // play history
+  addPlay, getPlayCountForTrack, getRecentPlays, getTopPlayed
   }
 
   return <ctx.Provider value={value}>{children}</ctx.Provider>

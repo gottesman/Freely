@@ -97,10 +97,18 @@ async fn server_status(paths: State<'_, PathState>) -> Result<ServerPidInfo, Str
 }
 
 #[tauri::command]
-async fn torrent_get_files(id: String, timeout_ms: Option<u64>, paths: State<'_, PathState>) -> Result<serde_json::Value, String> {
+async fn torrent_get_files(
+    id: String,
+    timeout_ms: Option<u64>,
+    paths: State<'_, PathState>
+) -> Result<serde_json::Value, serde_json::Value> {
     let timeout = timeout_ms.unwrap_or(20000);
+
     if !paths.server_get_files.exists() {
-        return Err("torrent-get-files helper missing".into());
+        return Err(serde_json::json!({
+            "error": "path error",
+            "msg": paths.server_get_files.display().to_string()
+        }));
     }
 
     let output = Command::new("node")
@@ -108,17 +116,29 @@ async fn torrent_get_files(id: String, timeout_ms: Option<u64>, paths: State<'_,
         .arg(&id)
         .arg(timeout.to_string())
         .output()
-        .map_err(|e| format!("failed to execute node helper: {}", e))?;
+        .map_err(|e| serde_json::json!({
+            "error": "node error",
+            "message": e.to_string()
+        }))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("torrent helper failed: {}", stderr));
+        return Err(serde_json::json!({
+            "error": "no success",
+            "message": stderr.trim()
+        }));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str::<serde_json::Value>(&stdout)
-        .map_err(|e| format!("invalid JSON from helper: {} (out='{}')", e, stdout))
+    serde_json::from_str::<serde_json::Value>(&stdout).map_err(|e| {
+        serde_json::json!({
+            "error": "bad json",
+            "message": e.to_string(),
+            "stdout": stdout
+        })
+    })
 }
+
 
 #[tauri::command]
 async fn server_start(paths: State<'_, PathState>) -> Result<ServerPidInfo, String> {
@@ -230,18 +250,62 @@ async fn torrent_list_scrapers(paths: State<'_, PathState>) -> Result<serde_json
     Ok(serde_json::json!([]))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TorrentSearchPayload {
+    query: Option<String>,
+    album_title: Option<String>,
+    artist: Option<String>,
+    year: Option<String>,
+    page: Option<u64>,
+}
+
 #[tauri::command]
-async fn torrent_search(query: String, page: Option<u64>, paths: State<'_, PathState>) -> Result<serde_json::Value, String> {
-    let page = page.unwrap_or(1);
+async fn torrent_search(
+    payload: TorrentSearchPayload,
+    paths: State<'_, PathState>,
+) -> Result<serde_json::Value, String> {
+    let page = payload.page.unwrap_or(1);
     let status = server_status(paths).await?;
     if let Some(port) = status.port {
-        let url = format!("http://localhost:{}/api/torrent-search?q={}&page={}", port, urlencoding::encode(&query), page);
+        // Build query string from provided fields (skip empty)
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(q) = payload.query.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            params.push(format!("q={}", urlencoding::encode(q)));
+        }
+        if let Some(album) = payload
+            .album_title
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            params.push(format!("albumTitle={}", urlencoding::encode(album)));
+        }
+        if let Some(artist) = payload
+            .artist
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            params.push(format!("artist={}", urlencoding::encode(artist)));
+        }
+        if let Some(year) = payload.year.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            params.push(format!("year={}", urlencoding::encode(year)));
+        }
+
+        params.push(format!("page={}", page));
+        let qs = params.join("&");
+        let url = format!("http://localhost:{}/api/torrent-search?{}", port, qs);
+
         let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
         let body = resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())?;
         return Ok(body);
     }
+
     Err("Torrent server not running".into())
 }
+
 
 #[tauri::command]
 async fn charts_get_weekly_tops(opts: serde_json::Value) -> Result<serde_json::Value, String> {

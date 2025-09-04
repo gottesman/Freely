@@ -1,14 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import InfoHeader from './InfoHeader';
 import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
+import { fmtMs, useHeroImage } from './tabHelpers';
 
-function fmt(ms?: number){
-  if(!ms && ms!==0) return '--:--';
-  const total = Math.floor(ms/1000); const m = Math.floor(total/60); const s = total%60; return m+':' + (s<10?'0':'')+s;
-}
+// use fmtMs from shared helpers
 
 export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }: { albumId?: string, onSelectArtist?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
   const { t } = useI18n();
@@ -83,59 +82,58 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
     return ()=>{ cancelled = true; };
   }, [album?.artists?.[0]?.id, spotifyClient]);
 
-  const heroImage = (window as any).imageRes?.(album?.images, 0);
+  const heroImage = useMemo(() => useHeroImage(album?.images, 0), [album?.images]);
   const releaseYear = album?.releaseDate ? album.releaseDate.split('-')[0] : undefined;
-  const genres = primaryArtist?.genres?.slice(0,3) || [];
+  const genres = useMemo(() => primaryArtist?.genres ?? [], [primaryArtist?.genres]);
   // artist col width handled by TrackList
+
+  const headerActions = [
+    <button key="add" className="np-icon" aria-label={t('player.addPlaylist')} disabled><span className="material-symbols-rounded">add_circle</span></button>,
+    <button
+      key="play"
+      className="np-icon"
+      aria-label={t('player.playAlbum')}
+      disabled={!tracks?.length}
+      onClick={() => {
+        if (!tracks?.length) return;
+        const currentSegment = (queueIds || []).slice(currentIndex || 0);
+        const trackIds = tracks.map((t) => t.id).filter(Boolean);
+        const dedupSet = new Set(trackIds);
+        const filteredCurrent = currentSegment.filter((id) => !dedupSet.has(id));
+        const newQueue = [...trackIds, ...filteredCurrent];
+        setQueue(newQueue, 0);
+      }}
+    ><span className="material-symbols-rounded filled">play_arrow</span></button>,
+    <button
+      key="queue"
+      className="np-icon"
+      aria-label={t('player.addToQueue')}
+      disabled={!tracks?.length}
+      onClick={() => {
+        if (!tracks?.length) return;
+        const trackIds = tracks.map((t) => t.id).filter(Boolean);
+        const existing = new Set(queueIds);
+        const toAppend = trackIds.filter((id) => !existing.has(id));
+        if (toAppend.length) enqueue(toAppend as any);
+      }}
+    ><span className="material-symbols-rounded">queue</span></button>
+  ];
+
+  const metaNode = album ? (
+    <div className="np-meta-line">
+      <span className="np-artists">
+        {album.artists.map((a, i) => (
+          <React.Fragment key={a.id || a.name}>{i > 0 && <span className="np-sep">, </span>}<button type="button" className="np-link artist" onClick={() => { if (onSelectArtist && a.id) onSelectArtist(a.id); else if (a.url) window.open(a.url, '_blank'); }}>{a.name}</button></React.Fragment>
+        ))}
+      </span>
+      {releaseYear && <><span className="np-dot" /><span className="np-album-year">{releaseYear}</span></>}
+      <span className="np-dot" /><span className="np-album-trackcount">{t('np.tracks', undefined, { count: album.totalTracks })}</span>
+    </div>
+  ) : (albumId ? t('np.loading') : t('np.noTrack'));
 
   return (
     <section className="now-playing" aria-labelledby="album-heading">
-      <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
-        <div className="np-hero-inner">
-          <h1 id="album-heading" className="np-title">{ album ? album.name : (albumId ? t('np.loading') : t('np.noTrack')) }</h1>
-          {album && (
-            <div className="np-meta-line">
-              <span className="np-artists">
-                {album.artists.map((a,i)=>(<React.Fragment key={a.id||a.name}>{i>0 && <span className="np-sep">, </span>}<button type="button" className="np-link artist" onClick={()=> { if(onSelectArtist && a.id) onSelectArtist(a.id); else if(a.url) window.open(a.url,'_blank'); }}>{a.name}</button></React.Fragment>))}
-              </span>
-              {releaseYear && <><span className="np-dot" /><span className="np-album-year">{releaseYear}</span></>}
-              <span className="np-dot" /><span className="np-album-trackcount">{t('np.tracks', undefined, { count: album.totalTracks })}</span>
-            </div>
-          )}
-          <div className="np-extras">
-            <div className="np-tags" aria-label={t('np.genresTags')}>{genres.length? genres.map(g=> <span key={g} className="tag">{g}</span>) : <span className="tag">—</span>}</div>
-            <div className="np-actions" aria-label={t('np.albumActions','Album actions')}>
-                <button className="np-icon" aria-label={t('player.addPlaylist')} disabled><span className="material-symbols-rounded">add_circle</span></button>
-                <button
-                    className="np-icon"
-                    aria-label={t('player.playAlbum')}
-                    disabled={!tracks?.length}
-                    onClick={()=>{
-                        if(!tracks?.length) return;
-                        const currentSegment = (queueIds || []).slice(currentIndex || 0);
-                        const trackIds = tracks.map(t=> t.id).filter(Boolean);
-                        const dedupSet = new Set(trackIds);
-                        const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));
-                        const newQueue = [...trackIds, ...filteredCurrent];
-                        setQueue(newQueue, 0);
-                    }}
-                ><span className="material-symbols-rounded filled">play_arrow</span></button>
-                <button
-                    className="np-icon"
-                    aria-label={t('player.addToQueue')}
-                    disabled={!tracks?.length}
-                    onClick={()=>{
-                        if(!tracks?.length) return;
-                        const trackIds = tracks.map(t=> t.id).filter(Boolean);
-                        const existing = new Set(queueIds);
-                        const toAppend = trackIds.filter(id => !existing.has(id));
-                        if(toAppend.length) enqueue(toAppend);
-                    }}
-                ><span className="material-symbols-rounded">queue</span></button>
-            </div>
-          </div>
-        </div>
-      </header>
+      <InfoHeader id="album-heading" title={album ? album.name : metaNode} meta={album ? metaNode : undefined} tags={genres} actions={headerActions} heroImage={heroImage} ariaActionsLabel={t('np.albumActions','Album actions')} />
       <div className="np-section np-album-tracks" aria-label={t('np.albumTrackList','Album track list')}>
         <h4 className="np-sec-title">{t('np.tracksList','Tracks')}</h4>
         {loadingTracks && <p className="np-hint">{t('np.loadingTracks')}</p>}

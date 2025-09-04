@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import InfoHeader from './InfoHeader';
 import { useI18n } from '../core/i18n';
 import { getWeeklyTops } from '../core/homeTops';
 import useFollowedArtists from '../core/artists';
 import { useSpotifyClient } from '../core/spotify-client';
 import { usePlaybackActions } from '../core/playback';
+import { useDB } from '../core/dbIndexed';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers';
 
 type TopArtist = { rank?: number | null; id?: string | null; name?: string; image?: string | null };
@@ -20,6 +22,8 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
   const [tops, setTops] = useState<{ songs: TopSong[]; albums: TopAlbum[]; artists: TopArtist[] }>({ songs: [], albums: [], artists: [] });
   const [latestReleases, setLatestReleases] = useState<TopAlbum[]>([]);
   const [recommended, setRecommended] = useState<TopSong[]>([]);
+  const { getTopPlayed } = useDB();
+  const [mostPlayed, setMostPlayed] = useState<Array<{ track_id: string; count: number; info?: any }>>([]);
 
   // lightweight mounted ref to avoid stale setState
   const mountedRef = useRef(true);
@@ -54,10 +58,45 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
     };
   }, [spotifyClient]);
 
-  // ---- Weekly Tops ----
+  // ---- Most played and Weekly Tops ----
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      try {
+        const tops = await getTopPlayed(10);
+        if (cancelled || !mountedRef.current) return;
+        if (!tops || !tops.length) return;
+        // fetch metadata for these tracks
+        const ids = tops.map(t => t.track_id).filter(Boolean);
+        let tracksData: any[] = [];
+        try {
+          if (ids.length && spotifyClient && typeof (spotifyClient as any).getTracks === 'function') {
+            const resp = await (spotifyClient as any).getTracks(ids);
+            tracksData = Array.isArray(resp) ? resp : (resp?.tracks || []);
+            console.log('Fetched tracks data for most played', {ids,tracksData} );
+          }
+        } catch { /* ignore metadata fetch failures */ }
+        const mapped = tops.map(t => ({
+          ...t,
+          info: tracksData.find((tr: any) => {
+            try {
+              if (!tr) return false;
+              if (String(tr.id) === String(t.track_id)) return true;
+              const linked = tr.linked_from || tr.linked_from || null;
+              if (linked) {
+                if (linked.id && String(linked.id) === String(t.track_id)) return true;
+                if (linked.uri && String(linked.uri).includes(String(t.track_id))) return true;
+              }
+            } catch (e) {
+              // ignore and continue
+            }
+            return false;
+          })
+        }));
+        if (!cancelled && mountedRef.current) setMostPlayed(mapped);
+      } catch (e) {
+        // ignore
+      }
       try {
         const res = await getWeeklyTops({ limit: 20 });
         if (cancelled || !mountedRef.current) return;
@@ -273,11 +312,13 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
   const refLatest = useRef<HTMLDivElement | null>(null);
   const refRecommended = useRef<HTMLDivElement | null>(null);
   const refTrending = useRef<HTMLDivElement | null>(null);
+  const refMostPlayed = useRef<HTMLDivElement | null>(null);
   const refArtists = useRef<HTMLDivElement | null>(null);
 
   const scLatest = useMemo(() => makeScroller(refLatest), [makeScroller]);
   const scRecommended = useMemo(() => makeScroller(refRecommended), [makeScroller]);
   const scTrending = useMemo(() => makeScroller(refTrending), [makeScroller]);
+  const scMostPlayed = useMemo(() => makeScroller(refMostPlayed), [makeScroller]);
   const scArtists = useMemo(() => makeScroller(refArtists), [makeScroller]);
 
   const scrollTolerance = 6;
@@ -364,7 +405,7 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
 
   // overflow class management for media rows (attach listeners & ResizeObserver)
   useEffect(() => {
-    const rows: Array<React.RefObject<HTMLDivElement>> = [refLatest, refRecommended, refTrending, refArtists];
+    const rows: Array<React.RefObject<HTMLDivElement>> = [refLatest, refRecommended, refTrending, refArtists, refMostPlayed];
     const observers: ResizeObserver[] = [];
     const cleanups: Array<() => void> = [];
 
@@ -408,19 +449,19 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
 
   return (
     <section className="home-page" aria-label={t('home.pageLabel', 'Browse and personalized content')}>
-      {/* Hero / Welcome */}
-      <div className="home-hero" style={{ ['--hero-image' as any]: `url(..)` }}>
-        <div className="home-hero-overlay" />
-        <div className="home-hero-body">
-          <h1 className="home-hero-title">{t('home.welcome')}</h1>
-          <p className="home-hero-sub">{t('home.subtitle')}</p>
-          <div className="home-hero-actions">
-            <button className="np-icon" type="button" aria-label={t('home.cta.playDailyMix')}><span className="material-symbols-rounded filled">play_arrow</span></button>
-            <button className="np-icon" type="button" aria-label={t('home.cta.shuffleAll')}><span className="material-symbols-rounded filled">shuffle</span></button>
-            <button className="np-icon" type="button" aria-label={t('home.cta.openQueue')}><span className="material-symbols-rounded filled">queue_music</span></button>
-          </div>
-        </div>
-      </div>
+      {/* Hero / Welcome as InfoHeader */}
+      <InfoHeader
+        id="home-hero"
+        title={<><span className="home-hero-title">{t('home.welcome')}</span><p className="home-hero-sub">{t('home.subtitle')}</p></>}
+        meta={null}
+        initialShrink={1}
+        titleColor="var(--accent)"
+        actions={[
+          <button key="play" className="np-icon" type="button" aria-label={t('home.cta.playDailyMix')}><span className="material-symbols-rounded filled">play_arrow</span></button>,
+          <button key="shuffle" className="np-icon" type="button" aria-label={t('home.cta.shuffleAll')}><span className="material-symbols-rounded filled">shuffle</span></button>,
+          <button key="queue" className="np-icon" type="button" aria-label={t('home.cta.openQueue')}><span className="material-symbols-rounded filled">queue_music</span></button>
+        ]}
+      />
 
       {/* Latest Releases */}
       <HomeSection id="latest" title={t('home.section.latest')} more>
@@ -509,6 +550,36 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
             ))}
           </div>
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scArtists.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
+        </div>
+      </HomeSection>
+
+      {/* Most Played */}
+      <HomeSection id="most-played" title={t('home.section.mostPlayed' , 'Your most played')} more>
+        <div className="media-row-wrap">
+          <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scMostPlayed.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
+          <div ref={refMostPlayed} className="media-row scroll-x dense">
+            {mostPlayed && mostPlayed.length ? (
+              mostPlayed.map((m, i) => {
+                const info = m.info;
+                const name = info?.name || 'Unknown';
+                const img = info?.album?.images ? api.imageRes(info.album.images, 1) : null;
+                const artists = (info?.artists || []).map((a: any) => a.name).join(', ');
+                return (
+                  <div key={String(m.track_id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (onSelectTrack && m.track_id) onSelectTrack(String(m.track_id)); }}>
+                    <div className="media-cover square" aria-hidden="true">
+                      <div className="media-cover-inner"><img src={img || ''} alt={name} /></div>
+                      {renderCollectionPlay('track', m.track_id ?? undefined)}
+                    </div>
+                    <h3 className="media-title">{name}</h3>
+                    <p className="media-meta">{artists}</p>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
+            )}
+          </div>
+          <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scMostPlayed.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
       </HomeSection>
 

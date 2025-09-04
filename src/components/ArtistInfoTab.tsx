@@ -1,16 +1,14 @@
-import React, { useEffect, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { useI18n } from '../core/i18n';
-import SpotifyClient, { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
+import { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import GeniusClient from '../core/musicdata';
 import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
+import InfoHeader from './InfoHeader';
 import useFollowedArtists from '../core/artists';
 
-function fmt(ms?: number){
-  if(!ms && ms!==0) return '--:--';
-  const total = Math.floor(ms/1000); const m = Math.floor(total/60); const s = total%60; return m+':' + (s<10?'0':'')+s;
-}
+import { fmtMs, useHeroImage } from './tabHelpers';
 
 export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylist, onSelectTrack }: { artistId?: string, onSelectAlbum?: (id: string)=>void, onSelectPlaylist?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
   const { t } = useI18n();
@@ -139,10 +137,10 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
     return ()=> { cancelled = true; };
   }, [artist?.name, lastBioArtist]);
 
-  const heroImage = useMemo(()=> {
-    return (window as any).imageRes?.(artist?.images, 0) || '';
-  }, [artist?.images]);
+  const heroImage = useMemo(() => useHeroImage(artist?.images, 0), [artist?.images]);
   // Column width handled within TrackList
+
+  const genres = useMemo(() => artist?.genres ?? [], [artist?.genres]);
 
   const playTopTracksNow = () => {
     if(!topTracks?.length) return;
@@ -259,24 +257,21 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
     }
   };
 
+  const headerActions = [
+    <button key="follow" className={`np-icon ${artist && localFollowing ? 'active' : ''}`} aria-pressed={artist ? localFollowing : false} aria-label={t('np.like','Like')} onClick={onToggleFollow}><span className={`material-symbols-rounded${artist && localFollowing ? ' filled' : ''}`}>favorite</span></button>
+  ];
+
   return (
     <section className="now-playing" aria-labelledby="artist-heading">
-      <header className="np-hero" style={{ ['--hero-image' as any]: `url(${heroImage})` }}>
-        <div className="np-hero-inner">
-          <h1 id="artist-heading" className="np-title">{ artist ? artist.name : (artistId ? t('np.loading'): t('np.noArtist')) }</h1>
-          {artist && (
-            <div className="np-meta-line">
-              {artist.followers !== undefined && <><span className="np-album-trackcount">{Intl.NumberFormat().format(artist.followers)} {t('np.followers', undefined, { count: '' }).replace('{count}','')}</span></>}
-            </div>
-          )}
-          <div className="np-extras">
-            <div className="np-tags" aria-label={t('np.genresTags')}>{artist?.genres?.length? artist.genres.slice(0,5).map(g=> <span key={g} className="tag">{g}</span>) : <span className="tag">—</span>}</div>
-            <div className="np-actions" aria-label={t('np.artistActions','Artist actions')}>
-              <button className={`np-icon ${artist && localFollowing ? 'active' : ''}`} aria-pressed={artist ? localFollowing : false} aria-label={t('np.like','Like')} onClick={onToggleFollow}><span className={`material-symbols-rounded${artist && localFollowing ? ' filled' : ''}`}>favorite</span></button>
-            </div>
-          </div>
-        </div>
-      </header>
+      <InfoHeader
+        id="artist-heading"
+        title={artist ? artist.name : (artistId ? t('np.loading') : t('np.noArtist'))}
+        meta={artist && artist.followers !== undefined ? <span className="np-album-trackcount">{Intl.NumberFormat().format(artist.followers)} {t('np.followers', undefined, { count: '' }).replace('{count','')}</span> : undefined}
+        tags={genres}
+        actions={headerActions}
+        heroImage={heroImage}
+        ariaActionsLabel={t('np.artistActions','Artist actions')}
+      />
 
       {/* Top Tracks */}
       <div className="np-section" aria-label={t('np.topTracks','Top tracks')}>

@@ -4,7 +4,7 @@ This document provides a guide for AI coding agents to effectively contribute to
 
 ### Big Picture
 
-Freely is a decentralized, peer-to-peer music player built with Tauri, React, and TypeScript. It's designed to be a web-first application with a focus on local-first data ownership and peer-to-peer streaming.
+Freely is a decentralized, peer-to-peer music player built with Tauri v2, React, and TypeScript. It's designed to be a web-first application with a focus on local-first data ownership and peer-to-peer streaming.
 
 The application is composed of three main parts:
 
@@ -61,3 +61,14 @@ This will create a distributable package for your operating system in the `build
 *   `src-tauri/tauri.conf.json`: The configuration file for the Tauri application.
 *   `src-tauri/src/main.rs`: The main Rust file for the Tauri application.
 *   `https://schema.tauri.app/config/2`: The schema for the Tauri configuration file.
+
+## Coding Guidelines
+
+When contributing to the Freely codebase, please follow these guidelines:
+*   **Functionality**: Ensure that any new features or bug fixes are thoroughly tested and work as expected. Write unit tests for new functionality and ensure that existing tests pass.
+*   **Performance**: Write efficient code that minimizes resource usage and optimizes performance. Avoid unnecessary computations and memory allocations, as well as duplicated code. Refactor existing code to improve performance where applicable.
+*   **Security**: Follow best practices for security, especially when handling user data or integrating with external APIs. Validate and sanitize all inputs, and avoid exposing sensitive information.
+*   **Error Handling**: Implement robust error handling to gracefully handle unexpected situations. Use try-catch blocks where appropriate and provide meaningful error messages.
+*   **Code Style**: Follow the existing code style and conventions used in the project. If the code style or conventions needs improving, ask before aplying thosse changes, and effectivley apply those new styles and conventions onto the rest of the project. Use Prettier for formatting and ESLint for linting.
+*   **Documentation**: Write clear and concise comments for complex logic and functions. Update the documentation if you make changes that affect the functionality or usage of the code.
+*   **Commit Messages**: Write meaningful commit messages that describe the changes made. Use the present tense and be concise.
