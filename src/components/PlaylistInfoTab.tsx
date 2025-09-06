@@ -3,7 +3,7 @@ import { useI18n } from '../core/i18n';
 import { SpotifyTrack, SpotifyPlaylist } from '../core/spotify'
 import { useSpotifyClient } from '../core/spotify-client'
 import { usePlaylists } from '../core/playlists';
-import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
+import { usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 import InfoHeader from './InfoHeader';
 import { usePrompt } from '../core/PromptContext';
@@ -11,12 +11,11 @@ import { useAlerts } from '../core/alerts';
 
 import { fmtMs, fmtTotalMs, useHeroImage } from './tabHelpers';
 
-export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelectTrack }: { playlistId?: string; onSelectPlaylist?: (id: string) => void; onSelectTrack?: (id: string) => void }){
+export default function PlaylistInfoTab({ playlistId }: { playlistId?: string }){
   const { t } = useI18n();
   const [playlist, setPlaylist] = useState<SpotifyPlaylist|undefined>();
   const [tracks, setTracks] = useState<SpotifyTrack[]|undefined>();
   const [loading, setLoading] = useState(false);
-  const { setQueue, enqueue } = usePlaybackActions();
   const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
   const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
   const { playlists, getPlaylistTracks, getPlaylistTrackIds, updatePlaylist, deletePlaylist, removeTrack, refresh, createPlaylistWithTracks } = usePlaylists();
@@ -219,8 +218,8 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
         const trackObjects = tracks || [];
         try {
           const newId = await createPlaylistWithTracks(name, trackObjects);
-          if(newId && onSelectPlaylist) {
-            setTimeout(() => { onSelectPlaylist(`local:${newId}`); }, 50);
+          if(newId) {
+            try { window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId: `local:${newId}`, source:'playlist-clone' } })); } catch(_){}
           }
           pushAlert(t('pl.created','Playlist created'), 'info');
         } catch(error) {
@@ -274,7 +273,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
       const dedupSet = new Set(trackIds);
       const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));
       const newQueue = [...trackIds, ...filteredCurrent];
-      setQueue(newQueue, 0);
+  window.dispatchEvent(new CustomEvent('freely:playback:setQueue',{ detail:{ queueIds:newQueue, startIndex:0 } }));
     }}>
       <span className="material-symbols-rounded filled" aria-hidden="true">play_arrow</span>
     </button>
@@ -286,7 +285,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
       const trackIds = tracks.map(t=> t.id).filter(Boolean);
       const existing = new Set(queueIds);
       const toAppend = trackIds.filter(id => !existing.has(id));
-      if(toAppend.length) enqueue(toAppend);
+  if(toAppend.length) window.dispatchEvent(new CustomEvent('freely:playback:enqueue',{ detail:{ ids: toAppend } }));
     }}>
       <span className="material-symbols-rounded" aria-hidden="true">queue</span>
     </button>
@@ -312,8 +311,7 @@ export default function PlaylistInfoTab({ playlistId, onSelectPlaylist, onSelect
             tracks={tracks} 
             playingTrackId={(queueIds || [])[currentIndex || 0]} 
             showPlayButton
-            onSelectTrack={onSelectTrack}
-            onDeleteTrack={isLocalPlaylist ? handleDeleteTrack : undefined}
+            onDeleteTrack={isLocalPlaylist}
           />
         )}
       </div>

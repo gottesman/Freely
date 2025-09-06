@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode, useMemo } from 'react';
+import React, { createContext, useEffect, useState, ReactNode } from 'react';
 import SpotifyClient, { SpotifyTrack } from './spotify';
 import { createCachedSpotifyClient } from './spotify-client';
 // This import correctly points to the new IndexedDB provider.
 import { useDB } from './dbIndexed';
+import AudioSourceProvider, { resolveAudioSource, AudioSourceSpec } from './audioSource';
 
 interface PlaybackContextValue {
   currentTrack?: SpotifyTrack;
@@ -24,12 +25,11 @@ interface PlaybackContextValue {
   playNow: (id: string | string[]) => void;
   trackCache: Record<string, SpotifyTrack | undefined>;
   reorderQueue: (nextIds: string[]) => void;
+  removeFromQueue: (id: string) => void;
 }
 
 const PlaybackContext = createContext<PlaybackContextValue | undefined>(undefined);
 
-// --- Playback actions context (stable callbacks) ---
-const PlaybackActionsContext = createContext<PlaybackContextValue | undefined>(undefined);
 
 // --- Selector pub/sub for fine-grained subscriptions ---
 type PlaybackStateSnapshot = {
@@ -99,6 +99,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [queueIds, setQueueIds] = useState<string[]>(TEST_TRACK_IDS);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [trackCache, setTrackCache] = useState<Record<string, SpotifyTrack | undefined>>({});
+  const [playbackUrlCache, setPlaybackUrlCache] = useState<Record<string, string | undefined>>({});
   
   const { getApiCache, setApiCache, ready } = useDB();
   const { addPlay, getPlayCountForTrack } = useDB();
@@ -120,6 +121,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
       setCurrentTrack(track);
       setTrackCache(c => ({ ...c, [id]: track }));
+      // best-effort: resolve a playback URL from known metadata (custom source)
+      (async () => {
+        try {
+          const sourceMeta = (track as any).source;
+          if (sourceMeta && sourceMeta.type && sourceMeta.value) {
+            const spec: AudioSourceSpec = { type: sourceMeta.type, value: sourceMeta.value, meta: sourceMeta.meta };
+            const url = await resolveAudioSource(spec);
+            setPlaybackUrlCache(p => ({ ...p, [id]: url }));
+            return;
+          }
+        } catch (e) {
+          // ignore resolution errors
+        }
+      })();
     } catch (e: any) {
       setError(e?.message || String(e));
       setCurrentTrack(undefined);
@@ -170,6 +185,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             let t = await spotifyClient.getTrack(id);
             if(!cancelled) setTrackCache(c => ({ ...c, [id]: t }));
           } catch { /* ignore prefetch errors */ }
+        }
+        // if we have a cached track object and no playback URL yet, try to resolve
+        if(trackCache[id] && !playbackUrlCache[id]){
+          try {
+            const tr = trackCache[id] as any;
+            const preview = tr?.preview_url;
+            if(preview){
+              const url = await resolveAudioSource({ type: 'http', value: preview });
+              setPlaybackUrlCache(p => ({ ...p, [id]: url }));
+            }
+          } catch {}
         }
       }
     })();
@@ -239,6 +265,33 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if(newIndex !== -1) setCurrentIndex(newIndex);
   }
 
+  function removeFromQueue(id: string){
+    if(!id) return;
+    setQueueIds(q => {
+      const idx = q.indexOf(id);
+      if(idx === -1) return q; // nothing
+      const next = q.filter(t => t !== id);
+      if(!next.length){
+        // queue empty
+        setCurrentIndex(0);
+        setTrackId('');
+        setCurrentTrack(undefined);
+        return [];
+      }
+      if(trackId === id){
+        // choose successor or last element
+        const newIndex = idx < next.length ? idx : next.length - 1;
+        setCurrentIndex(newIndex);
+        setTrackId(next[newIndex]);
+      } else {
+        // Ensure currentIndex remains correct relative to new queue ordering
+        const newCurIdx = next.indexOf(trackId || '');
+        if(newCurIdx !== -1) setCurrentIndex(newCurIdx);
+      }
+      return next;
+    });
+  }
+
   const value: PlaybackContextValue = {
     currentTrack,
     loading,
@@ -256,22 +309,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playTrack,
     playNow,
     trackCache,
-    reorderQueue
+  reorderQueue,
+  removeFromQueue
   };
 
   // Memoize actions object so its identity is stable for action-only consumers
-  const actions = useMemo(() => ({
-    setTrackId,
-    refresh: () => fetchTrack(trackId),
-    setQueue,
-    enqueue,
-    next,
-    prev,
-    playAt,
-    playTrack,
-    playNow,
-    reorderQueue
-  }), [setTrackId, setQueue, enqueue, next, prev, playAt, playTrack, playNow, reorderQueue, trackId]);
+  // Actions object removed with legacy hook API (usePlaybackActions) deprecation.
 
   // Keep a snapshot and notify selector subscribers when relevant state changes
   useEffect(() => {
@@ -280,17 +323,69 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     notifyPlaybackSubscribers(snap);
   }, [currentTrack, loading, error, trackId, queueIds, currentIndex, trackCache]);
 
-  return (
-    <PlaybackActionsContext.Provider value={actions as any}>
-      <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>
-    </PlaybackActionsContext.Provider>
-  );
-}
+  // --- Custom Event Bridge (event-driven playback actions) ---
+  useEffect(() => {
+    function onSetQueue(ev: Event) {
+      const d = (ev as CustomEvent).detail || {};
+      if(Array.isArray(d.queueIds)) setQueue(d.queueIds, d.startIndex ?? 0);
+    }
+    function onEnqueue(ev: Event) {
+      const d = (ev as CustomEvent).detail || {};
+      const ids: string[] = Array.isArray(d.ids) ? d.ids : (d.id ? [d.id] : []);
+      if(ids.length) enqueue(ids);
+    }
+    function onPlayAt(ev: Event) {
+      const d = (ev as CustomEvent).detail || {};
+      if(typeof d.index === 'number') playAt(d.index);
+    }
+    function onPlayTrack(ev: Event) {
+      const d = (ev as CustomEvent).detail || {};
+      if(d.id) playTrack(String(d.id));
+    }
+    function onPlayNow(ev: Event) {
+      const d = (ev as CustomEvent).detail || {};
+      const ids: string[] = Array.isArray(d.ids) ? d.ids : (d.id ? [d.id] : []);
+      if(ids.length) playNow(ids);
+    }
+    function onReorder(ev: Event) {
+      const d = (ev as CustomEvent).detail || {};
+      if(Array.isArray(d.queueIds)) reorderQueue(d.queueIds);
+    }
+    function onNext() { next(); }
+    function onPrev() { prev(); }
+    function onRemoveTrack(ev: Event){
+      const d = (ev as CustomEvent).detail || {};
+      const id = d.id || d.trackId;
+      if(id) removeFromQueue(String(id));
+    }
 
-export function usePlaybackActions() {
-  const ctx = useContext(PlaybackActionsContext) as any;
-  if (!ctx) throw new Error('usePlaybackActions must be used within PlaybackProvider');
-  return ctx;
+    window.addEventListener('freely:playback:setQueue', onSetQueue as any);
+    window.addEventListener('freely:playback:enqueue', onEnqueue as any);
+    window.addEventListener('freely:playback:playAt', onPlayAt as any);
+    window.addEventListener('freely:playback:playTrack', onPlayTrack as any);
+    window.addEventListener('freely:playback:playNow', onPlayNow as any);
+    window.addEventListener('freely:playback:reorderQueue', onReorder as any);
+    window.addEventListener('freely:playback:next', onNext as any);
+    window.addEventListener('freely:playback:prev', onPrev as any);
+    window.addEventListener('freely:playback:removeTrack', onRemoveTrack as any);
+    return () => {
+      window.removeEventListener('freely:playback:setQueue', onSetQueue as any);
+      window.removeEventListener('freely:playback:enqueue', onEnqueue as any);
+      window.removeEventListener('freely:playback:playAt', onPlayAt as any);
+      window.removeEventListener('freely:playback:playTrack', onPlayTrack as any);
+      window.removeEventListener('freely:playback:playNow', onPlayNow as any);
+      window.removeEventListener('freely:playback:reorderQueue', onReorder as any);
+      window.removeEventListener('freely:playback:next', onNext as any);
+      window.removeEventListener('freely:playback:prev', onPrev as any);
+      window.removeEventListener('freely:playback:removeTrack', onRemoveTrack as any);
+    };
+  }, [setQueue, enqueue, playAt, playTrack, playNow, reorderQueue, next, prev, removeFromQueue]);
+
+  return (
+    <AudioSourceProvider>
+      <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>
+    </AudioSourceProvider>
+  );
 }
 export interface TrackData {
   id: string;

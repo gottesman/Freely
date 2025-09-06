@@ -1,8 +1,6 @@
 import React, { useState, useMemo, useCallback, MouseEvent } from 'react';
 import '../styles/search-results.css';
 import { useI18n } from '../core/i18n';
-import { usePlaybackActions } from '../core/playback';
-import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers';
 import InfoHeader from './InfoHeader';
 
@@ -48,10 +46,6 @@ interface SearchResultsProps {
     albums?: Album[];
     playlists?: Playlist[];
   };
-  onSelectArtist?: (id: string) => void;
-  onSelectAlbum?: (id: string) => void;
-  onSelectPlaylist?: (id: string) => void;
-  onSelectTrack?: (id: string) => void;
   onMoreClick?: (id: string) => void;
 }
 
@@ -194,10 +188,12 @@ const SongTableRow: React.FC<SongTableRowProps> = React.memo(({ song, query, onS
   );
 });
 
-export default function SearchResults({ query, results, onSelectArtist, onSelectAlbum, onSelectPlaylist, onSelectTrack, onMoreClick }: SearchResultsProps) {
+export default function SearchResults({ query, results, onMoreClick }: SearchResultsProps) {
   const { t } = useI18n();
-  const { playNow } = usePlaybackActions();
-  const { openModal } = useGlobalAddToPlaylistModal();
+  const playNow = (ids: string | string[]) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    window.dispatchEvent(new CustomEvent('freely:playback:playNow',{ detail:{ ids: arr } }));
+  };
   const [tab, setTab] = useState<'all'|'songs'|'artists'|'albums'|'playlists'>('all');
 
   const uniqueSongs = useMemo(() => {
@@ -217,22 +213,27 @@ export default function SearchResults({ query, results, onSelectArtist, onSelect
   const hasAny = !!query && (uniqueSongs.length > 0 || artists.length > 0 || albums.length > 0 || playlists.length > 0);
 
   const handlePlayNow = useCallback((ids: string | string[]) => playNow(ids), [playNow]);
-  const handleSelect = useCallback((handler?: (id: string) => void, id?: string | number) => {
-    if (handler && id !== undefined) handler(String(id));
+  const handleSelectTrack = useCallback((id?: string | number) => {
+    if(id !== undefined) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(id), source:'search' } }));
+  }, []);
+  const handleSelectPlaylist = useCallback((id?: string | number) => {
+    if(id !== undefined) window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId:String(id), source:'search' } }));
   }, []);
 
   const handleMore = useCallback((id: string) => onMoreClick?.(id), [onMoreClick]);
-  const handleAddToPlaylist = useCallback((song: Song) => openModal?.(song), [openModal]);
+  const handleAddToPlaylist = useCallback((song: Song) => {
+    window.dispatchEvent(new CustomEvent('freely:openAddToPlaylistModal',{ detail:{ track: song } }));
+  }, []);
 
-  const allSongsList = useMemo(() => uniqueSongs.slice(0, 4).map(s => <SongListItem key={String(s.id)} song={s} query={query} onSelect={() => handleSelect(onSelectTrack, s.id)} onPlay={() => handlePlayNow(String(s.id))} onAddToPlaylist={() => handleAddToPlaylist(s)} onMore={() => handleMore(String(s.id))} />), [uniqueSongs, query, onSelectTrack, handlePlayNow, handleAddToPlaylist, handleMore, handleSelect]);
-  const allArtistsGrid = useMemo(() => artists.slice(0, 6).map(a => <ArtistCard key={String(a.id)} artist={a} query={query} layout="compact" onSelect={() => handleSelect(onSelectArtist, a.id)} onPlay={handlePlayNow} />), [artists, query, onSelectArtist, handlePlayNow, handleSelect]);
-  const allAlbumsGrid = useMemo(() => albums.slice(0, 4).map(a => <AlbumCard key={String(a.id)} album={a} query={query} layout="compact" onSelect={() => handleSelect(onSelectAlbum, a.id)} onPlay={handlePlayNow} />), [albums, query, onSelectAlbum, handlePlayNow, handleSelect]);
-  const allPlaylistsGrid = useMemo(() => playlists.slice(0, 6).map(p => <PlaylistCard key={String(p.id)} playlist={p} query={query} layout="compact" onSelect={() => handleSelect(onSelectPlaylist, p.id)} onPlay={handlePlayNow} />), [playlists, query, onSelectPlaylist, handlePlayNow, handleSelect]);
+  const allSongsList = useMemo(() => uniqueSongs.slice(0, 4).map(s => <SongListItem key={String(s.id)} song={s} query={query} onSelect={() => handleSelectTrack(s.id)} onPlay={() => handlePlayNow(String(s.id))} onAddToPlaylist={() => handleAddToPlaylist(s)} onMore={() => handleMore(String(s.id))} />), [uniqueSongs, query, handlePlayNow, handleAddToPlaylist, handleMore, handleSelectTrack]);
+  const allArtistsGrid = useMemo(() => artists.slice(0, 6).map(a => <ArtistCard key={String(a.id)} artist={a} query={query} layout="compact" onSelect={() => { if(a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:a.id, source:'search' } })); }} onPlay={handlePlayNow} />), [artists, query, handlePlayNow]);
+  const allAlbumsGrid = useMemo(() => albums.slice(0, 4).map(a => <AlbumCard key={String(a.id)} album={a} query={query} layout="compact" onSelect={() => { if(a.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:a.id, source:'search' } })); }} onPlay={handlePlayNow} />), [albums, query, handlePlayNow]);
+  const allPlaylistsGrid = useMemo(() => playlists.slice(0, 6).map(p => <PlaylistCard key={String(p.id)} playlist={p} query={query} layout="compact" onSelect={() => handleSelectPlaylist(p.id)} onPlay={handlePlayNow} />), [playlists, query, handlePlayNow, handleSelectPlaylist]);
   
-  const fullSongTable = useMemo(() => uniqueSongs.map(s => <SongTableRow key={String(s.id)} song={s} query={query} onSelect={() => handleSelect(onSelectTrack, s.id)} />), [uniqueSongs, query, onSelectTrack, handleSelect]);
-  const fullArtistGrid = useMemo(() => artists.map(a => <ArtistCard key={String(a.id)} artist={a} query={query} layout="full" onSelect={() => handleSelect(onSelectArtist, a.id)} onPlay={handlePlayNow} />), [artists, query, onSelectArtist, handlePlayNow, handleSelect]);
-  const fullAlbumGrid = useMemo(() => albums.map(a => <AlbumCard key={String(a.id)} album={a} query={query} layout="full" onSelect={() => handleSelect(onSelectAlbum, a.id)} onPlay={handlePlayNow} />), [albums, query, onSelectAlbum, handlePlayNow, handleSelect]);
-  const fullPlaylistGrid = useMemo(() => playlists.map(p => <PlaylistCard key={String(p.id)} playlist={p} query={query} layout="full" onSelect={() => handleSelect(onSelectPlaylist, p.id)} onPlay={handlePlayNow} />), [playlists, query, onSelectPlaylist, handlePlayNow, handleSelect]);
+  const fullSongTable = useMemo(() => uniqueSongs.map(s => <SongTableRow key={String(s.id)} song={s} query={query} onSelect={() => handleSelectTrack(s.id)} />), [uniqueSongs, query, handleSelectTrack]);
+  const fullArtistGrid = useMemo(() => artists.map(a => <ArtistCard key={String(a.id)} artist={a} query={query} layout="full" onSelect={() => { if(a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:a.id, source:'search' } })); }} onPlay={handlePlayNow} />), [artists, query, handlePlayNow]);
+  const fullAlbumGrid = useMemo(() => albums.map(a => <AlbumCard key={String(a.id)} album={a} query={query} layout="full" onSelect={() => { if(a.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:a.id, source:'search' } })); }} onPlay={handlePlayNow} />), [albums, query, handlePlayNow]);
+  const fullPlaylistGrid = useMemo(() => playlists.map(p => <PlaylistCard key={String(p.id)} playlist={p} query={query} layout="full" onSelect={() => handleSelectPlaylist(p.id)} onPlay={handlePlayNow} />), [playlists, query, handlePlayNow, handleSelectPlaylist]);
 
  // if (!query) return <section className="search-results"><h1>{t('search.results')}</h1><div className="sr-empty">{t('search.resultsEmpty')}</div></section>;
 

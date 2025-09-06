@@ -3,14 +3,14 @@ import { useI18n } from '../core/i18n';
 import { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import GeniusClient from '../core/musicdata';
-import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
+import { usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 import InfoHeader from './InfoHeader';
 import useFollowedArtists from '../core/artists';
 
 import { fmtMs, useHeroImage } from './tabHelpers';
 
-export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylist, onSelectTrack }: { artistId?: string, onSelectAlbum?: (id: string)=>void, onSelectPlaylist?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
+export default function ArtistInfoTab({ artistId }: { artistId?: string }){
   const { t } = useI18n();
   const spotifyClient = useSpotifyClient();
   const [artist, setArtist] = useState<SpotifyArtist | undefined>();
@@ -26,7 +26,6 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
   const [bioLoading, setBioLoading] = useState(false);
   const [bioExpanded, setBioExpanded] = useState(false);
   const [lastBioArtist, setLastBioArtist] = useState<string | undefined>();
-  const { enqueue, setQueue } = usePlaybackActions();
   const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
   const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
   const currentTrack = usePlaybackSelector(s => s.currentTrack);
@@ -141,23 +140,6 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
   // Column width handled within TrackList
 
   const genres = useMemo(() => artist?.genres ?? [], [artist?.genres]);
-
-  const playTopTracksNow = () => {
-    if(!topTracks?.length) return;
-  const currentSegment = (queueIds || []).slice(currentIndex || 0);
-    const trackIds = topTracks.map(t=> t.id).filter(Boolean);
-    const dedupSet = new Set(trackIds);
-    const filteredCurrent = currentSegment.filter(id => !dedupSet.has(id));
-    const newQueue = [...trackIds, ...filteredCurrent];
-    setQueue(newQueue, 0);
-  };
-  const addTopTracksToQueue = () => {
-    if(!topTracks?.length) return;
-    const trackIds = topTracks.map(t=> t.id).filter(Boolean);
-    const existing = new Set(queueIds);
-    const toAppend = trackIds.filter(id => !existing.has(id));
-    if(toAppend.length) enqueue(toAppend);
-  };
 
   // Keep a local optimistic state so the UI updates immediately when toggling follow/unfollow.
   useEffect(() => {
@@ -285,7 +267,6 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
             tracks={topTracks}
             playingTrackId={currentTrack?.id}
             showPlayButton
-            onSelectTrack={onSelectTrack}
           />
         )}
       </div>
@@ -302,7 +283,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
           <ul className="artist-grid" role="list" style={{listStyle:'none', margin:0, padding:0, display:'grid', gap:'12px', gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))'}}>
             {recentAlbums.map(alb=>(
               <li key={alb.id} className="artist-grid-item" title={alb.name}>
-                <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> onSelectAlbum && onSelectAlbum(alb.id)}>
+                <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> { if(alb.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:alb.id, source:'artist-info' } })); }}>
                   <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${(window as any).imageRes?.(alb.images,1) || ''})`}} />
                   <div className="info" style={{marginTop:'6px'}}><div className="name ellipsis" title={alb.name} style={{fontSize:'0.85rem', fontWeight:500}}>{alb.name}</div><div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{alb.releaseDate?.split('-')[0] || ''}</div></div>
                 </button>
@@ -321,7 +302,7 @@ export default function ArtistInfoTab({ artistId, onSelectAlbum, onSelectPlaylis
           <ul className="artist-grid" role="list" style={{listStyle:'none', margin:0, padding:0, display:'grid', gap:'12px', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))'}}>
             {playlists.map(pl=>(
               <li key={pl.id} className="artist-grid-item" title={pl.name}>
-                <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> onSelectPlaylist && onSelectPlaylist(pl.id)}>
+                <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> { if(pl.id) window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId:pl.id, source:'artist-info' } })); }}>
                   <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${(window as any).imageRes?.(pl.images,1) || ''})`}} />
                   <div className="info" style={{marginTop:'6px'}}>
                     <div className="name ellipsis" title={pl.name} style={{fontSize:'0.85rem', fontWeight:500}}>{pl.name}</div>

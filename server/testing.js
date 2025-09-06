@@ -1,0 +1,33 @@
+fetch("https://www.youtube.com/youtubei/v1/search?prettyPrint=false", {
+  "headers": {
+    "accept": "*/*",
+    "accept-language": "en;q=0.8",
+    "cache-control": "no-cache",
+    "content-type": "application/json",
+    "pragma": "no-cache",
+    "priority": "u=1, i",
+    "sec-ch-ua": "\"Chromium\";v=\"140\", \"Not=A?Brand\";v=\"24\", \"Google Chrome\";v=\"140\"",
+    "sec-ch-ua-arch": "\"x86\"",
+    "sec-ch-ua-bitness": "\"64\"",
+    "sec-ch-ua-full-version-list": "\"Chromium\";v=\"140.0.0.0\", \"Not=A?Brand\";v=\"24.0.0.0\", \"Google Chrome\";v=\"140.0.0.0\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-model": "\"\"",
+    "sec-ch-ua-platform": "\"Windows\"",
+    "sec-ch-ua-platform-version": "\"10.0.0\"",
+    "sec-ch-ua-wow64": "?0",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "same-origin",
+    "sec-fetch-site": "same-origin",
+    "sec-gpc": "1",
+    "x-goog-authuser": "0",
+    "x-goog-visitor-id": "",
+    "x-origin": "https://www.youtube.com",
+    "x-youtube-bootstrap-logged-in": "true",
+    "x-youtube-client-name": "0",
+    "x-youtube-client-version": "2.20250904.01.00"
+  },
+  "referrer": "https://www.youtube.com/results",
+  "body": "{\"context\":{\"client\":{\"hl\":\"en\",\"gl\":\"SV\",\"remoteHost\":\"\",\"deviceMake\":\"\",\"deviceModel\":\"\",\"visitorData\":\"\",\"userAgent\":\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36,gzip(gfe)\",\"clientName\":\"WEB\",\"clientVersion\":\"2.20250904.01.00\",\"osName\":\"Windows\",\"osVersion\":\"10.0\",\"originalUrl\":\"\",\"platform\":\"DESKTOP\",\"clientFormFactor\":\"UNKNOWN_FORM_FACTOR\",\"configInfo\":{\"appInstallData\":\"\",\"coldConfigData\":\"\",\"coldHashData\":\"\",\"hotHashData\":\"\"},\"userInterfaceTheme\":\"USER_INTERFACE_THEME_DARK\",\"timeZone\":\"America/El_Salvador\",\"browserName\":\"Chrome\",\"browserVersion\":\"140.0.0.0\",\"acceptHeader\":\"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\",\"deviceExperimentId\":\"\",\"rolloutToken\":\"\",\"screenWidthPoints\":2560,\"screenHeightPoints\":1329,\"screenPixelDensity\":1,\"screenDensityFloat\":1,\"utcOffsetMinutes\":-360,\"memoryTotalKbytes\":\"4000000\",\"mainAppWebInfo\":{\"graftUrl\":\"/results\",\"pwaInstallabilityStatus\":\"PWA_INSTALLABILITY_STATUS_CAN_BE_INSTALLED\",\"webDisplayMode\":\"WEB_DISPLAY_MODE_BROWSER\",\"isWebNativeShareAvailable\":true}},\"user\":{\"lockedSafetyMode\":false},\"request\":{\"useSsl\":true,\"internalExperimentFlags\":[],\"consistencyTokenJars\":[]},\"clickTracking\":{\"clickTrackingParams\":\"\"},\"adSignalsInfo\":{\"params\":[]}},\"query\":\"never gonna give you up\",\"webSearchboxStatsUrl\":\"\"}",
+  "method": "POST",
+  "mode": "cors"
+}).then(async r => {console.log(await r.text())})

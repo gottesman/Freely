@@ -33,7 +33,11 @@ function listSection(title: string, kind: keyof ArtistBuckets, buckets: ArtistBu
               type="button"
               className="card-btn"
               onClick={() => {
-                if(kind === 'playlists') handlers.onSelectPlaylist?.(item.id); else handlers.onSelectAlbum?.(item.id);
+                if(kind === 'playlists') {
+                  window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId:item.id, source:'artist-more' } }));
+                } else {
+                  window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:item.id, source:'artist-more' } }));
+                }
               }}
             >
               <div className="card-img-wrap"><img src={(window as any).imageRes?.(item.images, 1) || ''} alt={item.name} loading="lazy" /></div>

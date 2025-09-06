@@ -1,5 +1,4 @@
 import React from 'react';
-import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext';
 import { useI18n } from '../core/i18n';
 
 // Example track data for testing
@@ -22,14 +21,16 @@ const sampleTrack = {
 
 export default function AddToPlaylistDemo() {
   const { t } = useI18n();
-  const { openModal } = useGlobalAddToPlaylistModal();
+  const triggerAddToPlaylist = (track: any) => {
+    window.dispatchEvent(new CustomEvent('freely:openAddToPlaylistModal',{ detail:{ track } }));
+  };
 
   return (
     <div style={{ padding: '0' }}>
       <p>Click the button below to test the Add to Playlist modal:</p>
       
       <button 
-        onClick={() => openModal(sampleTrack)}
+  onClick={() => triggerAddToPlaylist(sampleTrack)}
         style={{
           background: 'var(--accent)',
           color: '#021',

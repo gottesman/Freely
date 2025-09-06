@@ -188,8 +188,23 @@ export default function LeftPanelPlaylists({ onSelectPlaylist, activePlaylistId 
               role={onSelectPlaylist ? 'button' : undefined}
               tabIndex={onSelectPlaylist ? 0 : undefined}
               aria-current={isActive? 'true': undefined}
-              onClick={()=> { if(onSelectPlaylist){ onSelectPlaylist(pid);} }}
-              onKeyDown={(e)=> { if(!onSelectPlaylist) return; if(e.key==='Enter' || e.key===' '){ e.preventDefault(); onSelectPlaylist(pid);} }}
+              onClick={()=> { 
+                if(onSelectPlaylist){ 
+                  onSelectPlaylist(pid);
+                } else {
+                  try { window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId: pid, source:'left-panel' } })); } catch{}
+                }
+              }}
+              onKeyDown={(e)=> { 
+                if(e.key==='Enter' || e.key===' '){
+                  e.preventDefault();
+                  if(onSelectPlaylist){
+                    onSelectPlaylist(pid);
+                  } else {
+                    try { window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId: pid, source:'left-panel' } })); } catch{}
+                  }
+                }
+              }}
             >
               <div className={`pl-thumb ${(p.system && p.code==='favorites')?"pl-favorites" : ""}`} aria-hidden="true">
                 {p.system && p.code==='favorites' ? (

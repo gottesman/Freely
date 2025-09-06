@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useI18n } from '../core/i18n';
-import { usePlaybackSelector, usePlaybackActions } from '../core/playback';
-import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext';
+import { usePlaybackSelector } from '../core/playback';
 import { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
 import TrackList from './TrackList';
@@ -12,20 +11,18 @@ import { fmtMs, useHeroImage } from './tabHelpers';
 
 type Props = {
   trackId?: string;
-  onSelectArtist?: (id: string) => void;
-  onSelectAlbum?: (id: string) => void;
-  onSelectTrack?: (id: string) => void;
 };
 
-export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, onSelectTrack }: Props) {
+export default function SongInfoTab({ trackId }: Props) {
   const { t } = useI18n();
   const spotifyClient = useSpotifyClient();
   // Use selector to avoid re-rendering on unrelated playback changes
   const playingTrackId = usePlaybackSelector(s => (trackId === undefined ? s.trackId : undefined), [trackId]) as string | undefined;
   const playbackTrack = usePlaybackSelector(s => (trackId === undefined ? s.currentTrack : undefined), [trackId]) as any;
   // actions for play/queue
-  const { setQueue, enqueue } = usePlaybackActions();
-  const { openModal: openPlaylistModal } = useGlobalAddToPlaylistModal();
+  const openPlaylistModal = (track: any) => {
+    window.dispatchEvent(new CustomEvent('freely:openAddToPlaylistModal',{ detail:{ track } }));
+  };
   const currentIndex = usePlaybackSelector(s => (trackId === undefined ? s.currentIndex : undefined), [trackId]) as number | undefined;
   const queueIds = usePlaybackSelector(s => (trackId === undefined ? s.queueIds : undefined), [trackId]) as string[] | undefined;
 
@@ -308,20 +305,20 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
     const dedupSet = new Set(trackIds);
   const filteredCurrent = currentSegment.filter((id: string) => !dedupSet.has(id));
     const newQueue = [...trackIds, ...filteredCurrent];
-    setQueue(newQueue, 0);
-  }, [track?.id, queueIds, currentIndex, setQueue]);
+  window.dispatchEvent(new CustomEvent('freely:playback:setQueue',{ detail:{ queueIds:newQueue, startIndex:0 } }));
+  }, [track?.id, queueIds, currentIndex]);
 
   const handleAddToQueue = useCallback(() => {
     if (!track?.id) return;
     const trackIds = [track.id];
   const existing = new Set(queueIds || []);
   const toAppend = trackIds.filter((id: string) => !existing.has(id));
-    if (toAppend.length) enqueue(toAppend);
-  }, [track?.id, queueIds, enqueue]);
+  if (toAppend.length) window.dispatchEvent(new CustomEvent('freely:playback:enqueue',{ detail:{ ids: toAppend } }));
+  }, [track?.id, queueIds]);
 
   const onAddToPlaylist = useCallback(() => {
     if (!track) return;
-    openPlaylistModal(track, false);
+    openPlaylistModal(track);
   }, [track, openPlaylistModal]);
 
   const headerActions = [
@@ -351,7 +348,7 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
                     type="button"
                     className="np-link artist"
                     onClick={() => {
-                      if (onSelectArtist && a.id) onSelectArtist(a.id);
+                      if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:a.id, source:'song-info' } }));
                       else if (a.url) window.open(a.url, '_blank');
                     }}
                   >
@@ -363,8 +360,8 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
             {track.album?.name && (
               <>
                 <span className="np-dot" />
-                {track.album.id && onSelectAlbum ? (
-                  <button type="button" className="np-link np-album" onClick={() => onSelectAlbum && track.album?.id && onSelectAlbum(track.album.id)}>{track.album.name}</button>
+                {track.album.id ? (
+                  <button type="button" className="np-link np-album" onClick={() => { if(track.album?.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId: track.album.id, source:'song-info' } })); }}>{track.album.name}</button>
                 ) : (
                   <span className="np-album">{track.album.name}</span>
                 )}
@@ -400,7 +397,6 @@ export default function SongInfoTab({ trackId, onSelectArtist, onSelectAlbum, on
             selectedTrackId={track?.id}
             playingTrackId={playingTrackId}
             showPlayButton
-            onSelectTrack={onSelectTrack}
           />
         )}
 

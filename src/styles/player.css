@@ -8,7 +8,7 @@
 .track-player .meta[role="button"]:hover { transform:scale(1.03); background:rgba(255,255,255,0.06); }
 .track-player .meta[role="button"]:active { transform:scale(.97); }
 .track-player .meta-block { display:flex; align-items:center; gap: var(--padding-xs); margin-right:12px; }
-.track-player .album-cover { width:48px; height:48px; border-radius:6px; object-fit:cover; }
+.track-player .album-cover { width:48px; height:48px; border-radius:6px; background-size:cover; background-position:center; background-repeat:no-repeat; flex:0 0 auto; }
 .track-player .meta-text { display:flex; flex-direction:column; overflow: hidden; }
 .track-player .song-title { font-weight:600; font-size:14px; }
 .track-player .song-artist { font-size:12px; opacity:.85; }

@@ -4,33 +4,42 @@ import { useI18n } from '../core/i18n';
 import { getWeeklyTops } from '../core/homeTops';
 import useFollowedArtists from '../core/artists';
 import { useSpotifyClient } from '../core/spotify-client';
-import { usePlaybackActions } from '../core/playback';
 import { useDB } from '../core/dbIndexed';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers';
+
+// Constants for performance
+const CONSTANTS = {
+  maxArtists: 10,
+  concurrency: 4,
+  scrollTolerance: 6,
+  mostPlayedLimit: 10,
+  weeklyTopsLimit: 20,
+  latestReleasesLimit: 10,
+  recommendedLimit: 8,
+  playTrackLimit: 50,
+  apiRetryAttempts: 3,
+  apiRetryDelay: 500
+} as const;
 
 type TopArtist = { rank?: number | null; id?: string | null; name?: string; image?: string | null };
 type TopAlbum = { rank?: number | null; id?: string | null; name?: string; image?: string | null; artists?: Array<{ name?: string }>; };
 type TopSong = { rank?: number | null; id?: string | null; name?: string; image?: string | null; artists?: Array<{ name?: string }>; };
 
-export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }: { onSelectArtist?: (id: string) => void; onSelectAlbum?: (id: string) => void; onSelectTrack?: (id: string) => void; }) {
-  const { t } = useI18n();
-  const { playNow } = usePlaybackActions();
-  const spotifyClient = useSpotifyClient();
-  const { artists: followedArtists } = useFollowedArtists();
+// Consolidated state interfaces
+interface HomeDataState {
+  tops: { songs: TopSong[]; albums: TopAlbum[]; artists: TopArtist[] };
+  latestReleases: TopAlbum[];
+  recommended: TopSong[];
+  mostPlayed: Array<{ track_id: string; count: number; info?: any }>;
+}
 
-  // UI data
-  const [tops, setTops] = useState<{ songs: TopSong[]; albums: TopAlbum[]; artists: TopArtist[] }>({ songs: [], albums: [], artists: [] });
-  const [latestReleases, setLatestReleases] = useState<TopAlbum[]>([]);
-  const [recommended, setRecommended] = useState<TopSong[]>([]);
-  const { getTopPlayed } = useDB();
-  const [mostPlayed, setMostPlayed] = useState<Array<{ track_id: string; count: number; info?: any }>>([]);
+interface CollectionCache {
+  [key: string]: any[] | undefined;
+}
 
-  // lightweight mounted ref to avoid stale setState
-  const mountedRef = useRef(true);
-  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
-
-  // Small helper: unified API accessor (electron proxy vs in-browser spotify client)
-  const api = useMemo(() => {
+// Custom hooks for better organization
+function useAPI(spotifyClient: any) {
+  return useMemo(() => {
     const w = (window as any);
     const electron = w?.electron;
     return {
@@ -57,134 +66,183 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
       },
     };
   }, [spotifyClient]);
+}
 
-  // ---- Most played and Weekly Tops ----
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const tops = await getTopPlayed(10);
-        if (cancelled || !mountedRef.current) return;
-        if (!tops || !tops.length) return;
-        // fetch metadata for these tracks
-        const ids = tops.map(t => t.track_id).filter(Boolean);
-        let tracksData: any[] = [];
-        try {
-          if (ids.length && spotifyClient && typeof (spotifyClient as any).getTracks === 'function') {
-            const resp = await (spotifyClient as any).getTracks(ids);
-            tracksData = Array.isArray(resp) ? resp : (resp?.tracks || []);
-            console.log('Fetched tracks data for most played', {ids,tracksData} );
-          }
-        } catch { /* ignore metadata fetch failures */ }
-        const mapped = tops.map(t => ({
-          ...t,
-          info: tracksData.find((tr: any) => {
-            try {
-              if (!tr) return false;
-              if (String(tr.id) === String(t.track_id)) return true;
-              const linked = tr.linked_from || tr.linked_from || null;
-              if (linked) {
-                if (linked.id && String(linked.id) === String(t.track_id)) return true;
-                if (linked.uri && String(linked.uri).includes(String(t.track_id))) return true;
-              }
-            } catch (e) {
-              // ignore and continue
-            }
-            return false;
-          })
-        }));
-        if (!cancelled && mountedRef.current) setMostPlayed(mapped);
-      } catch (e) {
-        // ignore
-      }
-      try {
-        const res = await getWeeklyTops({ limit: 20 });
-        if (cancelled || !mountedRef.current) return;
-        setTops({
-          songs: res.songs || [],
-          albums: res.albums || [],
-          artists: res.artists || [],
-        });
-      } catch {
-        if (!cancelled && mountedRef.current) {
-          // keep default empty state on error
-        }
-      }
-    })();
-    return () => { cancelled = true; };
+function usePlayNow() {
+  return useCallback((ids: string | string[]) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    window.dispatchEvent(new CustomEvent('freely:playback:playNow', { detail: { ids: arr } }));
   }, []);
+}
+
+export default function HomeTab() {
+  const { t } = useI18n();
+  const playNow = usePlayNow();
+  const spotifyClient = useSpotifyClient();
+  const { artists: followedArtists } = useFollowedArtists();
+  const { getTopPlayed } = useDB();
+  const api = useAPI(spotifyClient);
+
+  // Consolidated state management
+  const [homeData, setHomeData] = useState<HomeDataState>({
+    tops: { songs: [], albums: [], artists: [] },
+    latestReleases: [],
+    recommended: [],
+    mostPlayed: []
+  });
+  
+  const [collectionCache, setCollectionCache] = useState<CollectionCache>({});
+
+  // lightweight mounted ref to avoid stale setState
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   // Helper: wait for api readiness (electron or spotify client)
-  const waitForApi = useCallback(async (checkFn: () => boolean, attempts = 3, delayMs = 500) => {
+  const waitForApi = useCallback(async (checkFn: () => boolean, attempts = CONSTANTS.apiRetryAttempts, delayMs = CONSTANTS.apiRetryDelay) => {
     for (let i = 0; i < attempts; i++) {
       if (checkFn()) return true;
-      // wait
       await new Promise(res => setTimeout(res, delayMs));
       if (!mountedRef.current) return false;
     }
     return checkFn();
   }, []);
 
+  // Optimized concurrent task runner
+  const runConcurrentTasks = useCallback(async (tasks: Array<() => Promise<any>>, concurrency = CONSTANTS.concurrency) => {
+    const results: any[] = [];
+    const workers: Promise<void>[] = [];
+    const queue = tasks.slice();
+
+    for (let i = 0; i < Math.min(concurrency, tasks.length); i++) {
+      const worker = (async () => {
+        while (queue.length && mountedRef.current) {
+          const job = queue.shift();
+          if (job) {
+            try {
+              const result = await job();
+              results.push(result);
+            } catch {
+              // Ignore individual task failures
+            }
+          }
+        }
+      })();
+      workers.push(worker);
+    }
+    
+    await Promise.all(workers);
+    return results;
+  }, []);
+
+  // ---- Most played and Weekly Tops ----
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [mostPlayedData, weeklyTopsData] = await Promise.all([
+          getTopPlayed(CONSTANTS.mostPlayedLimit),
+          getWeeklyTops({ limit: CONSTANTS.weeklyTopsLimit })
+        ]);
+
+        if (cancelled || !mountedRef.current) return;
+
+        // Process most played data
+        let processedMostPlayed: any[] = [];
+        if (mostPlayedData?.length) {
+          const ids = mostPlayedData.map(t => t.track_id).filter(Boolean);
+          let tracksData: any[] = [];
+          
+          try {
+            if (ids.length && spotifyClient && typeof (spotifyClient as any).getTracks === 'function') {
+              const resp = await (spotifyClient as any).getTracks(ids);
+              tracksData = Array.isArray(resp) ? resp : (resp?.tracks || []);
+            }
+          } catch { /* ignore metadata fetch failures */ }
+          
+          processedMostPlayed = mostPlayedData.map(t => ({
+            ...t,
+            info: tracksData.find((tr: any) => {
+              try {
+                if (!tr) return false;
+                if (String(tr.id) === String(t.track_id)) return true;
+                const linked = tr.linked_from;
+                if (linked) {
+                  if (linked.id && String(linked.id) === String(t.track_id)) return true;
+                  if (linked.uri && String(linked.uri).includes(String(t.track_id))) return true;
+                }
+              } catch {
+                // ignore and continue
+              }
+              return false;
+            })
+          }));
+        }
+
+        if (!cancelled && mountedRef.current) {
+          setHomeData(prev => ({
+            ...prev,
+            mostPlayed: processedMostPlayed,
+            tops: {
+              songs: weeklyTopsData.songs || [],
+              albums: weeklyTopsData.albums || [],
+              artists: weeklyTopsData.artists || [],
+            }
+          }));
+        }
+      } catch (e) {
+        // ignore errors
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getTopPlayed, spotifyClient]);
+
   // ---- Latest releases for followed artists ----
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!followedArtists || followedArtists.length === 0) {
-        if (!cancelled && mountedRef.current) setLatestReleases([]);
+        if (!cancelled && mountedRef.current) {
+          setHomeData(prev => ({ ...prev, latestReleases: [] }));
+        }
         return;
       }
 
       const ready = await waitForApi(() => !!(api.hasElectron || (spotifyClient && typeof (spotifyClient as any).getArtistAlbums === 'function')), 3, 500);
       if (!ready || !mountedRef.current || cancelled) return;
 
-      const maxArtists = 10;
-      const toQuery = followedArtists.slice(0, maxArtists).filter(a => !!a?.id);
+      const toQuery = followedArtists.slice(0, CONSTANTS.maxArtists).filter(a => !!a?.id);
 
-      // simple concurrency limiter
-      const concurrency = 4;
-      const results: TopAlbum[] = [];
-      const queue = toQuery.map(a => async () => {
-        if (cancelled || !mountedRef.current) return;
+      // Use optimized concurrent task runner
+      const albumTasks = toQuery.map(a => async () => {
+        if (cancelled || !mountedRef.current) return null;
         const aid = a!.id!;
         try {
           const resp: any = await api.getArtistAlbums(aid, { includeGroups: 'album,single', limit: 5, fetchAll: false });
           const items = resp?.items ?? [];
-          if (!items || !items.length) return;
-          // pick most recent by releaseDate (string compare on ISO-like YYYY-MM-DD)
+          if (!items || !items.length) return null;
+          
+          // pick most recent by releaseDate
           items.sort((x: any, y: any) => {
             const dx = x.releaseDate || '';
             const dy = y.releaseDate || '';
             return dy.localeCompare(dx);
           });
+          
           const pick = items[0];
-          if (pick) {
-            results.push({
-              id: pick.id,
-              name: pick.name,
-              image: api.imageRes(pick.images, 1),
-              artists: pick.artists || [],
-              rank: undefined,
-            });
-          }
+          return pick ? {
+            id: pick.id,
+            name: pick.name,
+            image: api.imageRes(pick.images, 1),
+            artists: pick.artists || [],
+            rank: undefined,
+          } as TopAlbum : null;
         } catch {
-          // ignore per-item failures
+          return null;
         }
       });
 
-      // run promise queue with limited concurrency
-      const workers: Promise<void>[] = [];
-      for (let i = 0; i < concurrency; i++) {
-        const worker = (async () => {
-          while (queue.length && mountedRef.current && !cancelled) {
-            const job = queue.shift();
-            if (!job) break;
-            await job();
-          }
-        })();
-        workers.push(worker);
-      }
-      await Promise.all(workers);
-
+      const results = await runConcurrentTasks(albumTasks);
+      
       if (cancelled || !mountedRef.current) return;
 
       // deduplicate by album id and trim
@@ -195,12 +253,15 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
         if (seen.has(al.id)) continue;
         seen.add(al.id);
         deduped.push(al);
-        if (deduped.length >= 10) break;
+        if (deduped.length >= CONSTANTS.latestReleasesLimit) break;
       }
-      if (!cancelled && mountedRef.current) setLatestReleases(deduped);
+      
+      if (!cancelled && mountedRef.current) {
+        setHomeData(prev => ({ ...prev, latestReleases: deduped }));
+      }
     })();
     return () => { cancelled = true; };
-  }, [followedArtists, spotifyClient, api, waitForApi]);
+  }, [followedArtists, spotifyClient, api, waitForApi, runConcurrentTasks]);
 
   // ---- Recommendations (derive seed tracks and fetch recommendations) ----
   useEffect(() => {
@@ -208,52 +269,43 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
     (async () => {
       const artistIds = (followedArtists || []).map(a => a?.id).filter(Boolean).slice(0, 5) as string[];
       if (!artistIds.length) {
-        if (!cancelled && mountedRef.current) setRecommended([]);
+        if (!cancelled && mountedRef.current) {
+          setHomeData(prev => ({ ...prev, recommended: [] }));
+        }
         return;
       }
 
       const ready = await waitForApi(() => !!(api.hasElectron || (spotifyClient && typeof (spotifyClient as any).getArtistTopTracks === 'function')), 3, 500);
       if (!ready || cancelled || !mountedRef.current) return;
 
-      // fetch top tracks for each seed artist concurrently (with limited concurrency)
-      const concurrency = 4;
-      const seedTracks: string[] = [];
-      const tasks = artistIds.map(aid => async () => {
-        if (cancelled || !mountedRef.current) return;
+      // fetch top tracks for each seed artist concurrently
+      const seedTasks = artistIds.map(aid => async () => {
+        if (cancelled || !mountedRef.current) return null;
         try {
           const topResp: any = await api.getArtistTopTracks(aid, undefined);
           let arr: any[] = [];
           if (Array.isArray(topResp)) arr = topResp;
           else if (topResp?.tracks && Array.isArray(topResp.tracks)) arr = topResp.tracks;
           else if (topResp?.items && Array.isArray(topResp.items)) arr = topResp.items;
-          if (arr && arr.length) seedTracks.push(String(arr[0]?.id));
+          if (arr && arr.length) return String(arr[0]?.id);
+          return null;
         } catch {
-          // ignore
+          return null;
         }
       });
 
-      // run with concurrency
-      const workers: Promise<void>[] = [];
-      const queue = tasks.slice();
-      for (let i = 0; i < concurrency; i++) {
-        const worker = (async () => {
-          while (queue.length && mountedRef.current && !cancelled) {
-            const job = queue.shift();
-            if (!job) break;
-            await job();
-          }
-        })();
-        workers.push(worker);
-      }
-      await Promise.all(workers);
+      const seedResults = await runConcurrentTasks(seedTasks);
+      const seedTracks = seedResults.filter(Boolean);
 
       if (!seedTracks.length) {
-        if (!cancelled && mountedRef.current) setRecommended([]);
+        if (!cancelled && mountedRef.current) {
+          setHomeData(prev => ({ ...prev, recommended: [] }));
+        }
         return;
       }
 
       try {
-        const recResp: any = await api.getRecommendations({ seed_tracks: seedTracks.slice(0, 5), limit: 8 });
+        const recResp: any = await api.getRecommendations({ seed_tracks: seedTracks.slice(0, 5), limit: CONSTANTS.recommendedLimit });
         const items = (Array.isArray(recResp) ? recResp : (recResp?.tracks && Array.isArray(recResp.tracks) ? recResp.tracks : [])) || [];
         if (!cancelled && mountedRef.current) {
           const mapped: TopSong[] = items.map((t: any) => ({
@@ -263,14 +315,16 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
             artists: (t.artists || []).map((a: any) => ({ name: a.name })),
             rank: undefined,
           }));
-          setRecommended(mapped);
+          setHomeData(prev => ({ ...prev, recommended: mapped }));
         }
       } catch {
-        if (!cancelled && mountedRef.current) setRecommended([]);
+        if (!cancelled && mountedRef.current) {
+          setHomeData(prev => ({ ...prev, recommended: [] }));
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [followedArtists, spotifyClient, api, waitForApi]);
+  }, [followedArtists, spotifyClient, api, waitForApi, runConcurrentTasks]);
 
   // ---- Horizontal scroller helpers (stable per ref) ----
   const makeScroller = useCallback((ref: React.RefObject<HTMLDivElement>) => {
@@ -315,16 +369,7 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
   const refMostPlayed = useRef<HTMLDivElement | null>(null);
   const refArtists = useRef<HTMLDivElement | null>(null);
 
-  const scLatest = useMemo(() => makeScroller(refLatest), [makeScroller]);
-  const scRecommended = useMemo(() => makeScroller(refRecommended), [makeScroller]);
-  const scTrending = useMemo(() => makeScroller(refTrending), [makeScroller]);
-  const scMostPlayed = useMemo(() => makeScroller(refMostPlayed), [makeScroller]);
-  const scArtists = useMemo(() => makeScroller(refArtists), [makeScroller]);
-
-  const scrollTolerance = 6;
-
-  // collection cache: lazy-loaded track arrays for album/artist/playlist
-  const [collectionCache, setCollectionCache] = useState<Record<string, any[] | undefined>>({});
+  const scrollTolerance = CONSTANTS.scrollTolerance;
 
   const loadCollection = useCallback(async (kind: 'album' | 'artist' | 'playlist', id?: string | number) => {
     if (!id) return;
@@ -386,9 +431,9 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
           e.stopPropagation();
           try {
             let res: any[] | undefined;
-            if (kind === 'album') res = await fetchAlbumTracks(id as any, { limit: 50 }) as any;
-            else if (kind === 'artist') res = await fetchArtistTracks(id as any, { limit: 50 }) as any;
-            else res = await fetchPlaylistTracks(id as any, { limit: 50 }) as any;
+            if (kind === 'album') res = await fetchAlbumTracks(id as any, { limit: CONSTANTS.playTrackLimit }) as any;
+            else if (kind === 'artist') res = await fetchArtistTracks(id as any, { limit: CONSTANTS.playTrackLimit }) as any;
+            else res = await fetchPlaylistTracks(id as any, { limit: CONSTANTS.playTrackLimit }) as any;
             if (res && res.length) {
               playNow(res.map(r => String(r.id)));
               setCollectionCache(prev => ({ ...prev, [key]: res }));
@@ -402,6 +447,21 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
       </div>
     );
   }, [collectionCache, addPlayButton, loadCollection, playNow, t]);
+
+  // Memoized scroll controllers for better performance
+  const scrollControllers = useMemo(() => ({
+    latest: makeScroller(refLatest),
+    recommended: makeScroller(refRecommended),
+    trending: makeScroller(refTrending),
+    mostPlayed: makeScroller(refMostPlayed),
+    artists: makeScroller(refArtists)
+  }), [makeScroller]);
+
+  const scLatest = scrollControllers.latest;
+  const scRecommended = scrollControllers.recommended;
+  const scTrending = scrollControllers.trending;
+  const scMostPlayed = scrollControllers.mostPlayed;
+  const scArtists = scrollControllers.artists;
 
   // overflow class management for media rows (attach listeners & ResizeObserver)
   useEffect(() => {
@@ -445,7 +505,7 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
       window.removeEventListener('resize', onWinResize);
       observers.forEach(o => o.disconnect());
     };
-  }, []);
+  }, [scrollTolerance]);
 
   return (
     <section className="home-page" aria-label={t('home.pageLabel', 'Browse and personalized content')}>
@@ -468,9 +528,9 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scLatest.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refLatest} className="media-row scroll-x">
-            {latestReleases && latestReleases.length ? (
-              latestReleases.map((al, i) => (
-                <div key={String(al.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (onSelectAlbum && al.id) onSelectAlbum(String(al.id)); }}>
+            {homeData.latestReleases && homeData.latestReleases.length ? (
+              homeData.latestReleases.map((al, i) => (
+                <div key={String(al.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (al.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:String(al.id), source:'home' } })); }}>
                   <div className="media-cover square">
                     <div className="media-cover-inner">
                       <img src={al.image || ''} alt={al.name || ''} />
@@ -494,9 +554,9 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scRecommended.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refRecommended} className="media-row scroll-x">
-            {recommended && recommended.length ? (
-              recommended.map((s, i) => (
-                <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (onSelectTrack && s.id) onSelectTrack(String(s.id)); }}>
+            {homeData.recommended && homeData.recommended.length ? (
+              homeData.recommended.map((s, i) => (
+                <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (s.id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(s.id), source:'home-recommended' } })); }}>
                   <div className="media-cover square">
                     <div className="media-cover-inner"><img src={s.image || ''} alt={s.name || ''} /></div>
                     {renderCollectionPlay('track', s.id ?? undefined)}
@@ -518,8 +578,8 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scTrending.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refTrending} className="media-row scroll-x dense">
-            {tops.songs.map((s: TopSong, i) => (
-              <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (onSelectTrack && s.id) onSelectTrack(String(s.id)); }}>
+            {homeData.tops.songs.map((s: TopSong, i) => (
+              <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (s.id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(s.id), source:'home-trending' } })); }}>
                 <div className="media-cover square" aria-hidden="true">
                   <div className="media-cover-inner"><img src={s.image || ''} alt="" /></div>
                   {renderCollectionPlay('track', s.id ?? undefined)}
@@ -538,8 +598,8 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scArtists.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refArtists} className="media-row scroll-x artists">
-            {tops.artists.map((a: TopArtist, i) => (
-              <div key={String(a.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (onSelectArtist && a.id) onSelectArtist(String(a.id)); }}>
+            {homeData.tops.artists.map((a: TopArtist, i) => (
+              <div key={String(a.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:String(a.id), source:'home-top-artists' } })); }}>
                 <div className="media-cover circle" aria-hidden="true">
                   <div className="media-cover-inner"><img src={a.image || ''} alt="" /></div>
                   {renderCollectionPlay('artist', a.id ?? undefined)}
@@ -558,14 +618,14 @@ export default function HomeTab({ onSelectArtist, onSelectAlbum, onSelectTrack }
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scMostPlayed.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refMostPlayed} className="media-row scroll-x dense">
-            {mostPlayed && mostPlayed.length ? (
-              mostPlayed.map((m, i) => {
+            {homeData.mostPlayed && homeData.mostPlayed.length ? (
+              homeData.mostPlayed.map((m, i) => {
                 const info = m.info;
                 const name = info?.name || 'Unknown';
                 const img = info?.album?.images ? api.imageRes(info.album.images, 1) : null;
                 const artists = (info?.artists || []).map((a: any) => a.name).join(', ');
                 return (
-                  <div key={String(m.track_id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (onSelectTrack && m.track_id) onSelectTrack(String(m.track_id)); }}>
+                  <div key={String(m.track_id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (m.track_id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(m.track_id), source:'home-most-played' } })); }}>
                     <div className="media-cover square" aria-hidden="true">
                       <div className="media-cover-inner"><img src={img || ''} alt={name} /></div>
                       {renderCollectionPlay('track', m.track_id ?? undefined)}
@@ -608,10 +668,4 @@ function HomeSection({ id, title, children, more }: HomeSectionProps) {
       {children}
     </section>
   );
-}
-
-interface MediaCardProps { children: React.ReactNode; kind?: string; progress?: boolean; compact?: boolean; circle?: boolean }
-function MediaCard({ children, progress, compact, circle }: MediaCardProps) {
-  const cls = ["media-card", progress && 'has-progress', compact && 'compact', circle && 'is-circle'].filter(Boolean).join(' ');
-  return <article className={cls}>{children}</article>;
 }

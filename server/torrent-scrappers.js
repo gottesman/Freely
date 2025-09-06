@@ -524,7 +524,7 @@ createAndRegisterScraper({
             title,
             url,
             magnetURI: $el.find('a[href^="magnet:"]').attr('href'),
-            size: $el.find('td').eq(4).text().match(/Size ([\d.]+.*[KMGT]i?B)/)?.[1] || '',
+            size: $el.find('td').eq(4).text().match(/([\d.]+.*[KMGT]i?B)/)?.[1] || '',
             seeders: parseInt($el.find('td').eq(5).text()) || 0,
             leechers: parseInt($el.find('td').eq(6).text()) || 0,
         };
@@ -591,13 +591,13 @@ createAndRegisterScraper({
     id: 'magnetdl-1',
     name: 'magnetDL',
     add: true,
-    searchUrl: 'https://magnetdl.app/data.php?page=1&q={query}',
+    searchUrl: 'https://magnetdl.app/data.php?page=0&q={query}',
     responseType: 'htmlFragment',
     listSelector: 'tr',
     resultBuilder: ($, $el) => {
         return {
             title: $el.find('td').eq(1).text().trim(),
-            magnetURI: $el.find('a[href^="magnet:"]').attr('href'),
+            url: $el.find('a[href^="magnet:"]').attr('href'),
             size: $el.find('td').eq(4).text().trim(),
             seeders: parseInt($el.find('td.s').text()) || 0,
             leechers: parseInt($el.find('td.l').text()) || 0,
@@ -605,12 +605,12 @@ createAndRegisterScraper({
     },
     magnetSelector: 'a[href^="magnet:"]',
 });
-
+/*
 createAndRegisterScraper({
     id: 'magnetdl-2',
     name: 'magnetDL',
     add: true,
-    searchUrl: 'https://magnetdl.app/data.php?page=2&q={query}',
+    searchUrl: 'https://magnetdl.co/data.php?page=2&q={query}',
     responseType: 'htmlFragment',
     listSelector: 'tr',
     resultBuilder: ($, $el) => {
@@ -629,7 +629,7 @@ createAndRegisterScraper({
     id: 'magnetdl-3',
     name: 'magnetDL',
     add: true,
-    searchUrl: 'https://magnetdl.app/data.php?page=3&q={query}',
+    searchUrl: 'https://magnetdl.co/data.php?page=3&q={query}',
     responseType: 'htmlFragment',
     listSelector: 'tr',
     resultBuilder: ($, $el) => {
@@ -648,7 +648,7 @@ createAndRegisterScraper({
     id: 'magnetdl-4',
     name: 'magnetDL',
     add: true,
-    searchUrl: 'https://magnetdl.app/data.php?page=4&q={query}',
+    searchUrl: 'https://magnetdl.co/data.php?page=4&q={query}',
     responseType: 'htmlFragment',
     listSelector: 'tr',
     resultBuilder: ($, $el) => {
@@ -662,7 +662,7 @@ createAndRegisterScraper({
     },
     magnetSelector: 'a[href^="magnet:"]',
 });
-
+*/
 createAndRegisterScraper({
     id: 'torrent9',
     name: 'torrent9',

@@ -8,7 +8,11 @@ import SearchResults from './SearchResults';
 import Settings from './Settings';
 import Tests from './Tests';
 
-type Props = {
+// Constants for better performance
+const SCROLL_RESET_TABS = ['playlist', 'album', 'artist', 'song'] as const;
+const SCROLL_BEHAVIOR: ScrollIntoViewOptions = { behavior: 'smooth', block: 'start' };
+
+interface Props {
   initial?: string;
   searchQuery?: string;
   searchTrigger?: number;
@@ -20,20 +24,84 @@ type Props = {
   albumId?: string;
   playlistId?: string;
   artistId?: string;
-  onSelectArtist?: (id: string) => void;
-  onSelectAlbum?: (id: string) => void;
-  onSelectPlaylist?: (id: string) => void;
-  onSelectTrack?: (id: string) => void;
-};
+}
 
+// Consolidated state for better organization
+interface TabIds {
+  song?: string;
+  album?: string;
+  playlist?: string;
+  artist?: string;
+}
+
+interface TabRefs {
+  current: string;
+  container: React.RefObject<HTMLElement>;
+  tabsBody: React.RefObject<HTMLDivElement>;
+  prevIds: React.MutableRefObject<TabIds>;
+}
+
+// Custom hooks for better organization
+function useTabRefs(tab: string): TabRefs {
+  const containerRef = useRef<HTMLElement | null>(null);
+  const tabsBodyRef = useRef<HTMLDivElement | null>(null);
+  const prevIdsRef = useRef<TabIds>({});
+  const currentTabRef = useRef<string>(tab);
+
+  useEffect(() => {
+    currentTabRef.current = tab;
+  }, [tab]);
+
+  return {
+    current: currentTabRef.current,
+    container: containerRef,
+    tabsBody: tabsBodyRef,
+    prevIds: prevIdsRef
+  };
+}
+
+function useScrollReset(refs: TabRefs) {
+  return useCallback(() => {
+    requestAnimationFrame(() => {
+      const body = refs.tabsBody.current ?? document.querySelector('.center-tabs .tabs-body');
+      if (body instanceof HTMLElement && body.scrollTop !== 0) {
+        body.scrollTop = 0;
+      }
+
+      const container = refs.container.current ?? document.querySelector('.center-tabs');
+      if (container instanceof HTMLElement && container.scrollTop !== 0) {
+        container.scrollTop = 0;
+      }
+    });
+  }, [refs.container, refs.tabsBody]);
+}
+
+function useIdChangeDetection(
+  tab: string, 
+  ids: TabIds, 
+  refs: TabRefs, 
+  scrollReset: () => void
+) {
+  useEffect(() => {
+    const currentIds = refs.prevIds.current;
+    const tabType = tab as keyof TabIds;
+    
+    if (SCROLL_RESET_TABS.includes(tab as any) && 
+        ids[tabType] !== currentIds[tabType]) {
+      
+      console.log('CenterTabs: id changed for tab', tab, 'resetting scroll');
+      currentIds[tabType] = ids[tabType];
+      scrollReset();
+    }
+  }, [tab, ids, refs.prevIds, scrollReset]);
+}
 /**
- * CenterTabs - optimized:
- *  - Avoids setting tab / causing re-renders when requested tab === current tab
- *  - Uses refs to prevent unnecessary add/remove of global event listener
- *  - Memoizes normalized search results and rendered tab content
- *  - Uses refs for DOM nodes to reset scrollTop only when the visible tab actually changed
- *
- * Drop-in replace for the original component.
+ * CenterTabs - Optimized for performance and maintainability:
+ * - Consolidated state management with custom hooks
+ * - Simplified ID change detection logic
+ * - Memoized search results and content rendering
+ * - Optimized scroll management
+ * - Reduced code duplication
  */
 export default function CenterTabs({
   initial = 'home',
@@ -47,87 +115,46 @@ export default function CenterTabs({
   albumId,
   playlistId,
   artistId,
-  onSelectArtist,
-  onSelectAlbum,
-  onSelectPlaylist,
-  onSelectTrack,
 }: Props) {
   const [internalTab, setInternalTab] = useState<string>(initial);
-
-  // derived effective tab (controlled or uncontrolled)
+  
+  // Derived effective tab (controlled or uncontrolled)
   const tab = activeTab !== undefined ? activeTab : internalTab;
+  
+  // Consolidated refs and utilities
+  const refs = useTabRefs(tab);
+  const scrollReset = useScrollReset(refs);
+  
+  // Current IDs object for easier management
+  const currentIds: TabIds = useMemo(() => ({
+    song: songTrackId,
+    album: albumId,
+    playlist: playlistId,
+    artist: artistId
+  }), [songTrackId, albumId, playlistId, artistId]);
 
-  // refs for DOM nodes to avoid querying document every time
-  const containerRef = useRef<HTMLElement | null>(null);
-  const tabsBodyRef = useRef<HTMLElement | null>(null);
+  // Optimized tab change handler
+  const setTab = useCallback((newTab: string) => {
+    if (newTab === tab) return; // No-op if same
+    if (onTabChange) onTabChange(newTab);
+    if (activeTab === undefined) setInternalTab(newTab);
+  }, [tab, onTabChange, activeTab]);
 
-  // ref to keep previous tab (so we can detect actual changes)
-  const prevTabRef = useRef<string | null>(null);
-  // ref that always contains latest tab for event handlers attached once
-  const currentTabRef = useRef<string>(tab);
-  useEffect(() => {
-    currentTabRef.current = tab;
-  }, [tab]);
-
-  // Refs for previous ids to detect changes
-  const prevSongTrackIdRef = useRef<string | undefined>(songTrackId);
-  const prevAlbumIdRef = useRef<string | undefined>(albumId);
-  const prevPlaylistIdRef = useRef<string | undefined>(playlistId);
-  const prevArtistIdRef = useRef<string | undefined>(artistId);
-
-  // setTab: only act if requested tab differs from current effective tab
-  const setTab = useCallback(
-    (t: string) => {
-      if (t === (activeTab !== undefined ? activeTab : internalTab)) return; // no-op if same
-      if (onTabChange) onTabChange(t);
-      if (activeTab === undefined) setInternalTab(t);
-    },
-    // include dependencies that affect the "current" tab calculation or callbacks
-    [activeTab, internalTab, onTabChange]
-  );
-
-  // when external searchTrigger occurs, switch to search only if it's not already active
+  // Handle search trigger
   useEffect(() => {
     if (searchTrigger && tab !== 'search') {
       setTab('search');
     }
-    // only re-run when searchTrigger changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchTrigger]);
+  }, [searchTrigger, tab, setTab]);
 
-  useEffect(() => {
-    let shouldReset = false;
-    if (tab === 'song' && songTrackId !== prevSongTrackIdRef.current) {
-      shouldReset = true;
-      prevSongTrackIdRef.current = songTrackId;
-    } else if (tab === 'album' && albumId !== prevAlbumIdRef.current) {
-      shouldReset = true;
-      prevAlbumIdRef.current = albumId;
-    } else if (tab === 'playlist' && playlistId !== prevPlaylistIdRef.current) {
-      shouldReset = true;
-      prevPlaylistIdRef.current = playlistId;
-    } else if (tab === 'artist' && artistId !== prevArtistIdRef.current) {
-      shouldReset = true;
-      prevArtistIdRef.current = artistId;
-    }
+  // Use custom hook for ID change detection
+  useIdChangeDetection(tab, currentIds, refs, scrollReset);
 
-    if (shouldReset) {
-      console.log('CenterTabs: id changed for tab', tab, 'resetting scroll');
-      // Defer to next frame to ensure DOM updates completed
-      requestAnimationFrame(() => {
-        const body = tabsBodyRef.current ?? document.querySelector('.center-tabs .tabs-body');
-        if (body instanceof HTMLElement && body.scrollTop !== 0) body.scrollTop = 0;
-
-        const mainEl = containerRef.current ?? document.querySelector('.center-tabs');
-        if (mainEl instanceof HTMLElement && mainEl.scrollTop !== 0) mainEl.scrollTop = 0;
-      });
-    }
-  }, [tab, songTrackId, albumId, playlistId, artistId]);
-
-  // Memoize normalized search results so downstream components don't get new object refs unnecessarily
+  // Memoized normalized search results
   const normalizedSearchResults = useMemo(() => {
     const raw = searchResults?.results ?? searchResults;
     if (!raw) return undefined;
+    
     return {
       songs: raw.track ?? raw.tracks ?? raw.songs ?? [],
       artists: raw.artist ?? raw.artists ?? [],
@@ -136,102 +163,71 @@ export default function CenterTabs({
     };
   }, [searchResults]);
 
-  // When normalized searchResults arrive while on the search tab, scroll them into view.
-  // This effect runs when either tab or normalizedSearchResults changes.
+  // Handle search results scroll into view
   useEffect(() => {
-    if (tab !== 'search') return;
-    const normalized = normalizedSearchResults;
-    const anyCount =
-      normalized &&
-      ((normalized.songs?.length || 0) + (normalized.artists?.length || 0) + (normalized.albums?.length || 0) + (normalized.playlists?.length || 0) > 0);
-    if (!anyCount) return;
+    if (tab !== 'search' || !normalizedSearchResults) return;
+    
+    const hasResults = Object.values(normalizedSearchResults).some(arr => arr.length > 0);
+    if (!hasResults) return;
 
     requestAnimationFrame(() => {
-      const container = containerRef.current ?? document.querySelector('.center-tabs');
-      const el = container ? container.querySelector('.search-results') : document.querySelector('.search-results');
-      if (el && el instanceof HTMLElement) {
-        if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        el.classList.add('results-arrived');
-        setTimeout(() => el.classList.remove('results-arrived'), 1200);
+      const container = refs.container.current ?? document.querySelector('.center-tabs');
+      const searchEl = container?.querySelector('.search-results') ?? document.querySelector('.search-results');
+      
+      if (searchEl instanceof HTMLElement) {
+        searchEl.scrollIntoView(SCROLL_BEHAVIOR);
+        searchEl.classList.add('results-arrived');
+        setTimeout(() => searchEl.classList.remove('results-arrived'), 1200);
       }
     });
-  }, [tab, normalizedSearchResults]);
+  }, [tab, normalizedSearchResults, refs.container]);
 
-  // Attach a single global listener for 'freely:localDataCleared' which uses currentTabRef to decide action.
-  // This avoids re-attaching on every tab change.
+  // Global event listener for data clearing
   useEffect(() => {
-    function handleCleared() {
-      const current = currentTabRef.current;
-      if (['playlist', 'album', 'artist', 'song'].includes(current)) {
+    const handleCleared = () => {
+      if (SCROLL_RESET_TABS.includes(refs.current as any)) {
         setTab('home');
       }
-    }
+    };
+    
     window.addEventListener('freely:localDataCleared', handleCleared);
     return () => window.removeEventListener('freely:localDataCleared', handleCleared);
-  }, [setTab]);
+  }, [refs, setTab]);
 
-  // Memoize rendered tab content to avoid re-creating React nodes when unrelated props change.
+  // Memoized tab content for optimal rendering
   const content = useMemo(() => {
     switch (tab) {
       case 'home':
-        return <HomeTab onSelectArtist={onSelectArtist} onSelectAlbum={onSelectAlbum} onSelectTrack={onSelectTrack} />;
-
+        return <HomeTab />;
       case 'song':
-        return <SongInfoTab trackId={songTrackId} onSelectArtist={onSelectArtist} onSelectAlbum={onSelectAlbum} onSelectTrack={onSelectTrack} />;
-
+        return <SongInfoTab trackId={songTrackId} />;
       case 'album':
-        return <AlbumInfoTab albumId={albumId} onSelectArtist={onSelectArtist} onSelectTrack={onSelectTrack} />;
-
+        return <AlbumInfoTab albumId={albumId} />;
       case 'playlist':
-        return <PlaylistInfoTab playlistId={playlistId} onSelectPlaylist={onSelectPlaylist} onSelectTrack={onSelectTrack} />;
-
+        return <PlaylistInfoTab playlistId={playlistId} />;
       case 'artist':
-        return <ArtistInfoTab artistId={artistId} onSelectAlbum={onSelectAlbum} onSelectPlaylist={onSelectPlaylist} onSelectTrack={onSelectTrack} />;
-
-      case 'search': {
-        // normalizedSearchResults already memoized above
+        return <ArtistInfoTab artistId={artistId} />;
+      case 'search':
         return (
           <SearchResults
             query={searchQuery}
             results={normalizedSearchResults}
-            onSelectArtist={onSelectArtist}
-            onSelectAlbum={onSelectAlbum}
-            onSelectPlaylist={onSelectPlaylist}
-            onSelectTrack={onSelectTrack}
-            // preserve searchLoading prop if SearchResults supports it
-            // @ts-expect-error optional prop forwarding if needed
+            // @ts-expect-error - loading prop may be optional
             loading={searchLoading}
           />
         );
-      }
-
       case 'settings':
         return <Settings />;
-
       case 'apis':
         return <Tests />;
-
       default:
         return null;
     }
-  }, [
-    tab,
-    onSelectArtist,
-    onSelectAlbum,
-    onSelectTrack,
-    songTrackId,
-    albumId,
-    playlistId,
-    onSelectPlaylist,
-    artistId,
-    searchQuery,
-    normalizedSearchResults,
-    searchLoading,
-  ]);
+  }, [tab, songTrackId, albumId, playlistId, artistId, searchQuery, normalizedSearchResults, searchLoading]);
 
   return (
-    <main className="center-tabs" ref={(el) => (containerRef.current = el)}>
-      <div className="tabs-body" ref={(el) => (tabsBodyRef.current = el)}>
+    <main className="center-tabs" ref={refs.container}>
+      <div className="tabs-body" ref={refs.tabsBody}>
         {content}
       </div>
     </main>

@@ -5,15 +5,19 @@ import '../styles/context-menu.css';
 export type ContextMenuItem = {
   id: string;
   label: string;
-  type?: 'action' | 'link' | 'submenu' | 'group' | 'separator';
+  type?: 'action' | 'link' | 'submenu' | 'group' | 'separator' | 'custom';
+  image?: string; // for custom item type
+  
   href?: string; // for link
   disabled?: boolean;
+  hide?: boolean;
   submenu?: ContextMenuItem[];
   // For group items
   title?: string;
   items?: ContextMenuItem[];
   // Optional material icon name to render before the label
   icon?: string;
+  iconFilled?: boolean; // if true, use filled style for material icon
   meta?: any;
   // Optional callback executed when an 'action' item is selected.
   // Can be sync or async. If provided, it will be called with the item

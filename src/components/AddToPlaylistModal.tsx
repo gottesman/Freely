@@ -129,6 +129,25 @@ export default function AddToPlaylistModal({
     }, animationDuration);
   };
 
+  // Global Escape key handler (closes modal like context menu)
+  React.useEffect(() => {
+    if(!isOpen) return;
+    function onKey(e: KeyboardEvent){
+      if(e.key === 'Escape'){
+        // If in create mode, first exit creation without closing entire modal
+        if(isCreating){
+          setIsCreating(false);
+          setNewPlaylistName('');
+        } else {
+          e.stopPropagation();
+          handleClose();
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true } as any);
+  }, [isOpen, isCreating]);
+
   // Load track IDs for all playlists when modal opens
   React.useEffect(() => {
     if (!isOpen || !playlists.length) return;

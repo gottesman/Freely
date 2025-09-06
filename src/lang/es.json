@@ -1,5 +1,9 @@
 {
   "app.title": "Freely",
+  "common.play": "Reproducir",
+  "common.playNext": "Reproducir siguiente",
+  "common.removeFromQueue": "Eliminar de la cola",
+  "common.info": "Info",
   "queue.empty": "La cola está vacía",
   "queue.title": "Cola",
   "queue.play": "Reproducir {track}",

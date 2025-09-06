@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -13,7 +13,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:server": "webpack --config webpack.server.config.js"
+  "build:server": "webpack --config webpack.server.config.js",
+  "fetch:ytdlp": "node scripts/fetch-ytdlp.js"
   },
   "dependencies": {
     "@tauri-apps/plugin-shell": "^2.3.1",
@@ -26,7 +27,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "utp-native": "^2.5.3",
-    "webtorrent": "^1.9.7"
+    "webtorrent": "^1.9.7",
+    "ytdlp-nodejs": "^2.3.4"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.0.0-beta.18",

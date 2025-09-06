@@ -12,7 +12,7 @@ The application is composed of three main parts:
 
 2.  **React Renderer Process (`src/`)**: This is the user interface of the application. It's a single-page application built with React and TypeScript, and it's responsible for rendering the UI and handling user interactions.
 
-3.  **Torrent Server (`server/torrent-server.js`)**: This is a separate Node.js process that's responsible for handling the peer-to-peer streaming of music. It's spawned by the main process and communicates with it through IPC.
+3.  **Main Server (`server/server.js`)**: This is a separate Node.js process that's responsible for handling the peer-to-peer and youtube search and streaming of music. It's spawned by the main process and communicates with it through IPC.
 
 ### Developer Workflows
 
@@ -52,7 +52,7 @@ This will create a distributable package for your operating system in the `build
 *   `src/App.tsx`: The main application component.
 *   `src/core/db.tsx`: The database provider and hook.
 *   `src/core/playback.tsx`: The playback provider and hook. (not yet implemented)
-*   `server/torrent-server.js`: The torrent server.
+*   `server/server.js`: The main server.
 *   `vite.config.ts`: The Vite configuration file.
 *   `package.json`: The project's dependencies and scripts.
 

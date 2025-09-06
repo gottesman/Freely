@@ -1,12 +1,16 @@
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
-import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
+import { usePlaybackSelector } from '../core/playback';
 import { useI18n } from '../core/i18n';
+import { buildTrackContextMenuItems } from './ContextMenu';
+import { useContextMenu } from '../core/ContextMenuContext';
+import { is } from 'cheerio/dist/commonjs/api/traversing';
 
 interface TrackData {
   id: string;
   name: string;
-  artists: { name: string }[];
+  artists: { id: string, name: string }[];
   album: {
+    id: string;
     images: any[];
   };
 }
@@ -31,12 +35,18 @@ interface QueueItemProps {
   onPointerDown: (ev: React.PointerEvent, index: number) => void;
   onHover: (index: number | null) => void;
   playTrack: (index: number) => void;
+  originalIndex: number; // index within full queue
+  onRemove: (originalIndex: number) => void;
+  onPlayNext: (originalIndex: number) => void;
+  queueIds: string[];
+  currentIndex: number;
 }
 
 const QueueItem: React.FC<QueueItemProps> = React.memo(({
-  id, index, isActive, dragState, trackData, handleHoverIndex, onPointerDown, onHover, playTrack
+  id, index, isActive, dragState, trackData, handleHoverIndex, onPointerDown, onHover, playTrack, originalIndex, onRemove, onPlayNext, queueIds, currentIndex
 }) => {
   const { t } = useI18n();
+  const { openMenu } = useContextMenu();
   const isDraggingItem = dragState?.from === index;
   const imgUrl = (window as any).imageRes?.(trackData?.album?.images, 2);
 
@@ -62,7 +72,11 @@ const QueueItem: React.FC<QueueItemProps> = React.memo(({
   data-queue-id={id}
       className={itemClass}
       style={itemStyle}
-      onPointerDown={(ev) => onPointerDown(ev, index)}
+      onPointerDown={(ev) => {
+        // Ignore pointer down originating from the more button so it doesn't start drag / play
+        if ((ev.target as HTMLElement)?.closest('.queue-more-btn')) return;
+        onPointerDown(ev, index);
+      }}
       onMouseEnter={() => onHover(index)}
       onMouseLeave={() => onHover(null)}
       role="button"
@@ -89,7 +103,22 @@ const QueueItem: React.FC<QueueItemProps> = React.memo(({
       <button
         className='queue-more-btn btn-icon'
         aria-label={t('common.more')}
-        onClick={(e) => { e.stopPropagation(); /* TODO: open track context menu */ }}
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          (e.nativeEvent as any)?.stopImmediatePropagation?.();
+          const target = e.currentTarget; // capture before async
+          ;(async () => {
+            const items = buildTrackContextMenuItems({
+              t,
+              trackData,
+              queueList: queueIds,
+              currentIndex,
+              queueOptions: !isActive
+            });
+            await openMenu({ e: e.currentTarget as any, items });
+          })();
+        }}
       >
         <span className="material-symbols-rounded">more_horiz</span>
       </button>
@@ -98,7 +127,6 @@ const QueueItem: React.FC<QueueItemProps> = React.memo(({
 });
 
 export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
-  const { playAt, reorderQueue } = usePlaybackActions();
   const queueIds = usePlaybackSelector(s => s.queueIds ?? []) ?? [];
   const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0) ?? 0;
   const trackCache = usePlaybackSelector(s => s.trackCache ?? {}) ?? {};
@@ -215,19 +243,19 @@ export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
         newQueue.push(...nextRest.slice(0, insertAt));
         if (typeof currId !== 'undefined') newQueue.push(currId);
         newQueue.push(...nextRest.slice(insertAt));
-        reorderQueue(newQueue);
+  window.dispatchEvent(new CustomEvent('freely:playback:reorderQueue',{ detail:{ queueIds:newQueue } }));
       }
     } else if (!interactionRef.current.isDragging) {
       // For non-drag taps, playAt expects the original index within queueIds. Map from rest index to original index.
       const currIdx = currentIndex;
       const restIndex = interactionRef.current.index;
       const origIndex = restIndex < currIdx ? restIndex : restIndex + 1;
-      playAt(origIndex);
+  window.dispatchEvent(new CustomEvent('freely:playback:playAt',{ detail:{ index: origIndex } }));
     }
     
     setDragState(null);
     cleanupInteraction();
-  }, [queueIds, playAt, reorderQueue, cleanupInteraction]);
+  }, [queueIds, currentIndex, cleanupInteraction]);
 
   const handlePointerDown = useCallback((ev: React.PointerEvent, index: number) => {
     if (ev.button !== 0 || interactionRef.current) return;
@@ -316,6 +344,23 @@ export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
 
   const currentId = (queueIds || [])[currentIndex];
   const restIds = (queueIds || []).filter((_, i) => i !== currentIndex);
+  function playNext(originalIndex: number) {
+    if (originalIndex === currentIndex) return; // no-op for current track
+    const nextQueue = [...queueIds];
+    const [trackId] = nextQueue.splice(originalIndex, 1);
+    let insertPos = currentIndex + 1;
+    // If removing an item that was before currentIndex, currentIndex shifts left; adjust insert position
+    if (originalIndex < currentIndex) insertPos -= 1;
+    if (insertPos > nextQueue.length) insertPos = nextQueue.length;
+    nextQueue.splice(insertPos, 0, trackId);
+  window.dispatchEvent(new CustomEvent('freely:playback:reorderQueue',{ detail:{ queueIds: nextQueue } }));
+  }
+
+  function removeFromQueue(originalIndex: number) {
+    if (originalIndex === currentIndex) return; // avoid removing currently playing track for now
+    const nextQueue = queueIds.filter((_, i) => i !== originalIndex);
+  window.dispatchEvent(new CustomEvent('freely:playback:reorderQueue',{ detail:{ queueIds: nextQueue } }));
+  }
 
   const listClass = ['np-queue-list', collapsed ? 'is-collapsed' : '', dragState ? '' : 'no-tx'].filter(Boolean).join(' ');
 
@@ -335,7 +380,12 @@ export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
             handleHoverIndex={null}
             onPointerDown={() => { /* no-op to disable dragging */ }}
             onHover={() => { /* no-op */ }}
-            playTrack={() => playAt(currentIndex)}
+            playTrack={() => window.dispatchEvent(new CustomEvent('freely:playback:playAt',{ detail:{ index: currentIndex } }))}
+            originalIndex={currentIndex}
+            onRemove={removeFromQueue}
+            onPlayNext={playNext}
+            queueIds={queueIds}
+            currentIndex={currentIndex}
           />
         </ul>
       )}
@@ -357,8 +407,13 @@ export const QueueTab: React.FC<{ collapsed?: boolean }> = ({ collapsed }) => {
               onHover={setHandleHoverIndex}
               playTrack={(idx) => {
                 const origIndex = restIdx < currentIndex ? restIdx : restIdx + 1;
-                playAt(origIndex);
+                window.dispatchEvent(new CustomEvent('freely:playback:playAt',{ detail:{ index: origIndex } }));
               }}
+              originalIndex={restIdx < currentIndex ? restIdx : restIdx + 1}
+              onRemove={removeFromQueue}
+              onPlayNext={playNext}
+              queueIds={queueIds}
+              currentIndex={currentIndex}
             />
           ))}
         </ul>

@@ -11,7 +11,7 @@ export interface SpotifyConfig {
 
 export interface SpotifySearchResult<T> { query: string; type: string; items: T[]; raw: any; }
 export interface SpotifyArtist { id: string; name: string; url: string; genres: string[]; images: { url: string; width?: number; height?: number }[]; followers?: number; popularity?: number; }
-export interface SpotifyAlbum { id: string; name: string; url: string; albumType: string; releaseDate: string; totalTracks: number; images: { url: string; width?: number; height?: number }[]; artists: SpotifyArtistRef[]; label?: string; copyrights?: string[]; }
+export interface SpotifyAlbum { id: string; name: string; url?: string; albumType?: string; releaseDate?: string; totalTracks?: number; images?: { url: string; width?: number; height?: number }[]; artists?: SpotifyArtistRef[]; label?: string; copyrights?: string[]; }
 export interface SpotifyTrack {
   id: string;
   name: string;
@@ -23,7 +23,7 @@ export interface SpotifyTrack {
   previewUrl?: string;
   popularity?: number;
   artists: SpotifyArtistRef[];
-  album?: SpotifyAlbum;
+  album: SpotifyAlbum;
   linked_from?: { id: string; type: string; uri: string; };
 }
 export interface SpotifyArtistRef { id: string; name: string; url: string; }
@@ -446,10 +446,13 @@ export class SpotifyClient {
     const items: SpotifyTrack[] = [];
     const raws: any[] = [];
     let total = 0;
+    // Fetch album metadata once so tracks (which lack album payload in this endpoint) can reference it
+    let albumMeta: SpotifyAlbum | undefined;
+    try { albumMeta = await this.getAlbum(id); } catch { /* non-critical */ }
     do {
       const json = await this.get(`/albums/${id}/tracks`, { market, limit: String(limit), offset: String(offset) });
       total = json.total ?? total;
-      const tracks = (json.items || []).map((t: any) => mapTrack(t));
+      const tracks = (json.items || []).map((t: any) => mapTrack(t, albumMeta));
       items.push(...tracks);
       raws.push(json);
       offset += tracks.length;
@@ -592,44 +595,30 @@ export class SpotifyClient {
         return m ? m[1] : undefined;
       };
 
-      // Map into SpotifyTrack-like objects when possible
+      // Map into SpotifyTrack-like objects using mapTrack to enforce album presence
       const mapped: SpotifyTrack[] = rawList.map((it: any) => {
-        // Support different shapes: ReccoBeats uses trackTitle, href, durationMs, popularity, artists[{name, href}]
-        const name = it.name || it.title || it.trackTitle || '';
-        const url = it.external_urls?.spotify || it.href || it.url || undefined;
-        const idFromHref = extractSpotifyId(url);
-        const id = idFromHref;
-        const durationMs = it.duration_ms || it.duration || it.durationMs || undefined;
-        const popularity = it.popularity ?? it.score ?? undefined;
-
-        // Normalize artists
-        let artistsArr: any[] = [];
-        if (Array.isArray(it.artists)) artistsArr = it.artists;
-        else if (Array.isArray(it.artist)) artistsArr = it.artist;
-        else artistsArr = [];
-
-        const mappedArtists: SpotifyArtistRef[] = (artistsArr || []).map((a: any) => {
-          const aUrl = a.external_urls?.spotify || a.href || a.url || undefined;
-          const aId = extractSpotifyId(aUrl);
-          return { id: aId, name: a.name || a.artistName || '', url: aUrl } as SpotifyArtistRef;
-        });
-
-        const album = it.album || it.albumInfo || it.album_ref || undefined;
-        const albumRef = album ? { id: extractSpotifyId(album.external_urls?.spotify || album.href || album.url), name: album.name, url: album.external_urls?.spotify || album.href || album.url, images: album.images || [] } : undefined;
-
-        return {
-          id: id,
-          name: name,
-          url: url,
-          durationMs: durationMs,
+        // Reshape into a Spotify-ish object so mapTrack can process consistently
+        const url = it.external_urls?.spotify || it.href || it.url;
+        const id = extractSpotifyId(url);
+        const obj = {
+          id,
+          name: it.name || it.title || it.trackTitle || '',
+          external_urls: { spotify: url },
+          duration_ms: it.duration_ms || it.duration || it.durationMs,
+            // explicit fields
           explicit: !!it.explicit,
-          trackNumber: it.track_number || it.trackNumber || 0,
-          discNumber: it.disc_number || it.discNumber || 0,
-          previewUrl: it.preview_url || it.previewUrl || undefined,
-          popularity: popularity,
-          artists: mappedArtists,
-          album: albumRef
-        } as SpotifyTrack;
+          track_number: it.track_number || it.trackNumber || 0,
+          disc_number: it.disc_number || it.discNumber || 0,
+          preview_url: it.preview_url || it.previewUrl,
+          popularity: it.popularity ?? it.score,
+          artists: (Array.isArray(it.artists) ? it.artists : (Array.isArray(it.artist) ? it.artist : [])).map((a: any) => ({
+            id: extractSpotifyId(a.external_urls?.spotify || a.href || a.url),
+            name: a.name || a.artistName || '',
+            external_urls: { spotify: a.external_urls?.spotify || a.href || a.url }
+          })),
+          album: it.album || it.albumInfo || it.album_ref || undefined
+        };
+        return mapTrack(obj);
       });
 
       // Best-effort: enrich mapped tracks by fetching Spotify track details for items
@@ -701,8 +690,34 @@ function normalizeLocale(l: string) {
 function mapArtist(a: any): SpotifyArtist { return { id: a.id, name: a.name, url: a.external_urls?.spotify, genres: a.genres || [], images: a.images || [], followers: a.followers?.total, popularity: a.popularity }; }
 function mapArtistRef(a: any): SpotifyArtistRef { return { id: a.id, name: a.name, url: a.external_urls?.spotify }; }
 function mapAlbum(a: any): SpotifyAlbum { return { id: a.id, name: a.name, url: a.external_urls?.spotify, albumType: a.album_type, releaseDate: a.release_date, totalTracks: a.total_tracks, images: a.images || [], artists: (a.artists || []).map(mapArtistRef), label: a.label, copyrights: (a.copyrights || []).map((c: any) => c.text).filter(Boolean) }; }
-function mapTrack(t: any): SpotifyTrack {
-  return { id: t.id, name: t.name, url: t.external_urls?.spotify, durationMs: t.duration_ms, explicit: !!t.explicit, trackNumber: t.track_number, discNumber: t.disc_number, previewUrl: t.preview_url || undefined, popularity: t.popularity, artists: (t.artists || []).map(mapArtistRef), album: t.album ? mapAlbum(t.album) : undefined , linked_from: t.linked_from || undefined };
+// Ensure every mapped track has an album object (even if minimal) so downstream UI
+// can always rely on track.album existing (e.g. for cover art / navigation).
+function mapTrack(t: any, fallbackAlbum?: SpotifyAlbum): SpotifyTrack {
+  let album: SpotifyAlbum | undefined;
+  if (t.album) {
+    try { album = mapAlbum(t.album); } catch { /* ignore malformed album */ }
+  }
+  if (!album) {
+    // Attempt to derive minimal album data from alternative fields or fallback
+    const altId = t.album_id || t.albumId || fallbackAlbum?.id || (t.id ? 'album-' + t.id : 'album-unknown');
+    const altName = t.album_name || t.albumName || fallbackAlbum?.name || '(Unknown Album)';
+    const altImages = fallbackAlbum?.images || [];
+    album = { id: String(altId), name: String(altName), images: altImages } as SpotifyAlbum;
+  }
+  return {
+    id: t.id,
+    name: t.name,
+    url: t.external_urls?.spotify,
+    durationMs: t.duration_ms,
+    explicit: !!t.explicit,
+    trackNumber: t.track_number,
+    discNumber: t.disc_number,
+    previewUrl: t.preview_url || undefined,
+    popularity: t.popularity,
+    artists: (t.artists || []).map(mapArtistRef),
+    album,
+    linked_from: t.linked_from || undefined
+  };
 }
 function mapPlaylist(p: any): SpotifyPlaylist { return { id: p.id, name: p.name, url: p.external_urls?.spotify, images: p.images || [], description: p.description, ownerName: p.owner?.display_name || p.owner?.id, totalTracks: p.tracks?.total }; }
 

@@ -5,7 +5,8 @@ module.exports = {
   target: 'node',
   // The entry point of your server
   entry: {
-    'server.bundle': './server/torrent-server.js',
+    'server.bundle': './server/server.js',
+    'utils': './server/utils.js',
     'torrent-get-files': './server/torrent-get-files.js'
   },
   output: {
@@ -15,8 +16,21 @@ module.exports = {
     filename: '[name].js',
   },
   externals: {
-    'utp-native': 'commonjs utp-native'
+    'utp-native': 'commonjs utp-native',
+    // Keep express external to avoid bundling its dynamic view engine requires (removes warning)
+    'express': 'commonjs express'
   },
+  module: {
+    parser: {
+      javascript: {
+        exprContextCritical: false, // Suppress "the request of a dependency is an expression" critical warning
+      }
+    }
+  },
+  ignoreWarnings: [
+    // Extra safety: ignore any remaining dynamic expression warning from express view loader
+    { module: /express[\\/]lib[\\/]view\.js/, message: /the request of a dependency is an expression/ }
+  ],
   // In node, we want __dirname to be the real directory name
   node: {
     __dirname: false,

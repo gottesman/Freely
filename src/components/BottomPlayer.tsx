@@ -1,71 +1,129 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
+import { usePlaybackSelector } from '../core/playback';
 import { useI18n } from '../core/i18n';
 import { useAlerts } from '../core/alerts';
-import { useGlobalAddToPlaylistModal } from '../core/AddToPlaylistModalContext';
 import { usePlaylists } from '../core/playlists';
+
+// Constants for performance optimization
+const RAF_THROTTLE_MS = 200; // Throttle state updates to reduce re-renders
+const DEFAULT_VOLUME = 40;
+const SEEK_PRECISION = 1000; // Milliseconds precision for seeking
+
+// Combined state interface for better performance
+interface PlayerState {
+  volume: number;
+  isPlaying: boolean;
+  positionMs: number;
+  isTrackInAnyPlaylist: boolean;
+}
+
+const initialPlayerState: PlayerState = {
+  volume: DEFAULT_VOLUME,
+  isPlaying: true,
+  positionMs: 0,
+  isTrackInAnyPlaylist: false
+};
+
+// Utility functions
+const formatTime = (ms?: number): string => {
+  if (ms === undefined || isNaN(ms)) return '--:--';
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m + ':' + s.toString().padStart(2, '0');
+};
+
+const createPlaybackEvent = (type: string) => () => 
+  window.dispatchEvent(new Event(`freely:playback:${type}`));
+
+const createCustomEvent = (type: string, detail: any) => 
+  window.dispatchEvent(new CustomEvent(type, { detail }));
 
 type Props = {
   lyricsOpen?: boolean;
   onToggleLyrics?: () => void;
-  onActivateSongInfo?: () => void;
   onToggleQueueTab?: () => void;
   queueActive?: boolean;
-  onSelectArtist?: (id: string) => void;
 };
 
 export default function BottomPlayer({
   lyricsOpen,
   onToggleLyrics,
-  onActivateSongInfo,
   onToggleQueueTab,
   queueActive,
-  onSelectArtist,
 }: Props) {
-  const { next, prev } = usePlaybackActions();
+  // Memoized playback control functions
+  const playbackControls = useMemo(() => ({
+    next: createPlaybackEvent('next'),
+    prev: createPlaybackEvent('prev')
+  }), []);
+
+  // Playback selectors
   const currentTrack = usePlaybackSelector(s => s.currentTrack);
   const trackLoading = usePlaybackSelector(s => s.loading);
   const error = usePlaybackSelector(s => s.error);
+  
+  // Hooks
   const { t } = useI18n();
   const { push: pushAlert, alerts } = useAlerts();
-  const { openModal: openPlaylistModal } = useGlobalAddToPlaylistModal();
   const { playlists, getPlaylistTrackIds } = usePlaylists();
 
-  // volume state + ref for slider DOM & CSS var
-  const [volume, setVolume] = useState<number>(40);
-  const volRef = useRef<HTMLInputElement | null>(null);
+  // Combined state for better performance
+  const [playerState, setPlayerState] = useState<PlayerState>(initialPlayerState);
+  
+  // Optimized refs
+  const refs = useRef({
+    volume: null as HTMLInputElement | null,
+    raf: null as number | null,
+    lastFrameTime: null as number | null,
+    position: 0,
+    duration: 0,
+    autoNextTriggered: false,
+    mounted: true,
+    lastStateUpdate: 0
+  });
 
-  // playback UI state
-  const [isPlaying, setIsPlaying] = useState<boolean>(true);
-  const [positionMs, setPositionMs] = useState<number>(0);
-  const [isTrackInAnyPlaylist, setIsTrackInAnyPlaylist] = useState<boolean>(false);
+  // Memoized track metadata
+  const trackMetadata = useMemo(() => {
+    const title = currentTrack?.name || (trackLoading ? t('np.loading') : t('np.noTrack'));
+    const artist = currentTrack?.artists?.map((a) => a.name).join(', ') || '';
+    const album = currentTrack?.album?.name || '';
+    const cover = (window as any).imageRes?.(currentTrack?.album?.images, 0) || '';
+    const durationMs = currentTrack?.durationMs || 0;
+    
+    return { title, artist, album, cover, durationMs };
+  }, [currentTrack, trackLoading, t]);
 
-  // refs for RAF loop & position tracking (avoid stale closures)
-  const rafRef = useRef<number | null>(null);
-  const lastFrameTimeRef = useRef<number | null>(null);
-  const positionRef = useRef<number>(0);
-  const durationRef = useRef<number>(0);
-  const autoNextTriggeredRef = useRef<boolean>(false);
-
-  // keep track of mount for safety
-  const mountedRef = useRef(true);
+  // Memoized progress calculation
+  const progress = useMemo(() => 
+    trackMetadata.durationMs ? Math.min(1, playerState.positionMs / trackMetadata.durationMs) : 0,
+    [playerState.positionMs, trackMetadata.durationMs]
+  );
+  // Cleanup effect
   useEffect(() => {
-    mountedRef.current = true;
+    refs.current.mounted = true;
     return () => {
-      mountedRef.current = false;
+      refs.current.mounted = false;
+      if (refs.current.raf) {
+        cancelAnimationFrame(refs.current.raf);
+        refs.current.raf = null;
+      }
     };
   }, []);
 
-  // Update CSS var for volume whenever it changes or ref becomes available
+  // Volume CSS variable update (optimized)
   useEffect(() => {
-    if (volRef.current) {
-      volRef.current.style.setProperty('--vol', `${volume}%`);
+    if (refs.current.volume) {
+      refs.current.volume.style.setProperty('--vol', `${playerState.volume}%`);
     }
-  }, [volume]);
+  }, [playerState.volume]);
 
+  // Optimized volume handler
   const onVolume = useCallback((v: number) => {
-    setVolume(v);
-    if (volRef.current) volRef.current.style.setProperty('--vol', `${v}%`);
+    setPlayerState(prev => ({ ...prev, volume: v }));
+    if (refs.current.volume) {
+      refs.current.volume.style.setProperty('--vol', `${v}%`);
+    }
   }, []);
 
   // Alert on playback errors (dedupe by message)
@@ -75,199 +133,214 @@ export default function BottomPlayer({
     }
   }, [error, alerts, pushAlert]);
 
-  // Reset position & RAF when track changes
+  // Reset position when track changes
   useEffect(() => {
-    positionRef.current = 0;
-    setPositionMs(0);
-    lastFrameTimeRef.current = null;
-    autoNextTriggeredRef.current = false;
-    // update durationRef
-    durationRef.current = currentTrack?.durationMs || 0;
-  }, [currentTrack?.id, currentTrack?.durationMs]);
+    refs.current.position = 0;
+    refs.current.lastFrameTime = null;
+    refs.current.autoNextTriggered = false;
+    refs.current.duration = trackMetadata.durationMs;
+    
+    setPlayerState(prev => ({ ...prev, positionMs: 0 }));
+  }, [currentTrack?.id, trackMetadata.durationMs]);
 
-  // Check if current track exists in any playlist.
-  // Runs in parallel (limited handling via Promise.allSettled), faster than sequential loop.
+  // Optimized playlist checking with better error handling
   useEffect(() => {
     let cancelled = false;
-    async function check() {
+    
+    const checkPlaylistMembership = async () => {
       if (!currentTrack?.id || !playlists?.length) {
-        if (!cancelled) setIsTrackInAnyPlaylist(false);
+        if (!cancelled) {
+          setPlayerState(prev => ({ ...prev, isTrackInAnyPlaylist: false }));
+        }
         return;
       }
+
       try {
-        const checks = playlists.map((pl) =>
-          getPlaylistTrackIds(pl.id).then((ids) => ({ ok: true, found: ids.includes(currentTrack.id) })).catch(() => ({ ok: false, found: false }))
+        // Use Promise.allSettled for better error handling
+        const results = await Promise.allSettled(
+          playlists.map(async (playlist) => {
+            const trackIds = await getPlaylistTrackIds(playlist.id);
+            return trackIds.includes(currentTrack.id);
+          })
         );
-        const settled = await Promise.allSettled(checks);
-        if (cancelled || !mountedRef.current) return;
-        const found = settled.some((s) => {
-          if (s.status !== 'fulfilled') return false;
-          const val = s.value as any;
-          return !!val?.found;
-        });
-        setIsTrackInAnyPlaylist(found);
+
+        if (cancelled || !refs.current.mounted) return;
+
+        const isInAnyPlaylist = results.some(result => 
+          result.status === 'fulfilled' && result.value
+        );
+
+        setPlayerState(prev => ({ ...prev, isTrackInAnyPlaylist: isInAnyPlaylist }));
       } catch {
-        if (!cancelled) setIsTrackInAnyPlaylist(false);
+        if (!cancelled) {
+          setPlayerState(prev => ({ ...prev, isTrackInAnyPlaylist: false }));
+        }
       }
-    }
-    check();
-    return () => {
-      cancelled = true;
     };
+
+    checkPlaylistMembership();
+    return () => { cancelled = true; };
   }, [currentTrack?.id, playlists, getPlaylistTrackIds]);
 
-  // RAF driven progress updater (efficient)
+  // Optimized RAF-driven progress updater
   useEffect(() => {
-    // cleanup any existing RAF
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
+    // Cleanup any existing RAF
+    if (refs.current.raf) {
+      cancelAnimationFrame(refs.current.raf);
+      refs.current.raf = null;
     }
 
-    // no duration or not playing => do not start RAF
-    const duration = currentTrack?.durationMs || 0;
-    durationRef.current = duration;
-    positionRef.current = Math.min(positionRef.current, duration);
-    setPositionMs(positionRef.current);
+    // No duration or not playing => do not start RAF
+    const duration = trackMetadata.durationMs;
+    refs.current.duration = duration;
+    refs.current.position = Math.min(refs.current.position, duration);
+    
+    setPlayerState(prev => ({ ...prev, positionMs: refs.current.position }));
 
-    if (!isPlaying || duration <= 0) {
+    if (!playerState.isPlaying || duration <= 0) {
       return;
     }
 
-    lastFrameTimeRef.current = null;
-    autoNextTriggeredRef.current = false;
-
-    const throttleMs = 200; // update state at most every 200ms to reduce renders
-    let lastSetTime = performance.now();
+    refs.current.lastFrameTime = null;
+    refs.current.autoNextTriggered = false;
+    refs.current.lastStateUpdate = performance.now();
 
     const loop = (now: number) => {
-      if (!mountedRef.current) return;
-      if (lastFrameTimeRef.current == null) lastFrameTimeRef.current = now;
-      const dt = now - lastFrameTimeRef.current;
-      lastFrameTimeRef.current = now;
+      if (!refs.current.mounted) return;
+      
+      if (refs.current.lastFrameTime == null) {
+        refs.current.lastFrameTime = now;
+      }
+      
+      const dt = now - refs.current.lastFrameTime;
+      refs.current.lastFrameTime = now;
 
-      // advance positionRef by dt milliseconds
-      positionRef.current = Math.min(durationRef.current, positionRef.current + dt);
+      // Advance position by dt milliseconds
+      refs.current.position = Math.min(refs.current.duration, refs.current.position + dt);
 
-      // if track ended, trigger next once
-      if (!autoNextTriggeredRef.current && positionRef.current >= durationRef.current) {
-        autoNextTriggeredRef.current = true;
-        // snap to end and call next on next tick to avoid interfering with RAF calculations
-        setPositionMs(durationRef.current);
+      // If track ended, trigger next once
+      if (!refs.current.autoNextTriggered && refs.current.position >= refs.current.duration) {
+        refs.current.autoNextTriggered = true;
+        setPlayerState(prev => ({ ...prev, positionMs: refs.current.duration }));
+        
+        // Use setTimeout to avoid interfering with RAF calculations
         setTimeout(() => {
           try {
-            next();
+            playbackControls.next();
           } catch {
-            /* ignore errors from playback next */
+            // Ignore errors from playback next
           }
         }, 0);
-        return; // stop RAF (we don't schedule another frame)
+        return; // Stop RAF
       }
 
-      // throttle React state updates to reduce re-renders
-      if (now - lastSetTime >= throttleMs) {
-        lastSetTime = now;
-        setPositionMs(Math.floor(positionRef.current));
+      // Throttle React state updates to reduce re-renders
+      if (now - refs.current.lastStateUpdate >= RAF_THROTTLE_MS) {
+        refs.current.lastStateUpdate = now;
+        setPlayerState(prev => ({ ...prev, positionMs: Math.floor(refs.current.position) }));
       }
 
-      rafRef.current = requestAnimationFrame(loop);
+      refs.current.raf = requestAnimationFrame(loop);
     };
 
-    rafRef.current = requestAnimationFrame(loop);
+    refs.current.raf = requestAnimationFrame(loop);
 
     return () => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
+      if (refs.current.raf) {
+        cancelAnimationFrame(refs.current.raf);
+        refs.current.raf = null;
       }
-      lastFrameTimeRef.current = null;
+      refs.current.lastFrameTime = null;
     };
-  }, [isPlaying, currentTrack?.id, next]);
+  }, [playerState.isPlaying, currentTrack?.id, trackMetadata.durationMs, playbackControls.next]);
 
-  // toggle play/pause
+  // Event handlers (memoized for performance)
   const togglePlay = useCallback(() => {
-    setIsPlaying((p) => !p);
+    setPlayerState(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
   }, []);
 
-  // format milliseconds into M:SS
-  const fmt = useCallback((ms?: number) => {
-    if (ms === undefined || isNaN(ms)) return '--:--';
-    const totalSec = Math.floor(ms / 1000);
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return m + ':' + s.toString().padStart(2, '0');
-  }, []);
-
-  const durationMs = currentTrack?.durationMs || 0;
-  const progress = durationMs ? Math.min(1, positionMs / durationMs) : 0;
-
-  // seek implementation (click to seek)
   const onSeek = useCallback(
     (e: React.MouseEvent<HTMLDivElement, MouseEvent>) => {
-      if (!durationMs) return;
+      if (!trackMetadata.durationMs) return;
+      
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const ratio = Math.min(1, Math.max(0, x / rect.width));
-      const newPos = Math.floor(ratio * durationMs);
-      positionRef.current = newPos;
-      setPositionMs(newPos);
-      // if we were paused, keep paused state; if playing, RAF will continue from new position
+      const newPos = Math.floor(ratio * trackMetadata.durationMs);
+      
+      refs.current.position = newPos;
+      setPlayerState(prev => ({ ...prev, positionMs: newPos }));
     },
-    [durationMs]
+    [trackMetadata.durationMs]
   );
 
-  // derived metadata (memoized)
-  const title = currentTrack?.name || (trackLoading ? t('np.loading') : t('np.noTrack'));
-  const artist = useMemo(() => currentTrack?.artists?.map((a) => a.name).join(', ') || '', [currentTrack?.artists]);
-  const album = currentTrack?.album?.name || '';
-  const cover = useMemo(() => (window as any).imageRes?.(currentTrack?.album?.images, 0) || '', [currentTrack?.album?.images]);
-
-  // open playlist modal handler
   const onAddToPlaylist = useCallback(() => {
     if (!currentTrack) return;
-    openPlaylistModal(currentTrack, true);
-  }, [currentTrack, openPlaylistModal]);
+    createCustomEvent('freely:openAddToPlaylistModal', { 
+      track: currentTrack, 
+      fromBottomPlayer: true 
+    });
+  }, [currentTrack]);
 
-  // click handlers that were previously inline
   const onMetaActivate = useCallback(
     (e?: React.MouseEvent | React.KeyboardEvent) => {
       if (e) {
         e.stopPropagation();
         if ('preventDefault' in e) e.preventDefault();
       }
-      if (onActivateSongInfo) onActivateSongInfo();
+      
+      if (currentTrack?.id) {
+        try {
+          createCustomEvent('freely:selectTrack', { 
+            trackId: currentTrack.id, 
+            source: 'bottom-player' 
+          });
+        } catch {
+          // Ignore errors
+        }
+      }
     },
-    [onActivateSongInfo]
+    [currentTrack?.id]
   );
 
   const onArtistClick = useCallback(
-    (e: React.MouseEvent, a: any) => {
+    (e: React.MouseEvent, artist: any) => {
       e.stopPropagation();
-      if (onSelectArtist && a.id) onSelectArtist(a.id);
-      else if (a.url) window.open(a.url, '_blank');
+      if (artist?.id) {
+        try {
+          createCustomEvent('freely:selectArtist', { 
+            artistId: artist.id, 
+            source: 'bottom-player' 
+          });
+        } catch {
+          // Ignore errors
+        }
+      } else if (artist?.url) {
+        window.open(artist.url, '_blank');
+      }
     },
-    [onSelectArtist]
+    []
   );
 
   return (
     <div className="bottom-player main-panels">
       <div className="track-progress">
-        <div className="time current">{fmt(positionMs)}</div>
+        <div className="time current">{formatTime(playerState.positionMs)}</div>
 
         <div
           className="bar"
           onClick={onSeek}
           role="progressbar"
           aria-valuemin={0}
-          aria-valuemax={durationMs}
-          aria-valuenow={positionMs}
+          aria-valuemax={trackMetadata.durationMs}
+          aria-valuenow={playerState.positionMs}
           aria-label={t('np.trackPosition', 'Track position')}
         >
           <div className="fill" style={{ width: `${progress * 100}%` }} />
           <div className="handle" style={{ left: `${progress * 100}%` }} />
         </div>
 
-        <div className="time total">{fmt(durationMs)}</div>
+        <div className="time total">{formatTime(trackMetadata.durationMs)}</div>
       </div>
 
       <div className="track-player">
@@ -275,35 +348,41 @@ export default function BottomPlayer({
           <div
             className="meta"
             role="button"
-            title={title + (artist ? ` - ${artist}` : '') + (album ? ` (${album})` : '')}
+            title={`${trackMetadata.title}${trackMetadata.artist ? ` - ${trackMetadata.artist}` : ''}${trackMetadata.album ? ` (${trackMetadata.album})` : ''}`}
             tabIndex={0}
             aria-label={t('np.showDetails', 'Show song details')}
             onClick={onMetaActivate}
             onKeyDown={(e) => {
-              if ((e as React.KeyboardEvent).key === 'Enter' || (e as React.KeyboardEvent).key === ' ') {
-                (e as React.KeyboardEvent).preventDefault();
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
                 onMetaActivate();
               }
             }}
           >
-            <img className="album-cover" src={cover} alt={album} />
+            <div
+              className="album-cover"
+              role="img"
+              aria-label={trackMetadata.album || t('np.noAlbum', 'No album')}
+              title={trackMetadata.album || ''}
+              style={trackMetadata.cover ? { backgroundImage: `url(${trackMetadata.cover})` } : undefined}
+            />
             <div className="meta-text">
-              <div className="song-title overflow-ellipsis">{title}</div>
+              <div className="song-title overflow-ellipsis">{trackMetadata.title}</div>
               <div className="song-artist overflow-ellipsis">
-                {currentTrack?.artists?.map((a, i) => (
-                  <React.Fragment key={a.id || a.name}>
-                    {i > 0 ? ', ' : ''}
+                {currentTrack?.artists?.map((artist, index) => (
+                  <React.Fragment key={artist.id || artist.name}>
+                    {index > 0 ? ', ' : ''}
                     <button
                       type="button"
                       className="np-link artist inline"
-                      onClick={(e) => onArtistClick(e, a)}
+                      onClick={(e) => onArtistClick(e, artist)}
                     >
-                      {a.name}
+                      {artist.name}
                     </button>
                   </React.Fragment>
                 ))}
               </div>
-              <div className="song-album overflow-ellipsis">{album}</div>
+              <div className="song-album overflow-ellipsis">{trackMetadata.album}</div>
             </div>
           </div>
 
@@ -314,8 +393,11 @@ export default function BottomPlayer({
             onClick={onAddToPlaylist}
             disabled={!currentTrack}
           >
-            <span className="material-symbols-rounded" style={{ color: isTrackInAnyPlaylist ? 'var(--accent)' : undefined }}>
-              {isTrackInAnyPlaylist ? 'check_circle' : 'add_circle'}
+            <span 
+              className="material-symbols-rounded" 
+              style={{ color: playerState.isTrackInAnyPlaylist ? 'var(--accent)' : undefined }}
+            >
+              {playerState.isTrackInAnyPlaylist ? 'check_circle' : 'add_circle'}
             </span>
           </button>
         </div>
@@ -325,15 +407,29 @@ export default function BottomPlayer({
             <span className="material-symbols-rounded filled">shuffle</span>
           </button>
 
-          <button className="player-icons player-icons-prev" aria-label={t('player.previous')} onClick={prev}>
+          <button 
+            className="player-icons player-icons-prev" 
+            aria-label={t('player.previous')} 
+            onClick={playbackControls.prev}
+          >
             <span className="material-symbols-rounded filled">skip_previous</span>
           </button>
 
-          <button className="play player-icons player-icons-play" aria-label={isPlaying ? t('player.pause') : t('player.play')} onClick={togglePlay}>
-            <span className="material-symbols-rounded filled">{isPlaying ? 'pause_circle' : 'play_circle'}</span>
+          <button 
+            className="play player-icons player-icons-play" 
+            aria-label={playerState.isPlaying ? t('player.pause') : t('player.play')} 
+            onClick={togglePlay}
+          >
+            <span className="material-symbols-rounded filled">
+              {playerState.isPlaying ? 'pause_circle' : 'play_circle'}
+            </span>
           </button>
 
-          <button className="player-icons player-icons-next" aria-label={t('player.next')} onClick={next}>
+          <button 
+            className="player-icons player-icons-next" 
+            aria-label={t('player.next')} 
+            onClick={playbackControls.next}
+          >
             <span className="material-symbols-rounded filled">skip_next</span>
           </button>
 
@@ -366,14 +462,14 @@ export default function BottomPlayer({
           </button>
 
           <input
-            ref={volRef}
+            ref={(el) => { refs.current.volume = el; }}
             className="volume-range"
             type="range"
             min={0}
             max={100}
-            value={volume}
+            value={playerState.volume}
             onChange={(e) => onVolume(Number(e.target.value))}
-            style={{ ['--vol' as any]: `${volume}%` }}
+            style={{ ['--vol' as any]: `${playerState.volume}%` }}
             aria-label={t('player.volume', 'Volume')}
           />
 

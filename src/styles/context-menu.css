@@ -2,15 +2,26 @@
 .cm-card {
   --this-radius: var(--radius-lg);
   --this-margins: var(--padding-sm);
-  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
-  box-shadow: inset 0 0 150px 10px rgb(var(--bg)),0 8px 30px -10px rgba(0,0,0,0.65), 0 4px 14px -6px rgba(0,0,0,0.55);
+  background: rgba(var(--bg), 0.4);
+
+  /* background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02)); */
   border-radius: var(--this-radius);
-  min-width: 160px;
-  z-index: 1000;
-  border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
-  backdrop-filter: blur(10px);
-  overflow: hidden;
+  min-width: 200px;
+  max-width: 250px;
   padding: var(--this-margins) 0;
+}
+.cm-root {
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 160ms ease;
+    backdrop-filter: blur(10px);
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+    box-shadow: inset 0 0 150px 10px rgb(var(--bg)),0 8px 30px -10px rgba(0,0,0,0.65), 0 4px 14px -6px rgba(0,0,0,0.55);
+}
+.cm-card .hidden {
+    display: none;
 }
 
 .cm-item {
@@ -31,10 +42,50 @@
   background-color: transparent;
 }
 
+/* Custom item style */ 
+
+.cm-item:first-child:is(.custom-item) {
+    top: calc(var(--this-margins) * -1);
+    background: var(--card);
+    border-bottom: solid 1px var(--glass-border-strong);
+    padding: var(--this-margins) calc(var(--this-margins) + 2px);
+}
+
+.cm-custom-image {
+    width: 32px;
+    height: 32px;
+    background: var(--glass-bg);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    flex-shrink: 0;
+    border: solid 1px var(--border-strong);
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+    image-rendering: optimizespeed;
+}
+.cm-custom-meta{
+  overflow: hidden;
+  padding-right: 2px;
+}
+
+.cm-custom-title {
+    font-size: 13px;
+    font-weight: 400;
+}
+
 /* Style for submenu trigger items */
 .cm-item.cm-submenu .cm-label {
   position: relative;
   width: 100%;
+}
+
+.cm-custom-subtitle {
+    font-size: 11px;
+    opacity: 0.7;
 }
 
 .cm-submenu-card {
@@ -54,6 +105,7 @@
     border-bottom: 1px solid var(--border-strong);
     margin: var(--this-margins) 0;
     background:var(--glass-bg);
+    box-shadow: 0 0 7px -2px #000;
 }
 .cm-group:first-child{
     margin-top: 0;
@@ -76,8 +128,7 @@
   display: flex;
   width: 100%;
   align-items: center;
-  justify-content: space-between;
-  gap: calc(var(--this-margins) + 2px);
+  gap: var(--this-margins);
 }
 .cm-submenu .cm-icon{
     opacity: 1;

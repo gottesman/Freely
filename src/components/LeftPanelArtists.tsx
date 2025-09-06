@@ -2,7 +2,7 @@ import React from 'react';
 import { useI18n } from '../core/i18n';
 import useFollowedArtists from '../core/artists';
 
-export default function LeftPanelArtists({ onSelectArtist, activeArtistId, activeArtistVisible }: { onSelectArtist?: (id: string)=>void, activeArtistId?: string, activeArtistVisible?: boolean }){
+export default function LeftPanelArtists({ activeArtistId, activeArtistVisible }: { activeArtistId?: string, activeArtistVisible?: boolean }){
   const { t } = useI18n();
   const { artists, loading } = useFollowedArtists();
 
@@ -33,12 +33,10 @@ export default function LeftPanelArtists({ onSelectArtist, activeArtistId, activ
             className={`artist-row card-btn ${(activeArtistVisible && String(a.id) === String(activeArtistId || '')) ? 'active' : ''}`}
             onClick={() => {
               try {
-                if (onSelectArtist && a.id) onSelectArtist(a.id);
+                if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:a.id, source:'left-panel' } }));
               } catch (e) {
-                // ignore handler errors
+                console.warn('LeftPanelArtists selectArtist failed', e);
               }
-              // Robust fallback: dispatch a global event so higher-level listeners (App) can open the artist tab
-              try { window.dispatchEvent(new CustomEvent('freely:select-artist', { detail: String(a.id) })); } catch(e){}
             }}
           >
             <div className='artist-avatar'>

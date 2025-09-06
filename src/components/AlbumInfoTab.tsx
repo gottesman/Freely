@@ -3,13 +3,13 @@ import InfoHeader from './InfoHeader';
 import { useI18n } from '../core/i18n';
 import SpotifyClient, { type SpotifyAlbum, type SpotifyArtist, type SpotifyTrack } from '../core/spotify';
 import { useSpotifyClient } from '../core/spotify-client';
-import { usePlaybackActions, usePlaybackSelector } from '../core/playback';
+import { usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 import { fmtMs, useHeroImage } from './tabHelpers';
 
 // use fmtMs from shared helpers
 
-export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }: { albumId?: string, onSelectArtist?: (id: string)=>void, onSelectTrack?: (id: string)=>void }){
+export default function AlbumInfoTab({ albumId }: { albumId?: string }){
   const { t } = useI18n();
   const spotifyClient = useSpotifyClient();
   const [album, setAlbum] = useState<SpotifyAlbum|undefined>();
@@ -18,7 +18,6 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
   const [loadingAlbum, setLoadingAlbum] = useState(false);
   const [loadingTracks, setLoadingTracks] = useState(false);
   const [loadingArtist, setLoadingArtist] = useState(false);
-  const { setQueue, enqueue } = usePlaybackActions();
   const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
   const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
 
@@ -100,8 +99,8 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
         const trackIds = tracks.map((t) => t.id).filter(Boolean);
         const dedupSet = new Set(trackIds);
         const filteredCurrent = currentSegment.filter((id) => !dedupSet.has(id));
-        const newQueue = [...trackIds, ...filteredCurrent];
-        setQueue(newQueue, 0);
+  const newQueue = [...trackIds, ...filteredCurrent];
+  window.dispatchEvent(new CustomEvent('freely:playback:setQueue',{ detail:{ queueIds:newQueue, startIndex:0 } }));
       }}
     ><span className="material-symbols-rounded filled">play_arrow</span></button>,
     <button
@@ -114,7 +113,7 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
         const trackIds = tracks.map((t) => t.id).filter(Boolean);
         const existing = new Set(queueIds);
         const toAppend = trackIds.filter((id) => !existing.has(id));
-        if (toAppend.length) enqueue(toAppend as any);
+  if (toAppend.length) window.dispatchEvent(new CustomEvent('freely:playback:enqueue',{ detail:{ ids: toAppend } }));
       }}
     ><span className="material-symbols-rounded">queue</span></button>
   ];
@@ -123,7 +122,7 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
     <div className="np-meta-line">
       <span className="np-artists">
         {album.artists.map((a, i) => (
-          <React.Fragment key={a.id || a.name}>{i > 0 && <span className="np-sep">, </span>}<button type="button" className="np-link artist" onClick={() => { if (onSelectArtist && a.id) onSelectArtist(a.id); else if (a.url) window.open(a.url, '_blank'); }}>{a.name}</button></React.Fragment>
+          <React.Fragment key={a.id || a.name}>{i > 0 && <span className="np-sep">, </span>}<button type="button" className="np-link artist" onClick={() => { if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:a.id, source:'album-info' } })); else if (a.url) window.open(a.url, '_blank'); }}>{a.name}</button></React.Fragment>
         ))}
       </span>
       {releaseYear && <><span className="np-dot" /><span className="np-album-year">{releaseYear}</span></>}
@@ -139,7 +138,7 @@ export default function AlbumInfoTab({ albumId, onSelectArtist, onSelectTrack }:
         {loadingTracks && <p className="np-hint">{t('np.loadingTracks')}</p>}
         {!loadingTracks && !tracks && albumId && <p className="np-hint">{t('np.loading')}</p>}
         {!loadingTracks && tracks && (
-          <TrackList tracks={tracks} playingTrackId={(queueIds || [])[currentIndex || 0]} showPlayButton onSelectTrack={onSelectTrack} />
+          <TrackList tracks={tracks} playingTrackId={(queueIds || [])[currentIndex || 0]} showPlayButton />
         )}
       </div>
       <div className="np-section np-track-credits" aria-label={t('np.albumCredits','Album credits')}>

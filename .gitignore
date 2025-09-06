@@ -12,6 +12,8 @@ apis
 config/spotify-token-endpoint.txt
 dist-*
 src-tauri/gen
+src-tauri/bin
 src-tauri/target
 src-tauri/Cargo.lock
+src-tauri/server-dist
 deprecated*
