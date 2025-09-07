@@ -1,93 +1,215 @@
 import { env } from './accessEnv';
 
-// We'll resolve charts endpoint at runtime to support Rust-only env variables
+// Performance constants
+const CHARTS_ENV_KEY = 'CHARTS_SPOTIFY_ENDPOINT';
+const WARNING_MESSAGE = '⚠️ CHARTS_SPOTIFY_ENDPOINT not set - weekly charts will be unavailable';
+
+// Spotify URI patterns
+const SPOTIFY_URI_PATTERNS = {
+  PREFIX: 'spotify',
+  MIN_PARTS: 3,
+  SEPARATOR: ':'
+} as const;
+
+// Metadata field mappings for normalization
+const METADATA_FIELDS = {
+  TRACK: {
+    primary: ['trackMetadata', 'track_metadata'],
+    name: ['trackName', 'name'],
+    image: ['displayImageUri', 'imageUri'],
+    uri: ['trackUri', 'track_uri']
+  },
+  ALBUM: {
+    primary: ['albumMetadata', 'album_metadata'],
+    name: ['albumName', 'name'],
+    image: ['displayImageUri', 'imageUri'],
+    uri: ['albumUri', 'album_uri']
+  },
+  ARTIST: {
+    primary: ['artistMetadata', 'artist_metadata'],
+    name: ['artistName', 'name'],
+    image: ['displayImageUri', 'imageUri'],
+    uri: ['artistUri', 'artist_uri']
+  }
+} as const;
+
+// Artist field variations for normalization
+const ARTIST_URI_FIELDS = [
+  'spotifyUri', 'spotify_uri', 'uri', 'spotifyUriString', 
+  'spotify_uri_string'
+] as const;
+
+const ARTIST_NAME_FIELDS = ['name', 'artistName'] as const;
+
+// Cached charts URL with memoization
 let _chartsUrlCached: string | null = null;
-async function chartsUrl(): Promise<string> {
-	if (_chartsUrlCached !== null) return _chartsUrlCached;
-	const remote = await env('CHARTS_SPOTIFY_ENDPOINT') || '';
-	_chartsUrlCached = remote || '';
-	if (_chartsUrlCached === '') console.warn('⚠️ CHARTS_SPOTIFY_ENDPOINT not set - weekly charts will be unavailable');
-	return _chartsUrlCached;
+
+const chartsUrl = async (): Promise<string> => {
+  if (_chartsUrlCached !== null) return _chartsUrlCached;
+  
+  const remote = await env(CHARTS_ENV_KEY) || '';
+  _chartsUrlCached = remote || '';
+  
+  if (_chartsUrlCached === '') {
+    console.warn(WARNING_MESSAGE);
+  }
+  
+  return _chartsUrlCached;
+};
+
+// Utility classes for better organization
+class SpotifyUriParser {
+  static parse(uri: string | null | undefined): { type: string; id: string } | null {
+    if (!uri || typeof uri !== 'string') return null;
+    
+    const parts = uri.split(SPOTIFY_URI_PATTERNS.SEPARATOR);
+    if (parts.length < SPOTIFY_URI_PATTERNS.MIN_PARTS || parts[0] !== SPOTIFY_URI_PATTERNS.PREFIX) {
+      return null;
+    }
+    
+    return { 
+      type: parts[1], 
+      id: parts.slice(2).join(SPOTIFY_URI_PATTERNS.SEPARATOR) 
+    };
+  }
 }
 
-/**
- * Parse a spotify uri formatted as "spotify:type:id" -> { type, id }
- */
-function parseSpotifyUri(uri: string | null | undefined) {
-	if (!uri || typeof uri !== 'string') return null;
-	const parts = uri.split(':');
-	if (parts.length < 3 || parts[0] !== 'spotify') return null;
-	return { type: parts[1], id: parts.slice(2).join(':') };
+class ArtistNormalizer {
+  static getFieldValue(obj: any, fields: readonly string[]): string {
+    for (const field of fields) {
+      const value = obj[field];
+      if (value) return value;
+    }
+    return '';
+  }
+
+  static normalizeArray(arr: any[]): Array<{ name: string; id: string | null; uri: string | null }> {
+    if (!Array.isArray(arr)) return [];
+    
+    return arr.map(artist => {
+      const spotifyUri = this.getFieldValue(artist, ARTIST_URI_FIELDS);
+      const parsed = SpotifyUriParser.parse(spotifyUri);
+      
+      return {
+        name: this.getFieldValue(artist, ARTIST_NAME_FIELDS),
+        uri: spotifyUri || null,
+        id: parsed ? parsed.id : null,
+      };
+    });
+  }
 }
 
-function normalizeArtistsArray(arr: any[]) {
-	if (!Array.isArray(arr)) return [];
-	return arr.map(a => {
-		const spotifyUri = a.spotifyUri || a.spotify_uri || a.uri || a.spotifyUri || a.spotifyUriString || a.spotify_uri_string || a.spotifyUri;
-		const parsed = parseSpotifyUri(spotifyUri);
-		return {
-			name: a.name || a.artistName || '',
-			uri: spotifyUri || null,
-			id: parsed ? parsed.id : null,
-		};
-	});
+class MetadataExtractor {
+  static getMetadataValue(metadata: any, fields: readonly string[]): string {
+    for (const field of fields) {
+      const value = metadata[field];
+      if (value) return value;
+    }
+    return '';
+  }
+
+  static extractFromEntry(entry: any) {
+    const rank = entry?.chartEntryData?.currentRank ?? null;
+    
+    // Check each metadata type in order of preference
+    for (const [type, config] of Object.entries(METADATA_FIELDS)) {
+      for (const primaryField of config.primary) {
+        const metadata = entry[primaryField];
+        if (metadata) {
+          return this.processMetadata(metadata, config, entry, rank, type.toLowerCase());
+        }
+      }
+    }
+    
+    // Fallback processing for unknown shapes
+    return this.processFallbackMetadata(entry, rank);
+  }
+
+  private static processMetadata(metadata: any, config: any, entry: any, rank: number | null, type: string) {
+    const name = this.getMetadataValue(metadata, config.name);
+    const image = this.getMetadataValue(metadata, config.image);
+    const uri = this.getMetadataValue(metadata, config.uri);
+    const artists = type === 'artist' ? [] : ArtistNormalizer.normalizeArray(metadata.artists || entry.artists || []);
+    
+    const parsed = SpotifyUriParser.parse(uri);
+    
+    return {
+      rank,
+      type: parsed ? parsed.type : null,
+      id: parsed ? parsed.id : null,
+      name,
+      image,
+      uri,
+      artists,
+      raw: entry
+    };
+  }
+
+  private static processFallbackMetadata(entry: any, rank: number | null) {
+    const metaKeys = ['trackMetadata', 'albumMetadata', 'artistMetadata', 'track_metadata', 'album_metadata', 'artist_metadata'];
+    const meta = metaKeys.reduce((acc, key) => acc || entry[key], null) || {};
+    
+    const nameFields = ['trackName', 'albumName', 'artistName', 'name'];
+    const imageFields = ['displayImageUri', 'imageUri', 'display_image_uri'];
+    const uriFields = ['trackUri', 'albumUri', 'artistUri', 'track_uri', 'album_uri', 'artist_uri'];
+    
+    const name = this.getMetadataValue(meta, nameFields);
+    const image = this.getMetadataValue(meta, imageFields);
+    const uri = this.getMetadataValue(meta, uriFields);
+    const artists = ArtistNormalizer.normalizeArray(meta.artists || entry.artists || []);
+    
+    const parsed = SpotifyUriParser.parse(uri);
+    
+    return {
+      rank,
+      type: parsed ? parsed.type : null,
+      id: parsed ? parsed.id : null,
+      name,
+      image,
+      uri,
+      artists,
+      raw: entry
+    };
+  }
 }
 
-function normalizeEntry(entry: any) {
-	// rank
-	const rank = entry?.chartEntryData?.currentRank ?? null;
+// Chart processing utilities
+class ChartProcessor {
+  static parseGroup(chartGroup: any, limit?: number): any[] {
+    if (!chartGroup || !Array.isArray(chartGroup.entries)) return [];
+    
+    const list = chartGroup.entries.map(MetadataExtractor.extractFromEntry);
+    
+    return typeof limit === 'number' ? list.slice(0, limit) : list;
+  }
 
-	// Determine metadata container - common keys differ for songs/albums/artists
-	// Prefer explicit metadata shapes
-	const metaTrack = entry.trackMetadata || entry.track_metadata;
-	const metaAlbum = entry.albumMetadata || entry.album_metadata;
-	const metaArtist = entry.artistMetadata || entry.artist_metadata;
-	let name = '';
-	let image = null;
-	let uri = null;
-	let type = null;
-	let id = null;
-	let artists: Array<{ name?: string; id?: string | null; uri?: string | null }> = [];
+  static async fetchChartsData(url: string): Promise<any> {
+    // Prefer IPC if available (Electron environment)
+    if (typeof (window as any).charts === 'object' && 
+        typeof (window as any).charts.getWeeklyTops === 'function') {
+      return await (window as any).charts.getWeeklyTops({ url });
+    }
+    
+    // Fallback to direct fetch
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`charts fetch failed: ${res.status}`);
+    return await res.json();
+  }
 
-	if (metaTrack) {
-		name = metaTrack.trackName || metaTrack.name || '';
-		image = metaTrack.displayImageUri || metaTrack.imageUri || null;
-		uri = metaTrack.trackUri || metaTrack.track_uri || null;
-		artists = normalizeArtistsArray(metaTrack.artists || entry.artists || []);
-	} else if (metaAlbum) {
-		name = metaAlbum.albumName || metaAlbum.name || '';
-		image = metaAlbum.displayImageUri || metaAlbum.imageUri || null;
-		uri = metaAlbum.albumUri || metaAlbum.album_uri || null;
-		artists = normalizeArtistsArray(metaAlbum.artists || entry.artists || []);
-	} else if (metaArtist) {
-		name = metaArtist.artistName || metaArtist.name || '';
-		image = metaArtist.displayImageUri || metaArtist.imageUri || null;
-		uri = metaArtist.artistUri || metaArtist.artist_uri || null;
-		artists = [];
-	} else {
-		// Fallback to older/unknown shapes
-		const meta = entry.trackMetadata || entry.albumMetadata || entry.artistMetadata || entry.track_metadata || entry.album_metadata || entry.artist_metadata || {};
-		name = meta.trackName || meta.albumName || meta.artistName || meta.name || '';
-		image = meta.displayImageUri || meta.imageUri || meta.display_image_uri || null;
-		uri = meta.trackUri || meta.albumUri || meta.artistUri || meta.track_uri || meta.album_uri || meta.artist_uri || null;
-		artists = normalizeArtistsArray(meta.artists || entry.artists || []);
-	}
-
-	const parsed = parseSpotifyUri(uri);
-	if (parsed) { type = parsed.type; id = parsed.id; }
-
-	return { rank, type, id, name, image, uri, artists, raw: entry };
-}
-
-/**
- * Parse a chart group (songs/albums/artists) into normalized entries
- * chartGroup is expected to have an `entries` array.
- */
-function parseChartGroup(chartGroup: any, limit?: number) {
-	if (!chartGroup || !Array.isArray(chartGroup.entries)) return [];
-	const list = chartGroup.entries.map(normalizeEntry);
-	if (typeof limit === 'number') return list.slice(0, limit);
-	return list;
+  static processApiResponse(json: any, limit?: number) {
+    // Support both naming conventions
+    const groups = json?.chartEntryViewResponses || json?.chart_entry_view_responses || [];
+    
+    // Expected order: [songs, albums, artists]
+    const [songsGroup = {}, albumsGroup = {}, artistsGroup = {}] = groups;
+    
+    return {
+      songs: this.parseGroup(songsGroup, limit),
+      albums: this.parseGroup(albumsGroup, limit),
+      artists: this.parseGroup(artistsGroup, limit),
+      raw: json,
+    };
+  }
 }
 
 /**
@@ -95,44 +217,34 @@ function parseChartGroup(chartGroup: any, limit?: number) {
  * Returns { songs: [], albums: [], artists: [] }
  * limit - optional number to limit each list
  */
-export async function getWeeklyTops({ limit }: { limit?: number } = {}): Promise<{ songs: any[]; albums: any[]; artists: any[]; raw: any }> {
-	try {
-		const url = await chartsUrl();
-		if(url === '') throw new Error('CHARTS_SPOTIFY_ENDPOINT not set');
-		let json = null;
-		// If running in Electron with our preload exposure, request via IPC so the
-		// main process performs the fetch (avoids browser CORS/preflight).
-		try {
-			if (typeof (window as any).charts === 'object' && typeof (window as any).charts.getWeeklyTops === 'function') {
-				json = await (window as any).charts.getWeeklyTops({ url });
-			} else {
-				const res = await fetch(url);
-				if (!res.ok) throw new Error('charts fetch failed: ' + res.status);
-				json = await res.json();
-			}
-		} catch (ipcErr) {
-			// If IPC or fetch failed, rethrow to be caught by outer catch
-			throw ipcErr;
-		}
+export const getWeeklyTops = async ({ limit }: { limit?: number } = {}): Promise<{
+  songs: any[];
+  albums: any[];
+  artists: any[];
+  raw: any;
+}> => {
+  try {
+    const url = await chartsUrl();
+    if (url === '') {
+      throw new Error('CHARTS_SPOTIFY_ENDPOINT not set');
+    }
 
-		// The API returns an array named chartEntryViewResponses
-		const groups = json?.chartEntryViewResponses || json?.chart_entry_view_responses || [];
+    const json = await ChartProcessor.fetchChartsData(url);
+    return ChartProcessor.processApiResponse(json, limit);
+    
+  } catch (e) {
+    console.warn('getWeeklyTops error', e);
+    return { 
+      songs: [], 
+      albums: [], 
+      artists: [], 
+      raw: null 
+    };
+  }
+};
 
-		// We expect order: [songs, albums, artists]
-		const songsGroup = groups[0] || {};
-		const albumsGroup = groups[1] || {};
-		const artistsGroup = groups[2] || {};
-
-		return {
-			songs: parseChartGroup(songsGroup, limit),
-			albums: parseChartGroup(albumsGroup, limit),
-			artists: parseChartGroup(artistsGroup, limit),
-			raw: json,
-		};
-	} catch (e) {
-		console.warn('getWeeklyTops error', e);
-		return { songs: [], albums: [], artists: [], raw: null };
-	}
-}
-
-export default { chartsUrl, getWeeklyTops };
+// Optimized export - clean interface
+export default {
+  chartsUrl,
+  getWeeklyTops
+};

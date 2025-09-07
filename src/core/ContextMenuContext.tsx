@@ -1,34 +1,28 @@
-import React, { createContext, useContext, useRef, useState, useEffect } from 'react';
+import React, { createContext, useContext, useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import ContextMenu from '../components/ContextMenu';
 import '../styles/context-menu.css';
 
+// Types and constants
 export type ContextMenuItem = {
   id: string;
   label: string;
   type?: 'action' | 'link' | 'submenu' | 'group' | 'separator' | 'custom';
-  image?: string; // for custom item type
-  
-  href?: string; // for link
+  image?: string;
+  href?: string;
   disabled?: boolean;
   hide?: boolean;
   submenu?: ContextMenuItem[];
-  // For group items
   title?: string;
   items?: ContextMenuItem[];
-  // Optional material icon name to render before the label
   icon?: string;
-  iconFilled?: boolean; // if true, use filled style for material icon
+  iconFilled?: boolean;
   meta?: any;
-  // Optional callback executed when an 'action' item is selected.
-  // Can be sync or async. If provided, it will be called with the item
-  // before the menu resolves/close.
   onClick?: (item: ContextMenuItem) => void | Promise<void>;
 };
 
 export type ContextMenuOptions = {
   x?: number;
   y?: number;
-  // Optional anchor: either an HTMLElement (button), a MouseEvent, or an object with clientX/clientY
   e?: HTMLElement | MouseEvent | { clientX: number; clientY: number };
   items: ContextMenuItem[];
   width?: number;
@@ -36,103 +30,185 @@ export type ContextMenuOptions = {
 
 type OpenFn = (opts: ContextMenuOptions) => Promise<string | null>;
 
-interface Ctx {
+interface ContextMenuState {
   openMenu: OpenFn;
 }
 
-const ContextMenuCtx = createContext<Ctx | undefined>(undefined);
+// Constants for better performance
+const DEFAULTS = {
+  POSITION: { x: 240, y: 240 } as { x: number; y: number },
+  ELEMENT_OFFSET: 6,
+  THROTTLE_DELAY: 16 // ~60fps
+} as const;
 
-export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+// Optimized position computation
+const positionCalculators = {
+  fromCoordinates: (x: number, y: number) => ({ x, y }),
+  
+  fromMouseEvent: (event: MouseEvent) => ({
+    x: event.clientX,
+    y: event.clientY
+  }),
+  
+  fromElement: (element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height + DEFAULTS.ELEMENT_OFFSET)
+    };
+  },
+  
+  fromObject: (obj: { clientX: number; clientY: number }) => ({
+    x: obj.clientX,
+    y: obj.clientY
+  })
+} as const;
+
+// Throttle utility for mouse tracking
+const throttle = (func: Function, delay: number) => {
+  let timeoutId: number | null = null;
+  let lastExecTime = 0;
+  
+  return (...args: any[]) => {
+    const currentTime = Date.now();
+    
+    if (currentTime - lastExecTime > delay) {
+      func(...args);
+      lastExecTime = currentTime;
+    } else {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        func(...args);
+        lastExecTime = Date.now();
+      }, delay - (currentTime - lastExecTime));
+    }
+  };
+};
+
+// Context
+const ContextMenuCtx = createContext<ContextMenuState | undefined>(undefined);
+
+// Optimized provider
+export const ContextMenuProvider = React.memo<{ children: React.ReactNode }>(({ children }) => {
   const [open, setOpen] = useState(false);
   const [opts, setOpts] = useState<ContextMenuOptions | null>(null);
   const resolveRef = useRef<((v: string | null) => void) | null>(null);
-  const mousePos = useRef<{ x: number; y: number }>({ x: 240, y: 240 });
+  const mousePos = useRef(DEFAULTS.POSITION);
 
-  useEffect(() => {
-    // Track last mouse position so we can default menu position when x/y not provided
-    function onMove(e: MouseEvent) {
-      mousePos.current = { x: e.clientX, y: e.clientY };
+  // Optimized position computation
+  const computePosition = useCallback((options: ContextMenuOptions) => {
+    // Direct coordinates take priority
+    if (typeof options.x === 'number' && typeof options.y === 'number') {
+      return positionCalculators.fromCoordinates(options.x, options.y);
     }
-    if (typeof window !== 'undefined') {
-      document.addEventListener('mousemove', onMove);
+
+    // Try to extract position from anchor/event
+    const anchor = options.e;
+    if (anchor) {
+      if (anchor instanceof MouseEvent) {
+        return positionCalculators.fromMouseEvent(anchor);
+      }
+      
+      if (anchor instanceof HTMLElement || (anchor as any)?.getBoundingClientRect) {
+        try {
+          return positionCalculators.fromElement(anchor as HTMLElement);
+        } catch {
+          // Element might be detached, fall through to fallback
+        }
+      }
+      
+      if ('clientX' in anchor && 'clientY' in anchor && 
+          typeof anchor.clientX === 'number' && typeof anchor.clientY === 'number') {
+        return positionCalculators.fromObject(anchor as { clientX: number; clientY: number });
+      }
     }
-    return () => { if (typeof window !== 'undefined') document.removeEventListener('mousemove', onMove); };
+
+    // Fallback to last mouse position
+    return mousePos.current;
   }, []);
 
-  function computePosition(options: ContextMenuOptions) {
-    // If both x and y provided, use them
-    if (typeof options.x === 'number' && typeof options.y === 'number') return { x: options.x, y: options.y };
-
-    // If an anchor/event is provided, try to derive coordinates
-    const maybe = (options as any).e;
-    try {
-      if (maybe) {
-        // MouseEvent
-        if (maybe instanceof MouseEvent) {
-          return { x: maybe.clientX, y: maybe.clientY };
-        }
-        // HTMLElement-like
-        if (maybe instanceof HTMLElement || (maybe && typeof maybe.getBoundingClientRect === 'function')) {
-          const el = maybe as HTMLElement;
-          const rect = el.getBoundingClientRect();
-          return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height + 6) };
-        }
-        // plain object with clientX/clientY
-        if (maybe.clientX && maybe.clientY) return { x: maybe.clientX, y: maybe.clientY };
-      }
-    } catch (_) {
-      // fallthrough to mouse position fallback
-    }
-
-    // fallback to last mouse position
-    return { x: mousePos.current.x, y: mousePos.current.y };
-  }
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') close(null);
-    }
-    if (open) document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
-
-  function openMenu(options: ContextMenuOptions) {
-    // if a menu is already open, close it first
+  // Memoized close function
+  const close = useCallback((result: string | null) => {
+    setOpen(false);
+    setOpts(null);
+    
     if (resolveRef.current) {
-      try { resolveRef.current(null); } catch (_) {}
+      resolveRef.current(result);
       resolveRef.current = null;
     }
-  // Compute final position (supports x/y, an anchor element/event via `e`, or mouse fallback)
-  const pos = computePosition(options);
-  const finalOpts: ContextMenuOptions = Object.assign({}, options, { x: pos.x, y: pos.y });
-  setOpts(finalOpts);
+  }, []);
+
+  // Memoized open function
+  const openMenu = useCallback((options: ContextMenuOptions): Promise<string | null> => {
+    // Close existing menu if open
+    if (resolveRef.current) {
+      resolveRef.current(null);
+      resolveRef.current = null;
+    }
+
+    // Compute position and prepare final options
+    const position = computePosition(options);
+    const finalOpts = { ...options, ...position };
+    
+    setOpts(finalOpts);
     setOpen(true);
+    
     return new Promise<string | null>((resolve) => {
       resolveRef.current = resolve;
     });
-  }
+  }, [computePosition]);
 
-  function close(result: string | null) {
-    setOpen(false);
-    setOpts(null);
-    if (resolveRef.current) {
-      try { resolveRef.current(result); } catch (_) {}
-      resolveRef.current = null;
+  // Consolidated event handling
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    // Throttled mouse tracking
+    const updateMousePosition = throttle((e: MouseEvent) => {
+      mousePos.current = { x: e.clientX, y: e.clientY };
+    }, DEFAULTS.THROTTLE_DELAY);
+
+    // Keyboard handler
+    const handleKeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && open) {
+        close(null);
+      }
+    };
+
+    // Add listeners
+    document.addEventListener('mousemove', updateMousePosition, { passive: true });
+    if (open) {
+      document.addEventListener('keydown', handleKeydown);
     }
-  }
+
+    // Cleanup
+    return () => {
+      document.removeEventListener('mousemove', updateMousePosition);
+      document.removeEventListener('keydown', handleKeydown);
+    };
+  }, [open, close]);
+
+  // Memoized context value
+  const contextValue = useMemo(() => ({
+    openMenu
+  }), [openMenu]);
 
   return (
-    <ContextMenuCtx.Provider value={{ openMenu }}>
+    <ContextMenuCtx.Provider value={contextValue}>
       {children}
       {open && opts && (
         <ContextMenu options={opts} onClose={close} />
       )}
     </ContextMenuCtx.Provider>
   );
-};
+});
 
-export function useContextMenu() {
+ContextMenuProvider.displayName = 'ContextMenuProvider';
+
+// Optimized hook
+export function useContextMenu(): ContextMenuState {
   const ctx = useContext(ContextMenuCtx);
-  if (!ctx) throw new Error('useContextMenu must be used within ContextMenuProvider');
+  if (!ctx) {
+    throw new Error('useContextMenu must be used within ContextMenuProvider');
+  }
   return ctx;
 }

@@ -1,268 +1,554 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { useI18n } from '../core/i18n';
 import { type SpotifyArtist, type SpotifyAlbum, type SpotifyTrack, type SpotifyPlaylist } from '../core/spotify';
-import { useSpotifyClient } from '../core/spotify-client';
-import GeniusClient from '../core/musicdata';
 import { usePlaybackSelector } from '../core/playback';
 import TrackList from './TrackList';
 import InfoHeader from './InfoHeader';
 import useFollowedArtists from '../core/artists';
 
-import { fmtMs, useHeroImage } from './tabHelpers';
+import { 
+  fmtMs, 
+  useHeroImage, 
+  useStableTabAPI,
+  usePlaybackActions,
+  navigationEvents,
+  formatFollowerCount,
+  processBioText
+} from './tabHelpers';
 
-export default function ArtistInfoTab({ artistId }: { artistId?: string }){
-  const { t } = useI18n();
-  const spotifyClient = useSpotifyClient();
-  const [artist, setArtist] = useState<SpotifyArtist | undefined>();
-  const [topTracks, setTopTracks] = useState<SpotifyTrack[] | undefined>();
-  const [recentAlbums, setRecentAlbums] = useState<SpotifyAlbum[] | undefined>();
-  const [playlists, setPlaylists] = useState<SpotifyPlaylist[] | undefined>();
-  const [loadingArtist, setLoadingArtist] = useState(false);
-  const [loadingTop, setLoadingTop] = useState(false);
-  const [loadingAlbums, setLoadingAlbums] = useState(false);
-  const [loadingPlaylists, setLoadingPlaylists] = useState(false);
-  const [bio, setBio] = useState<string | undefined>();
-  const [bioErr, setBioErr] = useState<string | undefined>();
-  const [bioLoading, setBioLoading] = useState(false);
-  const [bioExpanded, setBioExpanded] = useState(false);
-  const [lastBioArtist, setLastBioArtist] = useState<string | undefined>();
-  const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
-  const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
-  const currentTrack = usePlaybackSelector(s => s.currentTrack);
-  const { followArtist, unfollowArtist, isFollowing, artists: followedArtists } = useFollowedArtists();
-  const [localFollowing, setLocalFollowing] = useState<boolean>(false);
-  const optimisticUpdateRef = useRef<{ id: string; following: boolean } | null>(null);
-  const legacyEventHandledRef = useRef<boolean>(false); // Track if legacy event has handled the state
+// Constants for configuration
+const ARTIST_CONFIG = {
+  TOP_TRACKS_LIMIT: 10,
+  ALBUMS_LIMIT: 20,
+  ALBUMS_DISPLAY_LIMIT: 8,
+  PLAYLISTS_DISPLAY_LIMIT: 8,
+  PLAYLISTS_FALLBACK_LIMIT: 4,
+  BIO_PREVIEW_LENGTH: 500,
+} as const;
+
+const GRID_STYLES = {
+  albums: {
+    listStyle: 'none' as const,
+    margin: 0,
+    padding: 0,
+    display: 'grid' as const,
+    gap: '12px',
+    gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))',
+  },
+  playlists: {
+    listStyle: 'none' as const,
+    margin: 0,
+    padding: 0,
+    display: 'grid' as const,
+    gap: '12px',
+    gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))',
+  },
+} as const;
+
+// Interfaces for state management
+interface ArtistLoadingState {
+  artist: boolean;
+  topTracks: boolean;
+  albums: boolean;
+  playlists: boolean;
+  bio: boolean;
+}
+
+interface ArtistData {
+  artist?: SpotifyArtist;
+  topTracks?: SpotifyTrack[];
+  recentAlbums?: SpotifyAlbum[];
+  playlists?: SpotifyPlaylist[];
+}
+
+interface BiographyState {
+  bio?: string;
+  bioErr?: string;
+  bioExpanded: boolean;
+  lastBioArtist?: string;
+}
+
+// Custom hook for Spotify API calls
+function useSpotifyAPI() {
+  return useStableTabAPI();
+}
+
+// Custom hook for managing artist data loading
+function useArtistData(api: ReturnType<typeof useSpotifyAPI>, artistId?: string) {
+  const [data, setData] = useState<ArtistData>({});
+  const [loading, setLoading] = useState<ArtistLoadingState>({
+    artist: false,
+    topTracks: false,
+    albums: false,
+    playlists: false,
+    bio: false,
+  });
 
   // Load artist core info
-  useEffect(()=>{
-    let cancelled = false; setArtist(undefined);
-    if(!artistId) return;
-    (async()=>{
-      setLoadingArtist(true);
-      const w:any = window;
-      try {
-        let art: SpotifyArtist | undefined;
-        if(w.electron?.spotify?.getArtist){ art = await w.electron.spotify.getArtist(artistId); }
-        else { art = await spotifyClient.getArtist(artistId); }
-        if(!cancelled) setArtist(art);
-      } catch {}
-      finally { if(!cancelled) setLoadingArtist(false); }
-    })();
-    return ()=>{ cancelled = true; };
-  }, [artistId, spotifyClient]);
+  useEffect(() => {
+    if (!artistId) {
+      setData(prev => ({ ...prev, artist: undefined }));
+      return;
+    }
 
-  // Load top tracks (limit 10)
-  useEffect(()=>{
-    let cancelled = false; setTopTracks(undefined);
-    if(!artistId) return;
-    (async()=>{
-      setLoadingTop(true);
-      const w:any = window; try {
-        let tracks: SpotifyTrack[] | undefined;
-        if(w.electron?.spotify?.getArtistTopTracks){ tracks = await w.electron.spotify.getArtistTopTracks(artistId); }
-        else { tracks = await spotifyClient.getArtistTopTracks(artistId); }
-        if(!cancelled && tracks) setTopTracks(tracks.slice(0,10));
-      } finally { if(!cancelled) setLoadingTop(false); }
-    })();
-    return ()=>{ cancelled = true; };
-  }, [artistId, spotifyClient]);
+    let cancelled = false;
+    setLoading(prev => ({ ...prev, artist: true }));
+    setData(prev => ({ ...prev, artist: undefined }));
 
-  // Load recent releases (albums + singles)
-  useEffect(()=>{
-    let cancelled = false; setRecentAlbums(undefined);
-    if(!artistId) return;
-    (async()=>{
-      setLoadingAlbums(true);
-      const w:any = window; try {
-        let albums: SpotifyAlbum[] | undefined;
-        if(w.electron?.spotify?.getArtistAlbums){ const res = await w.electron.spotify.getArtistAlbums(artistId); albums = res.items || []; }
-        else { const res = await spotifyClient.getArtistAlbums(artistId, { includeGroups:'album,single', fetchAll:false, limit:20 }); albums = res.items; }
-        if(albums){
+    api.getArtist(artistId)
+      .then(artist => {
+        if (!cancelled) {
+          setData(prev => ({ ...prev, artist }));
+        }
+      })
+      .catch(() => {
+        // Ignore errors
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(prev => ({ ...prev, artist: false }));
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [artistId]); // Removed api from dependencies
+
+  // Load top tracks
+  useEffect(() => {
+    if (!artistId) {
+      setData(prev => ({ ...prev, topTracks: undefined }));
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(prev => ({ ...prev, topTracks: true }));
+    setData(prev => ({ ...prev, topTracks: undefined }));
+
+    api.getArtistTopTracks(artistId)
+      .then(tracks => {
+        if (!cancelled && tracks) {
+          setData(prev => ({ 
+            ...prev, 
+            topTracks: tracks.slice(0, ARTIST_CONFIG.TOP_TRACKS_LIMIT) 
+          }));
+        }
+      })
+      .catch(() => {
+        // Ignore errors
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(prev => ({ ...prev, topTracks: false }));
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [artistId]); // Removed api from dependencies
+
+  // Load recent albums
+  useEffect(() => {
+    if (!artistId) {
+      setData(prev => ({ ...prev, recentAlbums: undefined }));
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(prev => ({ ...prev, albums: true }));
+    setData(prev => ({ ...prev, recentAlbums: undefined }));
+
+    api.getArtistAlbums(artistId)
+      .then(albums => {
+        if (!cancelled && albums) {
           // Sort descending by release date
-          albums.sort((a,b)=> (b.releaseDate || '').localeCompare(a.releaseDate || ''));
-          // Deduplicate by album name (Spotify often returns deluxe/duplicate versions) keep first
+          albums.sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''));
+          
+          // Deduplicate by album name
           const seen = new Set<string>();
           const dedup: SpotifyAlbum[] = [];
-          for(const alb of albums){ if(!seen.has(alb.name.toLowerCase())){ dedup.push(alb); seen.add(alb.name.toLowerCase()); } }
-          if(!cancelled) setRecentAlbums(dedup.slice(0,8));
+          for (const alb of albums) {
+            if (!seen.has(alb.name.toLowerCase())) {
+              dedup.push(alb);
+              seen.add(alb.name.toLowerCase());
+            }
+          }
+          
+          setData(prev => ({ 
+            ...prev, 
+            recentAlbums: dedup.slice(0, ARTIST_CONFIG.ALBUMS_DISPLAY_LIMIT) 
+          }));
         }
-      } finally { if(!cancelled) setLoadingAlbums(false); }
-    })();
-    return ()=>{ cancelled = true; };
-  }, [artistId, spotifyClient]);
+      })
+      .catch(() => {
+        // Ignore errors
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(prev => ({ ...prev, albums: false }));
+        }
+      });
 
-  // Load playlists containing artist (approximation via search, since requires broader user auth for full). We'll do a search by artist name.
-  useEffect(()=>{
-    let cancelled = false; setPlaylists(undefined);
-    if(!artist?.name) return;
-    const name = artist.name;
-    (async()=>{
-      setLoadingPlaylists(true);
-      try {
-        const w:any = window; let items: SpotifyPlaylist[] | undefined;
-        if(w.electron?.spotify?.searchPlaylists){ const res = await w.electron.spotify.searchPlaylists(name); items = res.items || res.playlists?.items || []; }
-        else { const res = await spotifyClient.searchPlaylists(name); items = res.items; }
-        if(!cancelled && items){
+    return () => { cancelled = true; };
+  }, [artistId]); // Removed api from dependencies
+
+  // Load playlists containing artist
+  useEffect(() => {
+    if (!data.artist?.name) {
+      setData(prev => ({ ...prev, playlists: undefined }));
+      return;
+    }
+
+    let cancelled = false;
+    const name = data.artist.name;
+    setLoading(prev => ({ ...prev, playlists: true }));
+    setData(prev => ({ ...prev, playlists: undefined }));
+
+    api.searchPlaylists(name)
+      .then(items => {
+        if (!cancelled && items) {
           // Filter those whose name or description mention the artist
           const lower = name.toLowerCase();
-          const filtered = items.filter(p=> (p.name||'').toLowerCase().includes(lower) || (p.description||'').toLowerCase().includes(lower));
-          if(filtered.length) setPlaylists(filtered.slice(0,8)); else setPlaylists(items.slice(0,4));
+          const filtered = items.filter(p => 
+            (p.name || '').toLowerCase().includes(lower) || 
+            (p.description || '').toLowerCase().includes(lower)
+          );
+          
+          const result = filtered.length 
+            ? filtered.slice(0, ARTIST_CONFIG.PLAYLISTS_DISPLAY_LIMIT)
+            : items.slice(0, ARTIST_CONFIG.PLAYLISTS_FALLBACK_LIMIT);
+            
+          setData(prev => ({ ...prev, playlists: result }));
         }
-      } catch{}
-      finally { if(!cancelled) setLoadingPlaylists(false); }
-    })();
-    return ()=>{ cancelled = true; };
-  }, [artist?.name, spotifyClient]);
+      })
+      .catch(() => {
+        // Ignore errors
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(prev => ({ ...prev, playlists: false }));
+        }
+      });
 
-  // Load biography via Genius (similar to SongInfoTab)
-  useEffect(()=>{
-    const artistNameRaw = artist?.name?.trim();
-    if(!artistNameRaw || artistNameRaw === lastBioArtist) return;
-    const artistName = artistNameRaw; let cancelled = false;
-    (async()=>{
-      setBio(undefined); setBioErr(undefined); setBioLoading(true);
-      try {
-        const w:any = window; const hasIpc = !!(w.electron?.genius?.search && w.electron?.genius?.getArtist);
-        let searchRes: any; if(hasIpc) searchRes = await w.electron.genius.search(artistName); else { const gc = new GeniusClient(); searchRes = await gc.search(artistName); }
-        const hits = searchRes?.hits || []; let target = hits.find((h:any)=> h.primaryArtist?.name && h.primaryArtist.name.toLowerCase() === artistName.toLowerCase()) || hits[0];
-        const artistId = target?.primaryArtist?.id; if(!artistId) throw new Error('No matching Genius artist');
-        let ga: any; if(hasIpc) ga = await w.electron.genius.getArtist(artistId); else { const gc = new GeniusClient(); ga = await gc.getArtist(artistId); }
-        if(cancelled) return; const html: string | undefined = ga?.description?.html || ga?.descriptionPlain || ga?.description?.plain;
-        setBio(html || undefined); setLastBioArtist(artistName);
-      } catch(e:any){ if(!cancelled) setBioErr(e?.message || 'Bio unavailable'); }
-      finally { if(!cancelled) setBioLoading(false); }
-    })();
-    return ()=> { cancelled = true; };
-  }, [artist?.name, lastBioArtist]);
+    return () => { cancelled = true; };
+  }, [data.artist?.name]); // Removed api from dependencies
 
-  const heroImage = useMemo(() => useHeroImage(artist?.images, 0), [artist?.images]);
-  // Column width handled within TrackList
+  return { ...data, loading };
+}
 
-  const genres = useMemo(() => artist?.genres ?? [], [artist?.genres]);
+// Custom hook for biography management
+function useBiography(artistName?: string) {
+  const [bioState, setBioState] = useState<BiographyState>({
+    bioExpanded: false,
+  });
+  const [loading, setLoading] = useState(false);
+  const api = useStableTabAPI();
 
-  // Keep a local optimistic state so the UI updates immediately when toggling follow/unfollow.
   useEffect(() => {
-    console.log('[artists-debug] ArtistInfoTab useEffect triggered - artist?.id=', artist?.id, 'followedArtists.length=', followedArtists.length, 'legacyEventHandled=', legacyEventHandledRef.current);
+    const artistNameRaw = artistName?.trim();
+    if (!artistNameRaw || artistNameRaw === bioState.lastBioArtist) return;
+
+    let cancelled = false;
+    setLoading(true);
+    setBioState(prev => ({ 
+      ...prev, 
+      bio: undefined, 
+      bioErr: undefined 
+    }));
+
+    (async () => {
+      try {        
+        const searchRes = await api.geniusSearch(artistNameRaw);
+        
+        const hits = searchRes?.hits || [];
+        const target = hits.find((h: any) => 
+          h.primaryArtist?.name && 
+          h.primaryArtist.name.toLowerCase() === artistNameRaw.toLowerCase()
+        ) || hits[0];
+        
+        const artistId = target?.primaryArtist?.id;
+        if (!artistId) throw new Error('No matching Genius artist');
+        
+        const ga = await api.geniusGetArtist(artistId);
+        
+        if (cancelled) return;
+        
+        const html: string | undefined = ga?.description?.html || 
+          ga?.descriptionPlain || 
+          ga?.description?.plain;
+          
+        setBioState(prev => ({ 
+          ...prev, 
+          bio: html || undefined, 
+          lastBioArtist: artistNameRaw 
+        }));
+      } catch (e: any) {
+        if (!cancelled) {
+          setBioState(prev => ({ 
+            ...prev, 
+            bioErr: e?.message || 'Bio unavailable' 
+          }));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [artistName, bioState.lastBioArtist]);
+
+  const toggleExpanded = useCallback(() => {
+    setBioState(prev => ({ ...prev, bioExpanded: !prev.bioExpanded }));
+  }, []);
+
+  const bioPreview = useMemo(() => {
+    if (!bioState.bio) return '';
+    const { preview } = processBioText(bioState.bio, ARTIST_CONFIG.BIO_PREVIEW_LENGTH);
+    return `<p>${preview.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`;
+  }, [bioState.bio]);
+
+  return { ...bioState, loading, toggleExpanded, bioPreview };
+}
+
+// Custom hook for follow functionality
+function useFollowManagement(artist?: SpotifyArtist) {
+  const { followArtist, unfollowArtist, isFollowing } = useFollowedArtists();
+  const [localFollowing, setLocalFollowing] = useState(false);
+  const optimisticUpdateRef = useRef<{ id: string; following: boolean } | null>(null);
+  const legacyEventHandledRef = useRef<boolean>(false);
+
+  // Sync local following state
+  useEffect(() => {
     if (artist?.id) {
-      // Check if we have an optimistic update for this artist
       const optimistic = optimisticUpdateRef.current;
       if (optimistic && optimistic.id === artist.id) {
-        console.log('[artists-debug] Using optimistic state:', optimistic.following, '(ignoring actual state)');
-        // Don't override optimistic updates from useEffect
-        return;
-      } 
-      // Don't override if legacy event has already handled this
-      else if (legacyEventHandledRef.current) {
-        console.log('[artists-debug] Skipping useEffect update - legacy event already handled');
-        return;
-      } 
-      else {
+        return; // Don't override optimistic updates
+      } else if (legacyEventHandledRef.current) {
+        return; // Don't override if legacy event handled
+      } else {
         const actualFollowing = isFollowing(artist.id);
-        console.log('[artists-debug] Using actual following state:', actualFollowing);
         setLocalFollowing(actualFollowing);
       }
     } else {
       setLocalFollowing(false);
-      legacyEventHandledRef.current = false; // Reset when no artist
+      legacyEventHandledRef.current = false;
     }
-  }, [artist?.id, isFollowing]); // Removed followedArtists dependency
+  }, [artist?.id, isFollowing]);
 
-  // Listen to legacy global artist change event to refresh localFollowing immediately when other components trigger changes
-  useEffect(()=>{
-    const handler = (event: any) => { 
-      console.log('[artists-debug] ArtistInfoTab legacy event handler triggered for artist:', artist?.id);
-      if(artist?.id) {
-        // Use the event detail if available, otherwise fall back to isFollowing
+  // Listen to legacy global artist change events
+  useEffect(() => {
+    const handler = (event: any) => {
+      if (artist?.id) {
         const eventArtists = event?.detail?.artists;
-        if(eventArtists && Array.isArray(eventArtists)) {
+        if (eventArtists && Array.isArray(eventArtists)) {
           const isInEventList = eventArtists.some((a: any) => a.id === artist.id);
-          console.log('[artists-debug] Using event detail, isInEventList:', isInEventList);
           setLocalFollowing(isInEventList);
-          
-          // Mark that legacy event has handled the state
           legacyEventHandledRef.current = true;
           
-          // Clear optimistic update only after we've set the new state from event detail
           if (optimisticUpdateRef.current?.id === artist.id) {
-            console.log('[artists-debug] Clearing optimistic update for artist:', artist.id);
             optimisticUpdateRef.current = null;
           }
-        } else {
-          // Only use isFollowing fallback if no optimistic update is active
-          if (!optimisticUpdateRef.current || optimisticUpdateRef.current.id !== artist.id) {
-            const actualFollowing = isFollowing(artist.id);
-            console.log('[artists-debug] Using isFollowing fallback:', actualFollowing);
-            setLocalFollowing(actualFollowing);
-            legacyEventHandledRef.current = true;
-          } else {
-            console.log('[artists-debug] Skipping isFollowing fallback due to active optimistic update');
-          }
+        } else if (!optimisticUpdateRef.current || optimisticUpdateRef.current.id !== artist.id) {
+          const actualFollowing = isFollowing(artist.id);
+          setLocalFollowing(actualFollowing);
+          legacyEventHandledRef.current = true;
         }
       }
     };
+    
     window.addEventListener('freely:followed-artists-changed', handler);
     return () => window.removeEventListener('freely:followed-artists-changed', handler);
   }, [artist?.id, isFollowing]);
 
-  const onToggleFollow = async () => {
-    if(!artist) return;
-    const id = artist.id;
-    // Use localFollowing instead of isFollowing to get the current UI state
-    const currently = localFollowing;
-    console.log('[artists-debug] onToggleFollow clicked id=', id, 'currentlyFollowing=', currently, 'localFollowing=', localFollowing, 'isFollowing=', isFollowing(id));
+  const toggleFollow = useCallback(async () => {
+    if (!artist) return;
     
-    // Reset legacy event flag when starting new operation
+    const id = artist.id;
+    const currently = localFollowing;
+    
     legacyEventHandledRef.current = false;
     
-    // Set optimistic update
     const newFollowingState = !currently;
-    console.log('[artists-debug] Setting optimistic state to:', newFollowingState);
     optimisticUpdateRef.current = { id, following: newFollowingState };
     setLocalFollowing(newFollowingState);
     
-    try{
-      if(currently) {
-        console.log('[artists-debug] Calling unfollowArtist');
+    try {
+      if (currently) {
         await unfollowArtist(id);
       } else {
-        console.log('[artists-debug] Calling followArtist');
         await followArtist(artist);
       }
-      console.log('[artists-debug] Follow/unfollow operation completed');
-    }catch(e){
+    } catch (e) {
       console.warn('follow toggle failed', e);
-      // revert optimistic change on error
       optimisticUpdateRef.current = null;
       legacyEventHandledRef.current = false;
       setLocalFollowing(currently);
     }
-  };
+  }, [artist, localFollowing, followArtist, unfollowArtist]);
 
-  const headerActions = [
-    <button key="follow" className={`np-icon ${artist && localFollowing ? 'active' : ''}`} aria-pressed={artist ? localFollowing : false} aria-label={t('np.like','Like')} onClick={onToggleFollow}><span className={`material-symbols-rounded${artist && localFollowing ? ' filled' : ''}`}>favorite</span></button>
-  ];
+  return { localFollowing, toggleFollow };
+}
+
+// Memoized components for better performance
+const ArtistGrid = React.memo<{
+  items: SpotifyAlbum[] | SpotifyPlaylist[];
+  type: 'albums' | 'playlists';
+  onItemClick: (id: string, type: 'album' | 'playlist') => void;
+  t: (key: string, fallback?: string, options?: any) => string;
+}>(({ items, type, onItemClick, t }) => (
+  <ul className="artist-grid" role="list" style={GRID_STYLES[type]}>
+    {items.map(item => (
+      <li key={item.id} className="artist-grid-item" title={item.name}>
+        <button 
+          type="button" 
+          className="card-btn" 
+          style={{ display: 'flex', flexDirection: 'column', width: '100%', textAlign: 'left' }}
+          onClick={() => onItemClick(item.id, type === 'albums' ? 'album' : 'playlist')}
+        >
+          <div 
+            className="cover" 
+            style={{
+              width: '100%', 
+              aspectRatio: '1/1', 
+              backgroundSize: 'cover', 
+              backgroundPosition: 'center', 
+              borderRadius: '8px', 
+              backgroundImage: `url(${(window as any).imageRes?.(item.images, 1) || ''})`
+            }} 
+          />
+          <div className="info" style={{ marginTop: '6px' }}>
+            <div 
+              className="name ellipsis" 
+              title={item.name} 
+              style={{ fontSize: '0.85rem', fontWeight: 500 }}
+            >
+              {item.name}
+            </div>
+            <div className="meta" style={{ opacity: 0.7, fontSize: '0.7rem' }}>
+              {type === 'albums' 
+                ? (item as SpotifyAlbum).releaseDate?.split('-')[0] || ''
+                : typeof (item as SpotifyPlaylist).totalTracks === 'number' 
+                  ? t('np.tracks', undefined, { count: (item as SpotifyPlaylist).totalTracks })
+                  : ''
+              }
+            </div>
+          </div>
+        </button>
+      </li>
+    ))}
+  </ul>
+));
+
+const BiographySection = React.memo<{
+  bio?: string;
+  bioErr?: string;
+  bioExpanded: boolean;
+  bioPreview: string;
+  loading: boolean;
+  onToggleExpanded: () => void;
+  t: (key: string, fallback?: string) => string;
+}>(({ bio, bioErr, bioExpanded, bioPreview, loading, onToggleExpanded, t }) => (
+  <div className="np-section np-artist-info" aria-label={t('np.artistBio', 'Artist biography')}>
+    <h4 className="np-sec-title">{t('np.bio.title', 'Biography')}</h4>
+    {loading && <p className="np-hint">{t('np.bio.loading')}</p>}
+    {!loading && bioErr && <p className="np-error" role="alert">{bioErr}</p>}
+    {!loading && !bioErr && !bio && <p className="np-hint">{t('np.bio.notFound', 'No biography found')}</p>}
+    {!loading && bio && (
+      <div className={`artist-bio ${bioExpanded ? 'expanded' : 'collapsed'}`}>
+        <div className="bio-content">
+          <div 
+            className="np-bio-text" 
+            dangerouslySetInnerHTML={{ __html: bioExpanded ? bio : bioPreview }} 
+          />
+        </div>
+        <button 
+          type="button" 
+          className="bio-toggle np-link" 
+          onClick={onToggleExpanded}
+        >
+          {bioExpanded ? t('np.bio.showLess') : t('np.bio.readMore')}
+        </button>
+      </div>
+    )}
+  </div>
+));
+
+export default function ArtistInfoTab({ artistId }: { artistId?: string }) {
+  const { t } = useI18n();
+  const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
+  const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
+  const currentTrack = usePlaybackSelector(s => s.currentTrack);
+  const playbackActions = usePlaybackActions();
+
+  const api = useSpotifyAPI();
+  const { artist, topTracks, recentAlbums, playlists, loading } = useArtistData(api, artistId);
+  const { bio, bioErr, bioExpanded, loading: bioLoading, toggleExpanded, bioPreview } = useBiography(artist?.name);
+  const { localFollowing, toggleFollow } = useFollowManagement(artist);
+
+  // Memoized computed values
+  const heroImage = useMemo(() => 
+    useHeroImage(artist?.images, 0), 
+    [artist?.images]
+  );
+
+  const genres = useMemo(() => 
+    artist?.genres ?? [], 
+    [artist?.genres]
+  );
+
+  const followersMeta = useMemo(() => {
+    if (artist && artist.followers !== undefined) {
+      const count = formatFollowerCount(artist.followers);
+      const label = t('np.followers', undefined, { count: '' }).replace('{count', '');
+      return `${count} ${label}`;
+    }
+    return undefined;
+  }, [artist, t]);
+
+  // Optimized event handlers
+  const handleItemClick = useCallback((id: string, type: 'album' | 'playlist') => {
+    if (type === 'album') {
+      navigationEvents.selectAlbum(id, 'artist-info');
+    } else {
+      navigationEvents.selectPlaylist(id, 'artist-info');
+    }
+  }, []);
+
+  // Memoized header actions
+  const headerActions = useMemo(() => [
+    <button 
+      key="follow" 
+      className={`np-icon ${artist && localFollowing ? 'active' : ''}`} 
+      aria-pressed={artist ? localFollowing : false} 
+      aria-label={t('np.like', 'Like')} 
+      onClick={toggleFollow}
+    >
+      <span className={`material-symbols-rounded${artist && localFollowing ? ' filled' : ''}`}>
+        favorite
+      </span>
+    </button>
+  ], [artist, localFollowing, t, toggleFollow]);
 
   return (
     <section className="now-playing" aria-labelledby="artist-heading">
       <InfoHeader
         id="artist-heading"
         title={artist ? artist.name : (artistId ? t('np.loading') : t('np.noArtist'))}
-        meta={artist && artist.followers !== undefined ? <span className="np-album-trackcount">{Intl.NumberFormat().format(artist.followers)} {t('np.followers', undefined, { count: '' }).replace('{count','')}</span> : undefined}
+        meta={followersMeta ? <span className="np-album-trackcount">{followersMeta}</span> : undefined}
         tags={genres}
         actions={headerActions}
         heroImage={heroImage}
-        ariaActionsLabel={t('np.artistActions','Artist actions')}
+        ariaActionsLabel={t('np.artistActions', 'Artist actions')}
       />
 
       {/* Top Tracks */}
-      <div className="np-section" aria-label={t('np.topTracks','Top tracks')}>
-        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-          <h4 className="np-sec-title">{t('np.topTracks','Top Tracks')}</h4>
+      <div className="np-section" aria-label={t('np.topTracks', 'Top tracks')}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 className="np-sec-title">{t('np.topTracks', 'Top Tracks')}</h4>
         </div>
-        {loadingTop && <p className="np-hint">{t('np.loadingTracks')}</p>}
-        {!loadingTop && !topTracks && artistId && <p className="np-hint">{t('np.loading')}</p>}
-        {!loadingTop && topTracks && (
+        {loading.topTracks && <p className="np-hint">{t('np.loadingTracks')}</p>}
+        {!loading.topTracks && !topTracks && artistId && <p className="np-hint">{t('np.loading')}</p>}
+        {!loading.topTracks && topTracks && (
           <TrackList
             tracks={topTracks}
             playingTrackId={currentTrack?.id}
@@ -272,64 +558,59 @@ export default function ArtistInfoTab({ artistId }: { artistId?: string }){
       </div>
 
       {/* Recent releases */}
-      <div className="np-section" aria-label={t('np.recentReleases','Recent releases')}>
-        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-          <h4 className="np-sec-title">{t('np.recentReleases','Recent Releases')}</h4>
-          <button type="button" className="np-link" disabled={!artist} onClick={()=> {/* Placeholder for full discography action */}}>{t('np.viewDiscography','See all')}</button>
+      <div className="np-section" aria-label={t('np.recentReleases', 'Recent releases')}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 className="np-sec-title">{t('np.recentReleases', 'Recent Releases')}</h4>
+          <button 
+            type="button" 
+            className="np-link" 
+            disabled={!artist} 
+            onClick={() => {/* Placeholder for full discography action */}}
+          >
+            {t('np.viewDiscography', 'See all')}
+          </button>
         </div>
-        {loadingAlbums && <p className="np-hint">{t('np.loadingAlbums','Loading albums')}</p>}
-        {!loadingAlbums && recentAlbums && recentAlbums.length === 0 && <p className="np-hint">{t('np.noAlbums','No releases')}</p>}
-        {!loadingAlbums && recentAlbums && recentAlbums.length>0 && (
-          <ul className="artist-grid" role="list" style={{listStyle:'none', margin:0, padding:0, display:'grid', gap:'12px', gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))'}}>
-            {recentAlbums.map(alb=>(
-              <li key={alb.id} className="artist-grid-item" title={alb.name}>
-                <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> { if(alb.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:alb.id, source:'artist-info' } })); }}>
-                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${(window as any).imageRes?.(alb.images,1) || ''})`}} />
-                  <div className="info" style={{marginTop:'6px'}}><div className="name ellipsis" title={alb.name} style={{fontSize:'0.85rem', fontWeight:500}}>{alb.name}</div><div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{alb.releaseDate?.split('-')[0] || ''}</div></div>
-                </button>
-              </li>
-            ))}
-          </ul>
+        {loading.albums && <p className="np-hint">{t('np.loadingAlbums', 'Loading albums')}</p>}
+        {!loading.albums && recentAlbums && recentAlbums.length === 0 && (
+          <p className="np-hint">{t('np.noAlbums', 'No releases')}</p>
+        )}
+        {!loading.albums && recentAlbums && recentAlbums.length > 0 && (
+          <ArtistGrid 
+            items={recentAlbums} 
+            type="albums" 
+            onItemClick={handleItemClick} 
+            t={t} 
+          />
         )}
       </div>
 
       {/* Playlists containing artist */}
-      <div className="np-section" aria-label={t('np.playlistsFeaturing','Playlists featuring artist')}>
-        <h4 className="np-sec-title">{t('np.playlistsFeaturing','Playlists Featuring')}</h4>
-        {loadingPlaylists && <p className="np-hint">{t('np.loadingPlaylists','Loading playlists')}</p>}
-        {!loadingPlaylists && playlists && playlists.length===0 && <p className="np-hint">{t('np.noPlaylists','No playlists found')}</p>}
-        {!loadingPlaylists && playlists && playlists.length>0 && (
-          <ul className="artist-grid" role="list" style={{listStyle:'none', margin:0, padding:0, display:'grid', gap:'12px', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))'}}>
-            {playlists.map(pl=>(
-              <li key={pl.id} className="artist-grid-item" title={pl.name}>
-                <button type="button" className="card-btn" style={{display:'flex',flexDirection:'column',width:'100%',textAlign:'left'}} onClick={()=> { if(pl.id) window.dispatchEvent(new CustomEvent('freely:selectPlaylist',{ detail:{ playlistId:pl.id, source:'artist-info' } })); }}>
-                  <div className="cover" style={{width:'100%', aspectRatio:'1/1', backgroundSize:'cover', backgroundPosition:'center', borderRadius:'8px', backgroundImage:`url(${(window as any).imageRes?.(pl.images,1) || ''})`}} />
-                  <div className="info" style={{marginTop:'6px'}}>
-                    <div className="name ellipsis" title={pl.name} style={{fontSize:'0.85rem', fontWeight:500}}>{pl.name}</div>
-                    <div className="meta" style={{opacity:0.7, fontSize:'0.7rem'}}>{typeof pl.totalTracks === 'number' ? t('np.tracks', undefined, { count: pl.totalTracks }) : ''}</div>
-                  </div>
-                </button>
-              </li>
-            ))}
-          </ul>
+      <div className="np-section" aria-label={t('np.playlistsFeaturing', 'Playlists featuring artist')}>
+        <h4 className="np-sec-title">{t('np.playlistsFeaturing', 'Playlists Featuring')}</h4>
+        {loading.playlists && <p className="np-hint">{t('np.loadingPlaylists', 'Loading playlists')}</p>}
+        {!loading.playlists && playlists && playlists.length === 0 && (
+          <p className="np-hint">{t('np.noPlaylists', 'No playlists found')}</p>
+        )}
+        {!loading.playlists && playlists && playlists.length > 0 && (
+          <ArtistGrid 
+            items={playlists} 
+            type="playlists" 
+            onItemClick={handleItemClick} 
+            t={t} 
+          />
         )}
       </div>
 
       {/* Biography */}
-      <div className="np-section np-artist-info" aria-label={t('np.artistBio','Artist biography')}>
-        <h4 className="np-sec-title">{t('np.bio.title','Biography')}</h4>
-        {bioLoading && <p className="np-hint">{t('np.bio.loading')}</p>}
-        {!bioLoading && bioErr && <p className="np-error" role="alert">{bioErr}</p>}
-        {!bioLoading && !bioErr && !bio && <p className="np-hint">{t('np.bio.notFound','No biography found')}</p>}
-        {!bioLoading && bio && (
-          <div className={`artist-bio ${bioExpanded ? 'expanded' : 'collapsed'}`}>
-            <div className="bio-content">
-              <div className="np-bio-text" dangerouslySetInnerHTML={{ __html: bioExpanded ? bio : (()=>{ const txt = bio.replace(/<[^>]+>/g,''); const short = txt.slice(0,500); return `<p>${short.replace(/&/g,'&amp;').replace(/</g,'&lt;')}${txt.length>500?'…':''}</p>`; })() }} />
-            </div>
-            <button type="button" className="bio-toggle np-link" onClick={()=> setBioExpanded(v=>!v)}>{bioExpanded? t('np.bio.showLess'):t('np.bio.readMore')}</button>
-          </div>
-        )}
-      </div>
+      <BiographySection
+        bio={bio}
+        bioErr={bioErr}
+        bioExpanded={bioExpanded}
+        bioPreview={bioPreview}
+        loading={bioLoading}
+        onToggleExpanded={toggleExpanded}
+        t={t}
+      />
     </section>
   );
 }

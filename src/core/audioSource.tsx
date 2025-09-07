@@ -1,70 +1,113 @@
 import React, { createContext, useContext, ReactNode, useMemo } from 'react';
 
+// Types and constants
 export type AudioSourceType = 'local' | 'http' | 'torrent' | 'youtube';
 
 export type AudioSourceSpec = {
     type: AudioSourceType;
-    // value is a file path, http url, torrent id/magnet, or youtube url/id
     value: string;
-    // optional metadata for provider-specific handling
     meta?: Record<string, any>;
 };
 
 export type AudioSourceAPI = {
-    // Normalize/resolve a source spec to a playable URL (blob:, http:, tauri://, proxy, etc.)
     resolveSource: (spec: AudioSourceSpec) => Promise<string>;
 };
 
-const AudioSourceContext = createContext<AudioSourceAPI | undefined>(undefined);
+// Constants for better performance
+const URL_PATTERNS = {
+    HTTP: /^https?:\/\//i,
+    FILE_PROTOCOL: /^(blob|data|file):/,
+    YOUTUBE_ID: /^[A-Za-z0-9_-]{8,32}$/
+} as const;
 
-// standalone resolver that can be used without React context/hook
-export async function resolveAudioSource(spec: AudioSourceSpec): Promise<string> {
-    const { type, value } = spec;
-    const w: any = typeof window !== 'undefined' ? window : {};
+const URL_TEMPLATES = {
+    TORRENT: (id: string) => `/server/torrent-stream?id=${encodeURIComponent(id)}`,
+    YOUTUBE_URL: (url: string) => `/audio/stream?url=${encodeURIComponent(url)}`,
+    YOUTUBE_ID: (id: string) => `/audio/stream?videoId=${encodeURIComponent(id)}`,
+    YOUTUBE_FALLBACK: (url: string) => `/youtube/stream?url=${encodeURIComponent(url)}`
+} as const;
 
-    if (type === 'local') {
-        if (w.__TAURI__ && w.__TAURI__.fs) {
+// Optimized environment detection
+const getEnvironment = (() => {
+    let cached: { tauri?: any; electron?: any } | null = null;
+    return () => {
+        if (!cached && typeof window !== 'undefined') {
+            const w = window as any;
+            cached = {
+                tauri: w.__TAURI__?.fs,
+                electron: w.electron?.fs
+            };
+        }
+        return cached || {};
+    };
+})();
+
+// Optimized resolver functions for each source type
+const resolvers = {
+    local: async (value: string): Promise<string> => {
+        const env = getEnvironment();
+        
+        if (env.tauri) {
             return value.startsWith('file:') ? value : `file://${value}`;
         }
-        if (w.electron?.fs?.getFileUrl) {
-            const url = await w.electron.fs.getFileUrl(value);
+        
+        if (env.electron?.getFileUrl) {
+            const url = await env.electron.getFileUrl(value);
             if (url) return url;
         }
-        if (/^(blob|data|file):/.test(value)) return value;
-        return value;
+        
+        return URL_PATTERNS.FILE_PROTOCOL.test(value) ? value : value;
+    },
+
+    http: async (value: string): Promise<string> => value,
+
+    torrent: async (value: string): Promise<string> => URL_TEMPLATES.TORRENT(value),
+
+    youtube: async (value: string): Promise<string> => {
+        const trimmedValue = value.trim();
+        
+        if (URL_PATTERNS.HTTP.test(trimmedValue)) {
+            return URL_TEMPLATES.YOUTUBE_URL(trimmedValue);
+        }
+        
+        if (URL_PATTERNS.YOUTUBE_ID.test(trimmedValue)) {
+            return URL_TEMPLATES.YOUTUBE_ID(trimmedValue);
+        }
+        
+        return URL_TEMPLATES.YOUTUBE_FALLBACK(trimmedValue);
     }
+} as const;
 
-    if (type === 'http') return value;
+// Context
+const AudioSourceContext = createContext<AudioSourceAPI | undefined>(undefined);
 
-    if (type === 'torrent') {
-        const tid = encodeURIComponent(value);
-        return `/server/torrent-stream?id=${tid}`;
-    }
-
-    if (type === 'youtube') {
-        // If value looks like a full URL, pass it as `url=`. If it looks like a YouTube
-        // video id (simple heuristic), pass as `videoId=` for a smaller query string.
-        const v = String(value || '').trim();
-        const isUrl = /^https?:\/\//i.test(v);
-        const isVideoId = /^[A-Za-z0-9_-]{8,32}$/.test(v);
-        if (isUrl) return `/audio/stream?url=${encodeURIComponent(v)}`;
-        if (isVideoId) return `/audio/stream?videoId=${encodeURIComponent(v)}`;
-        // fallback: encode as url
-        return `/youtube/stream?url=${encodeURIComponent(v)}`;
-    }
-
-    return value;
+// Optimized standalone resolver
+export async function resolveAudioSource(spec: AudioSourceSpec): Promise<string> {
+    const resolver = resolvers[spec.type];
+    return resolver ? await resolver(spec.value) : spec.value;
 }
 
-// Lightweight provider wrapping the resolver so components can call via hook.
-export function AudioSourceProvider({ children }: { children: ReactNode }) {
-    const api = useMemo<AudioSourceAPI>(() => ({ resolveSource: resolveAudioSource }), []);
-    return <AudioSourceContext.Provider value={api}>{children}</AudioSourceContext.Provider>;
-}
+// Memoized provider
+export const AudioSourceProvider = React.memo(({ children }: { children: ReactNode }) => {
+    const api = useMemo<AudioSourceAPI>(() => ({
+        resolveSource: resolveAudioSource
+    }), []);
+    
+    return (
+        <AudioSourceContext.Provider value={api}>
+            {children}
+        </AudioSourceContext.Provider>
+    );
+});
 
-export function useAudioSource() {
+AudioSourceProvider.displayName = 'AudioSourceProvider';
+
+// Optimized hook
+export function useAudioSource(): AudioSourceAPI {
     const ctx = useContext(AudioSourceContext);
-    if (!ctx) throw new Error('useAudioSource must be used within AudioSourceProvider');
+    if (!ctx) {
+        throw new Error('useAudioSource must be used within AudioSourceProvider');
+    }
     return ctx;
 }
 

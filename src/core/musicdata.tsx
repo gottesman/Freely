@@ -1,12 +1,41 @@
 import { env } from './accessEnv';
 
-const API_BASE = env('GENIUS_ENDPOINT');
+// Performance constants
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_CACHE_TTL_MS = 60_000;
+const DEFAULT_USER_AGENT = 'FreelyPlayer/0.9.3';
+
+// API configuration
+const API_ENDPOINTS = {
+  SEARCH: '/search',
+  SONGS: '/songs',
+  ARTISTS: '/artists',
+  ALBUMS: '/albums'
+} as const;
+
+// HTML parsing constants
+const LYRICS_SELECTORS = [
+  /<div[^>]+data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/gi,
+  /<div class="lyrics"[^>]*>([\s\S]*?)<\/div>/i
+] as const;
+
+const VOID_TAGS = new Set(['br', 'hr']);
+const BLOCK_TAGS = ['p', 'div', 'section', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li'];
+const ALLOWED_TAGS = new Set([...BLOCK_TAGS, 'strong', 'em', 'i', 'b', 'u', 'span', 'br', 'ul', 'ol', 'li']);
+
+// HTML entity mappings for performance
+const HTML_ENTITIES = {
+  '&lt;': '<',
+  '&gt;': '>',
+  '&amp;': '&',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&nbsp;': ' ',
+  '&mdash;': '—'
+} as const;
 
 export interface GeniusConfig {
 	accessToken?: string;            // If provided, used directly
-	clientId?: string;               // For OAuth flow (authorization code)
-	clientSecret?: string;           // For token exchange
-	redirectUri?: string;            // For OAuth flow
 	userAgent?: string;              // Sent in requests (helps identify app)
 	timeoutMs?: number;              // Per-request timeout
 	cache?: Map<string, any>;        // Optional external cache
@@ -72,151 +101,387 @@ export interface LyricsResult {
 
 export interface SearchResponse { query: string; hits: SearchResultHit[]; raw?: any; }
 
-/** Lightweight in-memory cache (key -> value) */
-const internalCache = new Map<string, any>();
+// Utility classes for better organization
+class ApiClient {
+  /**
+   * Get the API base URL with caching
+   */
+  private static apiBaseCache: string | null = null;
+  
+  static async getApiBase(): Promise<string> {
+    if (this.apiBaseCache !== null) return this.apiBaseCache;
+    this.apiBaseCache = (await env('GENIUS_ENDPOINT')) || 'https://api.genius.com';
+    return this.apiBaseCache;
+  }
 
-/** Utility for building cache keys */
-function key(parts: unknown[]) { return parts.join('::'); }
+  /**
+   * Safely join URL paths without double slashes
+   */
+  static joinUrl(base: string, path: string): string {
+    if (!path) return base;
+    // Keep protocol slashes (https://)
+    const protocolMatch = base.match(/^([a-z0-9+.-]+:\/\/)/i);
+    const protocol = protocolMatch ? protocolMatch[1] : '';
+    const rest = protocol ? base.slice(protocol.length) : base;
 
-/** Safely join a base URL and a path segment without producing `//` (except after protocol)
- * Examples:
- *  joinUrl('https://api.example.com', '/foo') => 'https://api.example.com/foo'
- *  joinUrl('https://api.example.com/', 'foo') => 'https://api.example.com/foo'
- *  joinUrl('https://api.example.com/', '/foo') => 'https://api.example.com/foo'
- */
-function joinUrl(base: string, path: string) {
-	if (!path) return base;
-	// Keep protocol slashes (https://)
-	const protocolMatch = base.match(/^([a-z0-9+.-]+:\/\/)/i);
-	const protocol = protocolMatch ? protocolMatch[1] : '';
-	const rest = protocol ? base.slice(protocol.length) : base;
+    const left = rest.endsWith('/') ? rest.slice(0, -1) : rest;
+    const right = path.startsWith('/') ? path.slice(1) : path;
+    return protocol + left + '/' + right;
+  }
 
-	const left = rest.endsWith('/') ? rest.slice(0, -1) : rest;
-	const right = path.startsWith('/') ? path.slice(1) : path;
-	return protocol + left + '/' + right;
+  /**
+   * Build cache key from components
+   */
+  static buildCacheKey(parts: unknown[]): string {
+    return parts.join('::');
+  }
 }
 
+class HtmlProcessor {
+  /**
+   * Decode HTML entities efficiently
+   */
+  static decodeHtmlEntities(html: string): string {
+    let result = html;
+    
+    // Use DOM-based decoding if available
+    try {
+      if (typeof document !== 'undefined') {
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = html;
+        return textarea.value;
+      }
+    } catch {
+      // Fallback to manual replacement
+    }
+    
+    // Manual entity replacement
+    for (const [entity, char] of Object.entries(HTML_ENTITIES)) {
+      result = result.replace(new RegExp(entity, 'g'), char);
+    }
+    
+    // Handle numeric entities
+    result = result
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)));
+    
+    return result;
+  }
+
+  /**
+   * Strip HTML tags and normalize text
+   */
+  static stripTags(html: string): string {
+    return html
+      .replace(/<br\s*\/?>(?=\n?)/gi, '\n')
+      .replace(/<p[^>]*>/gi, '')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  /**
+   * Escape HTML characters
+   */
+  static escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Parse lyrics from HTML using multiple selectors
+   */
+  static parseLyricsFromHtml(html: string): string | undefined {
+    for (const regex of LYRICS_SELECTORS) {
+      const parts: string[] = [];
+      let match: RegExpExecArray | null;
+      
+      while ((match = regex.exec(html)) !== null) {
+        parts.push(match[1]);
+      }
+      
+      if (parts.length) {
+        const combined = parts.join('\n');
+        const text = this.stripTags(this.decodeHtmlEntities(combined));
+        if (text) return text;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Convert a plain lyrics block into structured HTML with sections and spans
+   */
+  static formatLyricsAsHtml(raw: string): string {
+    if (!raw) return '';
+    const lines = raw.replace(/\r/g, '').split('\n').map(l => l.trim());
+    const sections: { name: string; lines: string[] }[] = [];
+    let current = { name: 'Lyrics', lines: [] as string[] };
+    
+    for (const line of lines) {
+      if (!line) continue; // skip blank lines
+      const m = line.match(/^\s*\[(.+?)\]\s*$/);
+      if (m) {
+        // new section
+        if (current.lines.length) sections.push(current);
+        current = { name: m[1].trim(), lines: [] };
+      } else {
+        current.lines.push(line);
+      }
+    }
+    if (current.lines.length) sections.push(current);
+    
+    // Build HTML
+    return sections.map(s => {
+      const inner = s.lines.map(l => `<span>${this.escapeHtml(l)}</span>`).join('');
+      return `<div class="lyrics-section" data-section="${this.escapeHtml(s.name)}">${inner}</div>`;
+    }).join('\n');
+  }
+}
+
+// Lightweight in-memory cache for better performance
+const internalCache = new Map<string, any>();
+
 /** Request helper with timeout + basic caching */
-async function http<T>(cfg: GeniusConfig, path: string, params?: Record<string, any>, cacheTtlMs = 60_000): Promise<T> {
-		const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined) as any) : '';
-		const base = (await API_BASE) || 'https://api.genius.com';
-		const url = joinUrl(base, path) + search;
-	const k = key(['GET', url]);
-	const cacheMap = cfg.cache ?? internalCache;
-	const cached = cacheMap.get(k);
-	if (cached && (Date.now() - cached.t) < cacheTtlMs) return cached.v;
-	const controller = new AbortController();
-	const to = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 15_000);
-	try {
-		const token = await env('GENIUS_ACCESS_TOKEN') || '';
-		const res = await fetch(url, {
-			headers: {
-				'Authorization': `Bearer ${token}`,
-				'User-Agent': cfg.userAgent || (await env('APP_USER_AGENT') || ''),
-			},
-			signal: controller.signal
-		});
-		if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-		const json = await res.json();
-		cacheMap.set(k, { v: json, t: Date.now() });
-		return json;
-	} finally { clearTimeout(to); }
+async function http<T>(cfg: GeniusConfig, path: string, params?: Record<string, any>, cacheTtlMs = DEFAULT_CACHE_TTL_MS): Promise<T> {
+  const search = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined) as any) : '';
+  const base = await ApiClient.getApiBase();
+  const url = ApiClient.joinUrl(base, path) + search;
+  const cacheKey = ApiClient.buildCacheKey(['GET', url]);
+  const cacheMap = cfg.cache ?? internalCache;
+  
+  // Check cache first
+  const cached = cacheMap.get(cacheKey);
+  if (cached && (Date.now() - cached.t) < cacheTtlMs) {
+    return cached.v;
+  }
+  
+  // Setup request with timeout
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  
+  try {
+    const token = await env('GENIUS_ACCESS_TOKEN') || '';
+    const userAgent = cfg.userAgent || (await env('APP_USER_AGENT')) || DEFAULT_USER_AGENT;
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': userAgent,
+      },
+      signal: controller.signal
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+    
+    const json = await response.json();
+    cacheMap.set(cacheKey, { v: json, t: Date.now() });
+    return json;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Mapping utilities for API responses
+class ResponseMapper {
+  static mapArtistSummary(artist: any): ArtistSummary {
+    return {
+      id: artist.id,
+      name: artist.name,
+      url: artist.url,
+      imageUrl: artist.image_url || artist.header_image_url
+    };
+  }
+
+  static mapAlbumSummary(album: any): AlbumSummary {
+    return {
+      id: album.id,
+      name: album.name,
+      url: album.url,
+      coverArtUrl: album.cover_art_url
+    };
+  }
+
+  static mapSearchHit(hit: any): SearchResultHit {
+    const song = hit.result;
+    return {
+      id: song.id,
+      title: song.title,
+      fullTitle: song.full_title,
+      url: song.url,
+      headerImageUrl: song.header_image_url,
+      songArtImageUrl: song.song_art_image_url,
+      primaryArtist: this.mapArtistSummary(song.primary_artist),
+      type: song._type || 'song'
+    };
+  }
+}
+
+// Description processing utilities
+class DescriptionProcessor {
+  /**
+   * Flatten Genius DOM description to plain text
+   */
+  static flattenDescriptionDom(root: GeniusDomNode | string | undefined, acc: string[] = []): string {
+    if (root == null) return acc.join('');
+    if (typeof root === 'string') {
+      acc.push(root);
+      return acc.join('');
+    }
+    
+    const tag = root.tag?.toLowerCase();
+    const isBlock = tag && BLOCK_TAGS.includes(tag);
+    
+    if (tag === 'br') acc.push('\n');
+    
+    if (Array.isArray(root.children)) {
+      for (const child of root.children) {
+        this.flattenDescriptionDom(child, acc);
+      }
+    }
+    
+    if (isBlock) acc.push('\n\n');
+    return acc.join('').replace(/[\t\r]+/g, '');
+  }
+
+  /**
+   * Build HTML from DOM excluding anchor tags
+   */
+  static buildDescriptionHtml(root: GeniusDomNode | string | undefined): string {
+    if (root == null) return '';
+    if (typeof root === 'string') return HtmlProcessor.escapeHtml(root);
+    
+    const tag = (root.tag || '').toLowerCase();
+    let childrenHtml = '';
+    
+    if (Array.isArray(root.children)) {
+      childrenHtml = root.children
+        .map(child => this.buildDescriptionHtml(child as any))
+        .join('');
+    }
+    
+    // Strip anchor tags but keep content
+    if (tag === 'a') return childrenHtml;
+    if (!tag) return childrenHtml;
+    if (VOID_TAGS.has(tag)) return `<${tag}>`;
+    
+    // Use safe tag or fallback to span
+    const safeTag = ALLOWED_TAGS.has(tag) ? tag : 'span';
+    return `<${safeTag}>${childrenHtml}</${safeTag}>`;
+  }
+
+  /**
+   * Build HTML from plain text
+   */
+  static buildHtmlFromPlain(plain: string): string {
+    return plain
+      .split(/\n{2,}/)
+      .map(paragraph => `<p>${HtmlProcessor.escapeHtml(paragraph.trim())}</p>`)
+      .join('');
+  }
 }
 
 /** High-level client */
 export class GeniusClient {
-	private cfg: GeniusConfig;
-	constructor() { this.cfg = {}; }
+  private cfg: GeniusConfig;
+  
+  constructor() { 
+    this.cfg = {}; 
+  }
 
-	async search(query: string): Promise<SearchResponse> {
-		const json: any = await http(this.cfg, '/search', { q: query });
-		const hits: SearchResultHit[] = (json.response?.hits || []).map((h: any) => {
-			const s = h.result;
-			return {
-				id: s.id,
-				title: s.title,
-				fullTitle: s.full_title,
-				url: s.url,
-				headerImageUrl: s.header_image_url,
-				songArtImageUrl: s.song_art_image_url,
-				primaryArtist: mapArtistSummary(s.primary_artist),
-				type: s._type || 'song'
-			};
-		});
-		return { query, hits, raw: json };
-	}
+  async search(query: string): Promise<SearchResponse> {
+    const json: any = await http(this.cfg, API_ENDPOINTS.SEARCH, { q: query });
+    const hits: SearchResultHit[] = (json.response?.hits || []).map(ResponseMapper.mapSearchHit);
+    return { query, hits, raw: json };
+  }
 
+  async getSong(id: number, { includeRelationships = false } = {}): Promise<SongDetails> {
+    const json: any = await http(this.cfg, `${API_ENDPOINTS.SONGS}/${id}`, { text_format: 'plain' });
+    const song = json.response?.song;
+    if (!song) throw new Error('Song not found');
+    
+    const base: SongDetails = {
+      id: song.id,
+      title: song.title,
+      fullTitle: song.full_title,
+      embed_content: song.embed_content,
+      url: song.url,
+      releaseDate: song.release_date || song.release_date_for_display,
+      headerImageUrl: song.header_image_url,
+      songArtImageUrl: song.song_art_image_url,
+      artist: ResponseMapper.mapArtistSummary(song.primary_artist),
+      album: song.album ? ResponseMapper.mapAlbumSummary(song.album) : undefined,
+      primaryArtists: (song.primary_artists || []).map(ResponseMapper.mapArtistSummary),
+      featuredArtists: (song.featured_artists || []).map(ResponseMapper.mapArtistSummary),
+      producerArtists: (song.producer_artists || []).map(ResponseMapper.mapArtistSummary),
+      writerArtists: (song.writer_artists || []).map(ResponseMapper.mapArtistSummary),
+      raw: song
+    };
+    
+    if (includeRelationships) {
+      base.relationships = song.relationships || {};
+    }
+    
+    return base;
+  }
 
-	async getSong(id: number, { includeRelationships = false } = {}): Promise<SongDetails> {
-		const json: any = await http(this.cfg, `/songs/${id}`, { text_format: 'plain' });
-		const s = json.response?.song;
-		if (!s) throw new Error('Song not found');
-		const base: SongDetails = {
-			id: s.id,
-			title: s.title,
-			fullTitle: s.full_title,
-			embed_content: s.embed_content,
-			url: s.url,
-			releaseDate: s.release_date || s.release_date_for_display,
-			headerImageUrl: s.header_image_url,
-			songArtImageUrl: s.song_art_image_url,
-			artist: mapArtistSummary(s.primary_artist),
-			album: s.album ? mapAlbumSummary(s.album) : undefined,
-			primaryArtists: (s.primary_artists || []).map(mapArtistSummary),
-			featuredArtists: (s.featured_artists || []).map(mapArtistSummary),
-			producerArtists: (s.producer_artists || []).map(mapArtistSummary),
-			writerArtists: (s.writer_artists || []).map(mapArtistSummary),
-			raw: s
-		};
-		if (includeRelationships) base.relationships = s.relationships || {};
-		return base;
-	}
+  async getArtist(id: number): Promise<ArtistDetails> {
+    const json: any = await http(this.cfg, `${API_ENDPOINTS.ARTISTS}/${id}`);
+    const artist = json.response?.artist;
+    if (!artist) throw new Error('Artist not found');
+    
+    // Process description with enhanced error handling
+    let plain: string | undefined = artist.description?.plain || undefined;
+    let html: string | undefined = artist.description?.html || undefined;
+    
+    try {
+      if (!plain && artist.description?.dom) {
+        plain = DescriptionProcessor.flattenDescriptionDom(artist.description.dom)?.trim() || undefined;
+      }
+      if (!html && artist.description?.dom) {
+        html = DescriptionProcessor.buildDescriptionHtml(artist.description.dom) || undefined;
+      } else if (!html && plain) {
+        html = DescriptionProcessor.buildHtmlFromPlain(plain);
+      }
+    } catch (error) {
+      console.warn('[Genius] Description processing failed:', error);
+    }
+    
+    return {
+      id: artist.id,
+      name: artist.name,
+      url: artist.url,
+      imageUrl: artist.image_url || artist.header_image_url,
+      alternateNames: artist.alternate_names || [],
+      description: { plain, html },
+      raw: artist
+    };
+  }
 
-	async getArtist(id: number): Promise<ArtistDetails> {
-		const json: any = await http(this.cfg, `/artists/${id}`);
-		const a = json.response?.artist;
-		if (!a) throw new Error('Artist not found');
-		// Derive plain & HTML description (excluding anchor <a> tags)
-		let plain: string | undefined = a.description?.plain || undefined;
-		let html: string | undefined = a.description?.html || undefined; // if API ever supplies
-		try {
-			if (!plain && a.description?.dom) {
-				plain = flattenDescriptionDom(a.description.dom)?.trim() || undefined;
-			}
-			if (!html && a.description?.dom) {
-				html = buildDescriptionHtml(a.description.dom) || undefined;
-			} else if(!html && plain) {
-				// Build minimal HTML from plain paragraphs
-				html = buildHtmlFromPlain(plain);
-			}
-		} catch (_) { /* ignore parse issues */ }
-		return {
-			id: a.id,
-			name: a.name,
-			url: a.url,
-			imageUrl: a.image_url || a.header_image_url,
-			alternateNames: a.alternate_names || [],
-			description: { plain, html },
-			raw: a
-		};
-	}
-
-	async getAlbum(id: number): Promise<AlbumDetails> {
-		const json: any = await http(this.cfg, `/albums/${id}`);
-		const a = json.response?.album;
-		if (!a) throw new Error('Album not found');
-		return {
-			id: a.id,
-			name: a.name,
-			fullTitle: a.full_title,
-			url: a.url,
-			coverArtUrl: a.cover_art_url,
-			artist: a.artist ? mapArtistSummary(a.artist) : undefined,
-			releaseDate: a.release_date,
-			songIds: (a.tracks || []).map((t: any) => t.song?.id).filter(Boolean),
-			raw: a
-		};
-	}
+  async getAlbum(id: number): Promise<AlbumDetails> {
+    const json: any = await http(this.cfg, `${API_ENDPOINTS.ALBUMS}/${id}`);
+    const album = json.response?.album;
+    if (!album) throw new Error('Album not found');
+    
+    return {
+      id: album.id,
+      name: album.name,
+      fullTitle: album.full_title,
+      url: album.url,
+      coverArtUrl: album.cover_art_url,
+      artist: album.artist ? ResponseMapper.mapArtistSummary(album.artist) : undefined,
+      releaseDate: album.release_date,
+      songIds: (album.tracks || []).map((track: any) => track.song?.id).filter(Boolean),
+      raw: album
+    };
+  }
 
 
 	/** Retrieve lyrics by scraping song HTML page or embed.js (best-effort).
@@ -227,7 +492,7 @@ export class GeniusClient {
 		const s = typeof song === 'number' ? await this.getSong(song) : song;
 		const url = s.url;
 		const cacheMap = this.cfg.cache ?? internalCache;
-		const ck = key(['LYRICS', url]);
+		const ck = `LYRICS_${url}`;
 		//const cached = cacheMap.get(ck);
 		//if (cached) return cached;
 		try {
@@ -388,7 +653,7 @@ export class GeniusClient {
 							let cleaned = decodeHtml(inner);
 							// Remove stray backslashes before tag characters that sometimes remain (e.g. <\/a>)
 							cleaned = cleaned.replace(/\\(?=[\/<\>])/g, '');
-							const text = parseLyricsFromHtml(cleaned) || stripTags(cleaned) || undefined;
+							const text = HtmlProcessor.parseLyricsFromHtml(cleaned) || HtmlProcessor.stripTags(cleaned) || undefined;
 							if (text && text.trim().length) embedLyrics = text.trim();
 						}
 					}
@@ -401,7 +666,7 @@ export class GeniusClient {
 			const htmlRes = await fetch(url, { headers: { 'User-Agent': this.cfg.userAgent ?? 'FreelyPlayer/0.1' } });
 			if (!htmlRes.ok) throw new Error(`Lyrics page HTTP ${htmlRes.status}`);
 			const html = await htmlRes.text();
-			const parsed = parseLyricsFromHtml(html);
+			const parsed = HtmlProcessor.parseLyricsFromHtml(html);
 			*/
 
 			// Decide which result to use: prefer embedLyrics if it appears "better"
@@ -424,7 +689,7 @@ export class GeniusClient {
 			}
 			*/
 
-			const formatted = chosenLyrics ? formatLyricsAsHtml(chosenLyrics) : undefined;
+			const formatted = chosenLyrics ? HtmlProcessor.formatLyricsAsHtml(chosenLyrics) : undefined;
 			const result: LyricsResult = { songId: typeof song === 'number' ? song : song.id, url, lyrics: formatted, source: chosenLyrics ? source : 'unavailable', fetchedAt: Date.now() };
 			cacheMap.set(ck, result);
 			return result;
@@ -437,124 +702,12 @@ export class GeniusClient {
 }
 
 /* ---------------- Mapping Helpers ---------------- */
-function mapArtistSummary(a: any): ArtistSummary { return { id: a.id, name: a.name, url: a.url, imageUrl: a.image_url || a.header_image_url }; }
-function mapAlbumSummary(a: any): AlbumSummary { return { id: a.id, name: a.name, url: a.url, coverArtUrl: a.cover_art_url }; }
-
-/* -------------- Lyrics HTML Parsing -------------- */
-// Parsing approach: Genius updates markup periodically. We try multiple known selectors.
-// This is deliberately simple (regex & DOM optional). In an Electron environment you can
-// use DOMParser (in renderer) or JSDOM (if added) – here we stay dependency-free.
-const LYRICS_SELECTORS = [
-	/<div[^>]+data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/gi,
-	/<div class="lyrics"[^>]*>([\s\S]*?)<\/div>/i
-];
-
-function stripTags(html: string): string {
-	return html
-		.replace(/<br\s*\/?>(?=\n?)/gi, '\n')
-		.replace(/<p[^>]*>/gi, '')
-		.replace(/<\/p>/gi, '\n')
-		.replace(/<[^>]+>/g, '')
-		.replace(/&amp;/g, '&')
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&nbsp;/g, ' ')
-		.replace(/&mdash;/g, '—')
-		.replace(/\n{3,}/g, '\n\n')
-		.trim();
+// Interface for Genius DOM nodes
+interface GeniusDomNode { 
+  tag?: string; 
+  children?: Array<string | GeniusDomNode>; 
+  data?: any; 
+  attributes?: any; 
 }
-
-function parseLyricsFromHtml(html: string): string | undefined {
-	for (const re of LYRICS_SELECTORS) {
-		const parts: string[] = [];
-		let m: RegExpExecArray | null;
-		while ((m = re.exec(html)) !== null) {
-			parts.push(m[1]);
-		}
-		if (parts.length) {
-			const combined = parts.join('\n');
-			const text = stripTags(combined);
-			if (text) return text;
-		}
-	}
-	return undefined;
-}
-
-/* -------------- Genius description DOM -> plain text -------------- */
-// Genius sometimes provides rich description as a DOM-like JSON tree (a.description.dom)
-// Example node: { tag: 'p', children: ['Some text ', { tag:'a', children:['link text'] }, ' more'] }
-// We flatten by concatenating strings, recursing into children, and separating block elements with double newlines.
-interface GeniusDomNode { tag?: string; children?: Array<string | GeniusDomNode>; data?: any; attributes?: any; }
-function flattenDescriptionDom(root: GeniusDomNode | string | undefined, acc: string[] = []): string {
-	if (root == null) return acc.join('');
-	if (typeof root === 'string') { acc.push(root); return acc.join(''); }
-	const tag = root.tag?.toLowerCase();
-	const isBlock = tag && ['p','div','section','br','h1','h2','h3','h4','h5','h6','ul','ol','li'].includes(tag);
-	if (tag === 'br') acc.push('\n');
-	if (Array.isArray(root.children)) {
-		for (const child of root.children) flattenDescriptionDom(child, acc);
-	}
-	if (isBlock) acc.push('\n\n');
-	return acc.join('').replace(/[\t\r]+/g,'');
-}
-
-// Build HTML version excluding anchor tags (<a>) but preserving basic block & inline structure
-function buildDescriptionHtml(root: GeniusDomNode | string | undefined): string {
-	if(root == null) return '';
-	if(typeof root === 'string') return escapeHtml(root);
-	const tag = (root.tag||'').toLowerCase();
-	const voidTags = new Set(['br','hr']);
-	const blockLike = ['p','div','section','h1','h2','h3','h4','h5','h6','ul','ol','li'];
-	let childrenHtml = '';
-	if(Array.isArray(root.children)) childrenHtml = root.children.map(c=> buildDescriptionHtml(c as any)).join('');
-	if(tag === 'a') { // strip link tag but keep its text/children
-		return childrenHtml;
-	}
-	if(!tag) return childrenHtml; // root without tag
-	if(voidTags.has(tag)) return `<${tag}>`;
-	// Only allow a whitelist of tags; others become <span>
-	const allowed = new Set([...blockLike,'strong','em','i','b','u','span','br','ul','ol','li']);
-	const safeTag = allowed.has(tag) ? tag : 'span';
-	return `<${safeTag}>${childrenHtml}</${safeTag}>`;
-}
-
-function buildHtmlFromPlain(plain: string): string {
-	return plain.split(/\n{2,}/).map(p=> `<p>${escapeHtml(p.trim())}</p>`).join('');
-}
-
-function escapeHtml(s: string): string {
-	return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
-/* -------------- Example Usage (Remove / Adapt) -------------- */
-// const genius = new GeniusClient();
-// genius.search('Daft Punk').then(r => console.log(r.hits[0]));
-// genius.getSong(123).then(console.log);
-// genius.getLyricsForSong(123).then(console.log);
 
 export default GeniusClient;
-
-// Convert a plain lyrics block into structured HTML with sections and spans.
-function formatLyricsAsHtml(raw: string): string {
-	if (!raw) return '';
-	const lines = raw.replace(/\r/g, '').split('\n').map(l => l.trim());
-	const sections: { name: string; lines: string[] }[] = [];
-	let current = { name: 'Lyrics', lines: [] as string[] };
-	for (const line of lines) {
-		if (!line) continue; // skip blank lines (removes double line breaks)
-		const m = line.match(/^\s*\[(.+?)\]\s*$/);
-		if (m) {
-			// new section
-			if (current.lines.length) sections.push(current);
-			current = { name: m[1].trim(), lines: [] };
-		} else {
-			current.lines.push(line);
-		}
-	}
-	if (current.lines.length) sections.push(current);
-	// Build HTML
-	return sections.map(s => {
-		const inner = s.lines.map(l => `<span>${escapeHtml(l)}</span>`).join('');
-		return `<div class="lyrics-section" data-section="${escapeHtml(s.name)}">${inner}</div>`;
-	}).join('\n');
-}

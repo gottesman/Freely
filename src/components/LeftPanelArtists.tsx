@@ -1,54 +1,142 @@
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { useI18n } from '../core/i18n';
 import useFollowedArtists from '../core/artists';
 
-export default function LeftPanelArtists({ activeArtistId, activeArtistVisible }: { activeArtistId?: string, activeArtistVisible?: boolean }){
+// Interfaces for better type safety
+interface SpotifyImage {
+  url: string;
+  width?: number;
+  height?: number;
+}
+
+interface Artist {
+  id: string;
+  name: string;
+  images?: SpotifyImage[];
+  genres?: string[];
+}
+
+interface LeftPanelArtistsProps {
+  activeArtistId?: string;
+  activeArtistVisible?: boolean;
+}
+
+// Memoized ArtistRow component for better performance
+const ArtistRow = React.memo(({ 
+  artist, 
+  isActive, 
+  onSelectArtist 
+}: { 
+  artist: Artist; 
+  isActive: boolean; 
+  onSelectArtist: (artistId: string) => void;
+}) => {
+  // Memoize image resolution to avoid repeated calls
+  const artistImage = useMemo(() => 
+    (window as any).imageRes?.(artist.images, 3), 
+    [artist.images]
+  );
+
+  // Memoize genres display
+  const genresDisplay = useMemo(() => 
+    artist.genres?.slice(0, 2).join(', ') || '', 
+    [artist.genres]
+  );
+
+  // Stable click handler
+  const handleClick = useCallback(() => {
+    onSelectArtist(artist.id);
+  }, [artist.id, onSelectArtist]);
+
+  return (
+    <button
+      type="button"
+      className={`artist-row card-btn ${isActive ? 'active' : ''}`}
+      onClick={handleClick}
+    >
+      <div className='artist-avatar'>
+        {artistImage ? (
+          <img src={artistImage} alt="" />
+        ) : (
+          <span className="material-symbols-rounded">person</span>
+        )}
+      </div>
+      <div className='artist-text'>
+        <div className='artist-name'>{artist.name}</div>
+        <div className='artist-genres'>{genresDisplay}</div>
+      </div>
+    </button>
+  );
+});
+
+ArtistRow.displayName = 'ArtistRow';
+
+const LeftPanelArtists = React.memo(({ 
+  activeArtistId, 
+  activeArtistVisible 
+}: LeftPanelArtistsProps) => {
   const { t } = useI18n();
   const { artists, loading } = useFollowedArtists();
 
-  // Debug logging for artists list changes
-  React.useEffect(() => {
-    console.log('[artists-debug] LeftPanelArtists artists updated, count=', artists.length, 'artists=', artists.map(a => a.name));
-  }, [artists]);
+  // Stable artist selection handler
+  const handleSelectArtist = useCallback((artistId: string) => {
+    try {
+      window.dispatchEvent(new CustomEvent('freely:selectArtist', { 
+        detail: { artistId, source: 'left-panel' } 
+      }));
+    } catch (e) {
+      console.warn('LeftPanelArtists selectArtist failed', e);
+    }
+  }, []);
 
-  // The hook now provides optimistic updates & pub/sub; no local mirror needed.
-  const list = artists;
-
-  if(loading) return <div className='left-artists'><div className="left-artists-loading">{t('common.loading','Loading…')}</div></div>;
-
-  if(!list || !list.length) return (
+  // Memoized loading state
+  const loadingContent = useMemo(() => (
     <div className='left-artists'>
-      <div className='left-artists-empty'>{t('ar.placeholder','No followed artists found')}</div>
+      <div className="left-artists-loading">
+        {t('common.loading', 'Loading…')}
+      </div>
     </div>
-  );
+  ), [t]);
+
+  // Memoized empty state
+  const emptyContent = useMemo(() => (
+    <div className='left-artists'>
+      <div className='left-artists-empty'>
+        {t('ar.placeholder', 'No followed artists found')}
+      </div>
+    </div>
+  ), [t]);
+
+  // Memoized artists list with optimized rendering
+  const artistsList = useMemo(() => {
+    if (!artists?.length) return null;
+
+    return artists.map(artist => {
+      const isActive = activeArtistVisible && 
+        String(artist.id) === String(activeArtistId || '');
+      
+      return (
+        <ArtistRow
+          key={artist.id}
+          artist={artist}
+          isActive={isActive}
+          onSelectArtist={handleSelectArtist}
+        />
+      );
+    });
+  }, [artists, activeArtistVisible, activeArtistId, handleSelectArtist]);
+
+  // Early returns for loading and empty states
+  if (loading) return loadingContent;
+  if (!artists?.length) return emptyContent;
 
   return (
     <div className='left-artists'>
-      {list.map(a => {
-        const img = (window as any).imageRes?.(a.images, 3);
-        return (
-          <button
-            key={a.id}
-            type="button"
-            className={`artist-row card-btn ${(activeArtistVisible && String(a.id) === String(activeArtistId || '')) ? 'active' : ''}`}
-            onClick={() => {
-              try {
-                if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:a.id, source:'left-panel' } }));
-              } catch (e) {
-                console.warn('LeftPanelArtists selectArtist failed', e);
-              }
-            }}
-          >
-            <div className='artist-avatar'>
-              { img ? <img src={img} alt="" /> : <span className="material-symbols-rounded">person</span> }
-            </div>
-            <div className='artist-text'>
-              <div className='artist-name'>{a.name}</div>
-              <div className='artist-genres'>{a.genres?.slice(0,2).join(', ')}</div>
-            </div>
-          </button>
-        );
-      })}
+      {artistsList}
     </div>
   );
-}
+});
+
+LeftPanelArtists.displayName = 'LeftPanelArtists';
+
+export default LeftPanelArtists;

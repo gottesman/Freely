@@ -1,177 +1,245 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react'
 
-// The public API remains unchanged.
-type AnyDB = IDBDatabase // Internally, we know it's an IDBDatabase instance.
+// Types and constants
+type AnyDB = IDBDatabase;
+
 type DBContext = {
-  db: AnyDB | null
-  ready: boolean
-  exportJSON: () => Promise<string>
-  importJSON: (json: string) => Promise<void>
-  exportDB: () => Promise<Uint8Array | null>
-  importDB: (data: Uint8Array | ArrayBuffer) => Promise<void>
-  getSetting: (key: string) => Promise<string | null>
-  setSetting: (key: string, value: string) => Promise<void>
-  getApiCache: (key: string) => Promise<any | null>
-  setApiCache: (key: string, data: any) => Promise<void>
-  clearCache: () => Promise<void>
-  clearLocalData: () => Promise<void>
-  saveNow: () => Promise<void>
-  // play history helpers
-  addPlay: (trackId: string, startedAt?: number) => Promise<number>
-  getPlayCountForTrack: (trackId: string) => Promise<number>
-  getRecentPlays: (limit?: number) => Promise<Array<{ id: number; track_id: string; played_at: number }>>
-  getTopPlayed: (limit?: number) => Promise<Array<{ track_id: string; count: number }>>
-}
+  db: AnyDB | null;
+  ready: boolean;
+  exportJSON: () => Promise<string>;
+  importJSON: (json: string) => Promise<void>;
+  exportDB: () => Promise<Uint8Array | null>;
+  importDB: (data: Uint8Array | ArrayBuffer) => Promise<void>;
+  getSetting: (key: string) => Promise<string | null>;
+  setSetting: (key: string, value: string) => Promise<void>;
+  getApiCache: (key: string) => Promise<any | null>;
+  setApiCache: (key: string, data: any) => Promise<void>;
+  clearCache: () => Promise<void>;
+  clearLocalData: () => Promise<void>;
+  saveNow: () => Promise<void>;
+  addPlay: (trackId: string, startedAt?: number) => Promise<number>;
+  getPlayCountForTrack: (trackId: string) => Promise<number>;
+  getRecentPlays: (limit?: number) => Promise<Array<{ id: number; track_id: string; played_at: number }>>;
+  getTopPlayed: (limit?: number) => Promise<Array<{ track_id: string; count: number }>>;
+};
 
-// Default context values are no-ops, as before.
-const ctx = createContext<DBContext>({ db: null, ready: false, exportJSON: async () => '{}', importJSON: async () => { }, exportDB: async () => null, importDB: async () => { }, getSetting: async () => null, setSetting: async () => { }, getApiCache: async () => null, setApiCache: async () => { }, clearCache: async () => { }, clearLocalData: async () => { }, saveNow: async () => { }, addPlay: async () => 0, getPlayCountForTrack: async () => 0, getRecentPlays: async () => [], getTopPlayed: async () => [] })
+// Database configuration
+const DB_CONFIG = {
+  NAME: 'freely-db',
+  VERSION: 3,
+  STORES: ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'api_cache'] as const
+} as const;
 
-const DB_NAME = 'freely-db'
-// Bump this when changing object stores or indexes so onupgradeneeded runs
-// Bump when changing object stores or indexes so onupgradeneeded runs
-const DB_VERSION = 3
-const STORE_NAMES = ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'api_cache'] as const
-type StoreName = typeof STORE_NAMES[number];
+type StoreName = typeof DB_CONFIG.STORES[number];
 
+// Store configurations for automated setup
+const STORE_CONFIGS = {
+  users: { keyPath: 'id', autoIncrement: true },
+  plays: { 
+    keyPath: 'id', 
+    autoIncrement: true,
+    indexes: [
+      { name: 'played_at', keyPath: 'played_at' },
+      { name: 'track_id', keyPath: 'track_id' }
+    ]
+  },
+  favorites: { keyPath: 'id', autoIncrement: true },
+  playlists: { 
+    keyPath: 'id', 
+    autoIncrement: true,
+    indexes: [
+      { name: 'code', keyPath: 'code', unique: true }
+    ]
+  },
+  playlist_items: { 
+    autoIncrement: true,
+    indexes: [
+      { name: 'playlist_id', keyPath: 'playlist_id' }
+    ]
+  },
+  plugins: { keyPath: 'id', autoIncrement: true },
+  settings: { keyPath: 'k' },
+  api_cache: { keyPath: 'cache_key' },
+  followed_artists: { 
+    keyPath: 'id',
+    indexes: [
+      { name: 'followed_at', keyPath: 'followed_at' }
+    ]
+  }
+} as const;
 
-export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }> = ({ children }) => {
-  const [db, setDb] = useState<IDBDatabase | null>(null)
-  const [ready, setReady] = useState(false)
+// Default context with no-ops
+const DEFAULT_CONTEXT: DBContext = {
+  db: null,
+  ready: false,
+  exportJSON: async () => '{}',
+  importJSON: async () => {},
+  exportDB: async () => null,
+  importDB: async () => {},
+  getSetting: async () => null,
+  setSetting: async () => {},
+  getApiCache: async () => null,
+  setApiCache: async () => {},
+  clearCache: async () => {},
+  clearLocalData: async () => {},
+  saveNow: async () => {},
+  addPlay: async () => 0,
+  getPlayCountForTrack: async () => 0,
+  getRecentPlays: async () => [],
+  getTopPlayed: async () => []
+};
+
+const ctx = createContext<DBContext>(DEFAULT_CONTEXT);
+
+// Optimized database setup helpers
+const DatabaseSetup = {
+  createStore: (db: IDBDatabase, name: keyof typeof STORE_CONFIGS, transaction?: IDBTransaction) => {
+    if (db.objectStoreNames.contains(name)) return null;
+    
+    const config = STORE_CONFIGS[name];
+    const store = db.createObjectStore(name, config);
+    
+    if ('indexes' in config && config.indexes) {
+      config.indexes.forEach(index => {
+        store.createIndex(index.name, index.keyPath, { unique: index.unique || false });
+      });
+    }
+    
+    return store;
+  },
+
+  createIndex: (store: IDBObjectStore, name: string, keyPath: string, unique = false) => {
+    if (!store.indexNames.contains(name)) {
+      store.createIndex(name, keyPath, { unique });
+    }
+  },
+
+  ensureDefaultData: (transaction: IDBTransaction) => {
+    try {
+      const playlistStore = transaction.objectStore('playlists');
+      const codeIndex = playlistStore.index('code');
+      
+      codeIndex.get('favorites').onsuccess = (e) => {
+        const result = (e.target as IDBRequest).result;
+        if (!result) {
+          playlistStore.add({
+            name: 'Favorites',
+            code: 'favorites',
+            system: 1,
+            created_at: Date.now()
+          });
+        }
+      };
+    } catch (e) {
+      console.warn('Failed to ensure default data:', e);
+    }
+  }
+};
+
+// Optimized provider
+export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: string }>(({ children }) => {
+  const [db, setDb] = useState<IDBDatabase | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    let mounted = true
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
+    let mounted = true;
+    const request = indexedDB.open(DB_CONFIG.NAME, DB_CONFIG.VERSION);
 
     request.onupgradeneeded = (event) => {
       try {
         const dbInstance = (event.target as IDBOpenDBRequest).result;
-        // Helper to safely access an object store during upgrade
-        const upgradeTx = (event.target as IDBOpenDBRequest).transaction!;
+        const transaction = (event.target as IDBOpenDBRequest).transaction!;
 
-        if (!dbInstance.objectStoreNames.contains('users')) {
-          dbInstance.createObjectStore('users', { keyPath: 'id', autoIncrement: true });
-        }
-        if (!dbInstance.objectStoreNames.contains('plays')) {
-          dbInstance.createObjectStore('plays', { keyPath: 'id', autoIncrement: true });
-          // Use the upgrade transaction's object store; creating a new transaction here can conflict.
-          const store = upgradeTx.objectStore('plays');
-          store.createIndex('played_at', 'played_at');
-          // index by track id makes counting plays per track efficient
-          store.createIndex('track_id', 'track_id');
-        } else {
-          try {
-            const existingPlays = upgradeTx.objectStore('plays');
-            if (!existingPlays.indexNames.contains('track_id')) {
-              existingPlays.createIndex('track_id', 'track_id');
+        // Create all stores using configuration
+        Object.keys(STORE_CONFIGS).forEach(storeName => {
+          const name = storeName as keyof typeof STORE_CONFIGS;
+          
+          if (!dbInstance.objectStoreNames.contains(name)) {
+            DatabaseSetup.createStore(dbInstance, name, transaction);
+          } else {
+            // Handle existing stores that need index updates
+            try {
+              const store = transaction.objectStore(name);
+              const config = STORE_CONFIGS[name];
+              
+              if ('indexes' in config && config.indexes) {
+                config.indexes.forEach(index => {
+                  DatabaseSetup.createIndex(store, index.name, index.keyPath, index.unique);
+                });
+              }
+            } catch (e) {
+              console.warn(`Failed to update indexes for ${name}:`, e);
             }
-          } catch (e) {
-            // ignore if transaction access fails
           }
-        }
-      if (!dbInstance.objectStoreNames.contains('favorites')) {
-        dbInstance.createObjectStore('favorites', { keyPath: 'id', autoIncrement: true });
-      }
-      // Ensure playlists store exists and has a 'code' index
-      if (!dbInstance.objectStoreNames.contains('playlists')) {
-        const store = dbInstance.createObjectStore('playlists', { keyPath: 'id', autoIncrement: true });
-        store.createIndex('code', 'code', { unique: true });
-      } else {
-        try {
-          const existingStore = upgradeTx.objectStore('playlists');
-          if (!existingStore.indexNames.contains('code')) {
-            existingStore.createIndex('code', 'code', { unique: true });
-          }
-        } catch (e) {
-          // ignore - if transaction access fails here, the store will be created above when needed
-        }
-      }
-      // Ensure playlist_items store exists and has playlist_id index
-      if (!dbInstance.objectStoreNames.contains('playlist_items')) {
-        const store = dbInstance.createObjectStore('playlist_items', { autoIncrement: true });
-        // This index is ESSENTIAL for finding tracks by playlist ID.
-        store.createIndex('playlist_id', 'playlist_id');
-      } else {
-        try {
-          const existingItemsStore = upgradeTx.objectStore('playlist_items');
-          if (!existingItemsStore.indexNames.contains('playlist_id')) {
-            existingItemsStore.createIndex('playlist_id', 'playlist_id');
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-      if (!dbInstance.objectStoreNames.contains('plugins')) dbInstance.createObjectStore('plugins', { keyPath: 'id', autoIncrement: true });
-      if (!dbInstance.objectStoreNames.contains('settings')) dbInstance.createObjectStore('settings', { keyPath: 'k' });
-      if (!dbInstance.objectStoreNames.contains('api_cache')) dbInstance.createObjectStore('api_cache', { keyPath: 'cache_key' });
-      if (!dbInstance.objectStoreNames.contains('followed_artists')) {
-        const store = dbInstance.createObjectStore('followed_artists', { keyPath: 'id' });
-        // This index is crucial for sorting by date efficiently.
-        store.createIndex('followed_at', 'followed_at');
-      }
+        });
 
-      // ensure default system playlist (favorites) exists with stable code
-      const tx = (event.target as IDBOpenDBRequest).transaction!;
-      try {
-        const playlistStore = tx.objectStore('playlists');
-        const codeIndex = playlistStore.index('code');
-        codeIndex.get('favorites').onsuccess = (e) => {
-          const res = (e.target as IDBRequest).result
-          if (!res) {
-            playlistStore.add({ name: 'Favorites', code: 'favorites', system: 1, created_at: Date.now() });
-          }
-        }
-      } catch (e) {
-        // If indexes aren't available or the store isn't present, skip gracefully.
-        console.warn('IndexedDB upgrade partial failure:', e);
-      }
+        // Ensure default system data
+        DatabaseSetup.ensureDefaultData(transaction);
+        
       } catch (err) {
-        // If the upgrade handler throws, log and allow the request to continue.
-        console.error('onupgradeneeded error:', err);
+        console.error('Database upgrade error:', err);
       }
-    }
+    };
 
-    // If another connection is holding the old version, this will be called.
     request.onblocked = () => {
       console.warn('IndexedDB upgrade blocked by another connection');
-    }
-
-  // (db.onversionchange handled on success) - no-op here
+    };
 
     request.onsuccess = () => {
       if (mounted) {
-        const dbInst = request.result
-        // Close this connection if another tab tries to upgrade the DB version.
+        const dbInst = request.result;
+        
         try {
-          dbInst.onversionchange = () => { try { dbInst.close() } catch (_) { } };
-        } catch (e) { /* ignore if not supported */ }
-        setDb(dbInst)
-        setReady(true)
+          dbInst.onversionchange = () => {
+            try { 
+              dbInst.close(); 
+            } catch (_) {}
+          };
+        } catch (e) {
+          console.warn('Version change handler setup failed:', e);
+        }
+        
+        setDb(dbInst);
+        setReady(true);
       }
-    }
+    };
 
     request.onerror = () => {
-      console.error('IndexedDB init error:', request.error)
-    }
+      console.error('IndexedDB initialization error:', request.error);
+    };
 
     return () => {
-      mounted = false
+      mounted = false;
       if (db) {
-        db.close()
+        try {
+          db.close();
+        } catch (e) {
+          console.warn('Database close error:', e);
+        }
       }
-    }
-  }, []) // dbPath is unused but kept in props for API compatibility
+    };
+  }, []);
 
-  // --- Helper function for transactions ---
-  const performTx = <T,>(storeName: StoreName | readonly StoreName[], mode: IDBTransactionMode, action: (stores: Record<string, IDBObjectStore>) => Promise<T>): Promise<T> => {
+  // Optimized transaction helper
+  const performTx = useCallback(<T,>(
+    storeName: StoreName | readonly StoreName[], 
+    mode: IDBTransactionMode, 
+    action: (stores: Record<string, IDBObjectStore>) => Promise<T>
+  ): Promise<T> => {
     return new Promise((resolve, reject) => {
-      if (!db) return reject(new Error('DB not ready'));
+      if (!db) return reject(new Error('Database not ready'));
+      
       try {
         const storeNames = Array.isArray(storeName) ? storeName : [storeName];
         const tx = db.transaction(storeNames, mode);
         const stores: Record<string, IDBObjectStore> = {};
-        storeNames.forEach(name => { stores[name] = tx.objectStore(name) });
+        
+        storeNames.forEach(name => {
+          stores[name] = tx.objectStore(name);
+        });
 
         let result: T | undefined;
+        
         action(stores).then(res => {
           result = res;
         }).catch(err => {
@@ -185,52 +253,61 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
         reject(error);
       }
     });
-  };
+  }, [db]);
 
-  const promisifyRequest = <T,>(request: IDBRequest<T>): Promise<T> => {
+  const promisifyRequest = useCallback(<T,>(request: IDBRequest<T>): Promise<T> => {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-  }
+  }, []);
 
-  // --- API Implementation ---
+  // Memoized API methods
+  const getSetting = useCallback((key: string): Promise<string | null> => 
+    performTx('settings', 'readonly', async ({ settings }) => {
+      const res = await promisifyRequest(settings.get(key));
+      return res ? res.v : null;
+    }), [performTx, promisifyRequest]);
 
-  const getSetting = (key: string): Promise<string | null> => performTx('settings', 'readonly', async ({ settings }) => {
-    const res = await promisifyRequest(settings.get(key));
-    return res ? res.v : null;
-  });
+  const setSetting = useCallback((key: string, value: string): Promise<void> => 
+    performTx('settings', 'readwrite', async ({ settings }) => {
+      await promisifyRequest(settings.put({ k: key, v: value }));
+    }), [performTx, promisifyRequest]);
 
-  const setSetting = (key: string, value: string): Promise<void> => performTx('settings', 'readwrite', async ({ settings }) => {
-    await promisifyRequest(settings.put({ k: key, v: value }));
-  });
+  const getApiCache = useCallback((key: string): Promise<any | null> => 
+    performTx('api_cache', 'readonly', async ({ api_cache }) => {
+      const res = await promisifyRequest(api_cache.get(key));
+      if (!res) return null;
+      try {
+        return JSON.parse(res.response_data);
+      } catch {
+        return null;
+      }
+    }), [performTx, promisifyRequest]);
 
-  const getApiCache = (key: string): Promise<any | null> => performTx('api_cache', 'readonly', async ({ api_cache }) => {
-    const res = await promisifyRequest(api_cache.get(key));
-    if (!res) return null;
-    try {
-      return JSON.parse(res.response_data);
-    } catch {
-      return null;
-    }
-  });
+  const setApiCache = useCallback((key: string, data: any): Promise<void> => 
+    performTx('api_cache', 'readwrite', async ({ api_cache }) => {
+      const jsonStr = JSON.stringify(data);
+      await promisifyRequest(api_cache.put({ 
+        cache_key: key, 
+        response_data: jsonStr, 
+        cached_at: Date.now() 
+      }));
+    }), [performTx, promisifyRequest]);
 
-  const setApiCache = (key: string, data: any): Promise<void> => performTx('api_cache', 'readwrite', async ({ api_cache }) => {
-    const jsonStr = JSON.stringify(data);
-    await promisifyRequest(api_cache.put({ cache_key: key, response_data: jsonStr, cached_at: Date.now() }));
-  });
+  const clearCache = useCallback((): Promise<void> => 
+    performTx('api_cache', 'readwrite', async ({ api_cache }) => {
+      await promisifyRequest(api_cache.clear());
+    }), [performTx, promisifyRequest]);
 
-  const clearCache = (): Promise<void> => performTx('api_cache', 'readwrite', async ({ api_cache }) => {
-    await promisifyRequest(api_cache.clear());
-  });
-
-  const clearLocalData = (): Promise<void> => {
+  const clearLocalData = useCallback((): Promise<void> => {
     const storesToClear: StoreName[] = ['users', 'plays', 'favorites', 'playlist_items', 'plugins'];
     return performTx([...storesToClear, 'playlists'], 'readwrite', async (stores) => {
       // Clear simple stores
       for (const storeName of storesToClear) {
         await promisifyRequest(stores[storeName].clear());
       }
+      
       // Selectively clear non-system playlists
       const playlistStore = stores.playlists;
       const cursorReq = playlistStore.openCursor();
@@ -249,34 +326,33 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
         cursorReq.onerror = () => reject(cursorReq.error);
       });
     });
-  };
+  }, [performTx, promisifyRequest]);
 
-  const exportJSON = async (): Promise<string> => {
+  const exportJSON = useCallback(async (): Promise<string> => {
     const data: Record<string, any> = {};
-    await performTx(STORE_NAMES, 'readonly', async (stores) => {
-      for (const name of STORE_NAMES) {
+    await performTx(DB_CONFIG.STORES, 'readonly', async (stores) => {
+      for (const name of DB_CONFIG.STORES) {
         data[name] = await promisifyRequest(stores[name].getAll());
       }
     });
     return JSON.stringify(data);
-  };
+  }, [performTx, promisifyRequest]);
 
-  const importJSON = async (json: string): Promise<void> => {
+  const importJSON = useCallback(async (json: string): Promise<void> => {
     const data = JSON.parse(json);
-    await performTx(STORE_NAMES, 'readwrite', async (stores) => {
-      for (const name of STORE_NAMES) {
+    await performTx(DB_CONFIG.STORES, 'readwrite', async (stores) => {
+      for (const name of DB_CONFIG.STORES) {
         if (data[name] && Array.isArray(data[name])) {
           await promisifyRequest(stores[name].clear());
           for (const record of data[name]) {
-            // Using put is safer than add for imports
             await promisifyRequest(stores[name].put(record));
           }
         }
       }
     });
-  };
+  }, [performTx, promisifyRequest]);
 
-  const exportDB = async (): Promise<Uint8Array | null> => {
+  const exportDB = useCallback(async (): Promise<Uint8Array | null> => {
     try {
       const json = await exportJSON();
       return new TextEncoder().encode(json);
@@ -284,9 +360,9 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
       console.error("Failed to export DB:", e);
       return null;
     }
-  };
+  }, [exportJSON]);
 
-  const importDB = async (data: Uint8Array | ArrayBuffer): Promise<void> => {
+  const importDB = useCallback(async (data: Uint8Array | ArrayBuffer): Promise<void> => {
     try {
       const json = new TextDecoder().decode(data);
       await importJSON(json);
@@ -294,108 +370,121 @@ export const DBProvider: React.FC<{ children: React.ReactNode, dbPath?: string }
       console.error("Failed to import DB:", e);
       throw new Error("Import failed. Data may be corrupt.");
     }
-  };
+  }, [importJSON]);
 
-  const saveNow = async (): Promise<void> => {
-    // No-op for IndexedDB as transactions are committed automatically.
+  const saveNow = useCallback(async (): Promise<void> => {
+    // No-op for IndexedDB as transactions are committed automatically
     return Promise.resolve();
-  };
+  }, []);
 
-  // --- Play history helpers ---
-  // Record that a track started playing at a given timestamp (ms since epoch).
-  const addPlay = (trackId: string, startedAt: number = Date.now()): Promise<number> =>
+  // Play history operations
+  const addPlay = useCallback((trackId: string, startedAt: number = Date.now()): Promise<number> =>
     performTx('plays', 'readwrite', async ({ plays }) => {
-      const rec = { track_id: trackId, played_at: startedAt } as any;
-      const key = await promisifyRequest(plays.add(rec) as IDBRequest<number>);
+      const record = { track_id: trackId, played_at: startedAt } as any;
+      const key = await promisifyRequest(plays.add(record) as IDBRequest<number>);
       return key as number;
-    });
+    }), [performTx, promisifyRequest]);
 
-  // Return how many times a track has been played (counts entries with matching track_id)
-  const getPlayCountForTrack = (trackId: string): Promise<number> =>
+  const getPlayCountForTrack = useCallback((trackId: string): Promise<number> =>
     performTx('plays', 'readonly', async ({ plays }) => {
-      // Use the track_id index if present
       try {
-        const idx = plays.index('track_id');
+        const index = plays.index('track_id');
         const range = IDBKeyRange.only(trackId);
-        // Count request
-        const cntReq = idx.count(range);
-        const cnt = await promisifyRequest(cntReq as IDBRequest<number>);
-        return cnt || 0;
+        const count = await promisifyRequest(index.count(range) as IDBRequest<number>);
+        return count || 0;
       } catch (e) {
-        // Fallback: scan all plays (should be rare)
+        // Fallback: scan all plays
         let count = 0;
         const cursorReq = plays.openCursor();
         await new Promise<void>((resolve, reject) => {
           cursorReq.onsuccess = () => {
-            const cur = cursorReq.result;
-            if (cur) {
-              if (cur.value && cur.value.track_id === trackId) count++;
-              cur.continue();
+            const cursor = cursorReq.result;
+            if (cursor) {
+              if (cursor.value?.track_id === trackId) count++;
+              cursor.continue();
             } else resolve();
           };
           cursorReq.onerror = () => reject(cursorReq.error);
         });
         return count;
       }
-    });
+    }), [performTx, promisifyRequest]);
 
-  // Return recent plays ordered by played_at desc. limit optional.
-  const getRecentPlays = (limit: number = 50): Promise<Array<{ id: number; track_id: string; played_at: number }>> =>
+  const getRecentPlays = useCallback((limit: number = 50): Promise<Array<{ id: number; track_id: string; played_at: number }>> =>
     performTx('plays', 'readonly', async ({ plays }) => {
-      const res: Array<any> = [];
-      // Use played_at index to iterate backward
+      const result: Array<any> = [];
       try {
-        const idx = plays.index('played_at');
-        const cursorReq = idx.openCursor(null, 'prev');
+        const index = plays.index('played_at');
+        const cursorReq = index.openCursor(null, 'prev');
         await new Promise<void>((resolve, reject) => {
           cursorReq.onsuccess = () => {
-            const cur = cursorReq.result;
-            if (cur) {
-              res.push(cur.value);
-              if (res.length >= limit) return resolve();
-              cur.continue();
+            const cursor = cursorReq.result;
+            if (cursor) {
+              result.push(cursor.value);
+              if (result.length >= limit) return resolve();
+              cursor.continue();
             } else resolve();
           };
           cursorReq.onerror = () => reject(cursorReq.error);
         });
       } catch (e) {
-        // Fallback: getAll and sort
+        // Fallback: get all and sort
         const all = await promisifyRequest(plays.getAll());
         all.sort((a: any, b: any) => b.played_at - a.played_at);
         return all.slice(0, limit);
       }
-      return res;
-    });
+      return result;
+    }), [performTx, promisifyRequest]);
 
-  // Return top-played tracks by scanning plays and aggregating counts.
-  // This is a simple in-memory aggregation; for very large play tables you may want an aggregated store.
-  const getTopPlayed = (limit: number = 20): Promise<Array<{ track_id: string; count: number }>> =>
+  const getTopPlayed = useCallback((limit: number = 20): Promise<Array<{ track_id: string; count: number }>> =>
     performTx('plays', 'readonly', async ({ plays }) => {
-      // Fetch all plays (could be large); we fetch all and then aggregate in JS.
       const all = await promisifyRequest(plays.getAll()) as any[];
-      const map = new Map<string, number>();
-      for (const p of all) {
-        if (!p || !p.track_id) continue;
-        const key = String(p.track_id);
-        map.set(key, (map.get(key) || 0) + 1);
+      const countMap = new Map<string, number>();
+      
+      for (const play of all) {
+        if (!play?.track_id) continue;
+        const trackId = String(play.track_id);
+        countMap.set(trackId, (countMap.get(trackId) || 0) + 1);
       }
-      const arr = Array.from(map.entries()).map(([track_id, count]) => ({ track_id, count }));
-      arr.sort((a, b) => b.count - a.count);
-      return arr.slice(0, limit);
-    });
+      
+      const sorted = Array.from(countMap.entries())
+        .map(([track_id, count]) => ({ track_id, count }))
+        .sort((a, b) => b.count - a.count);
+        
+      return sorted.slice(0, limit);
+    }), [performTx, promisifyRequest]);
 
-
-  const value: DBContext = {
+  // Memoized context value
+  const contextValue = useMemo<DBContext>(() => ({
+    db,
+    ready,
+    exportJSON,
+    importJSON,
+    exportDB,
+    importDB,
+    getSetting,
+    setSetting,
+    getApiCache,
+    setApiCache,
+    clearCache,
+    clearLocalData,
+    saveNow,
+    addPlay,
+    getPlayCountForTrack,
+    getRecentPlays,
+    getTopPlayed
+  }), [
     db, ready, exportJSON, importJSON, exportDB, importDB,
     getSetting, setSetting, getApiCache, setApiCache,
-  clearCache, clearLocalData, saveNow,
-  // play history
-  addPlay, getPlayCountForTrack, getRecentPlays, getTopPlayed
-  }
+    clearCache, clearLocalData, saveNow,
+    addPlay, getPlayCountForTrack, getRecentPlays, getTopPlayed
+  ]);
 
-  return <ctx.Provider value={value}>{children}</ctx.Provider>
-}
+  return <ctx.Provider value={contextValue}>{children}</ctx.Provider>;
+});
 
-export function useDB() {
-  return useContext(ctx)
+DBProvider.displayName = 'DBProvider';
+
+export function useDB(): DBContext {
+  return useContext(ctx);
 }

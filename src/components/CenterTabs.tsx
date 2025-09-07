@@ -140,11 +140,13 @@ export default function CenterTabs({
     if (activeTab === undefined) setInternalTab(newTab);
   }, [tab, onTabChange, activeTab]);
 
-  // Handle search trigger
+  // Handle search trigger - only switch to search when trigger actually changes
+  const prevSearchTriggerRef = useRef<number | undefined>();
   useEffect(() => {
-    if (searchTrigger && tab !== 'search') {
+    if (searchTrigger && searchTrigger !== prevSearchTriggerRef.current && tab !== 'search') {
       setTab('search');
     }
+    prevSearchTriggerRef.current = searchTrigger;
   }, [searchTrigger, tab, setTab]);
 
   // Use custom hook for ID change detection
@@ -212,6 +214,10 @@ export default function CenterTabs({
           <SearchResults
             query={searchQuery}
             results={normalizedSearchResults}
+            onMoreClick={(id) => {
+              // Handle "more" actions for search results
+              console.log('More clicked for track:', id);
+            }}
             // @ts-expect-error - loading prop may be optional
             loading={searchLoading}
           />

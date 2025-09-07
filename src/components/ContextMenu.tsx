@@ -1,32 +1,204 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { ContextMenuOptions, ContextMenuItem } from '../core/ContextMenuContext';
+import { playbackEvents } from './tabHelpers';
 
-// --- SubMenu Component (Updated) ---
-function SubMenu({
-  items,
-  parentRef,
-  appRect,
-  onClose,
-  handleMouseEnter, // <-- New prop
-  handleMouseLeave, // <-- New prop
-}: {
+// Constants for better performance
+const MENU_CONFIG = {
+  PADDING: 8,
+  HORIZONTAL_OVERLAP: 4,
+  VERTICAL_OVERLAP: 5,
+  SUBMENU_DELAY: 150,
+  MIN_HEIGHT: 80,
+  INITIAL_POSITION: { top: '-9999px', left: '-9999px', opacity: 0 },
+} as const;
+
+// Interfaces for state management
+interface MenuState {
+  rootStyle?: React.CSSProperties;
+  cardStyle?: React.CSSProperties;
+  appRect: DOMRect | null;
+  activeSubMenu: string | null;
+}
+
+interface PositionCalculation {
+  left: number;
+  top: number;
+  cardStyle?: React.CSSProperties;
+}
+
+// Utility functions
+const calculateMenuPosition = (
+  options: { x: number; y: number },
+  menuDimensions: { width: number; height: number },
+  appRect: DOMRect
+): PositionCalculation => {
+  const { width: menuWidth, height: menuHeight } = menuDimensions;
+  let left = options.x;
+  let top = options.y;
+  let cardStyle: React.CSSProperties | undefined = undefined;
+
+  // Horizontal positioning
+  if (left + menuWidth + MENU_CONFIG.PADDING > appRect.right) {
+    left = Math.max(appRect.left + MENU_CONFIG.PADDING, appRect.right - menuWidth - MENU_CONFIG.PADDING);
+  }
+  if (left < appRect.left + MENU_CONFIG.PADDING) {
+    left = appRect.left + MENU_CONFIG.PADDING;
+  }
+
+  // Vertical positioning
+  let finalTop = top;
+  if (top + menuHeight + MENU_CONFIG.PADDING > appRect.bottom) {
+    const altTop = top - menuHeight - 8;
+    if (altTop >= appRect.top + MENU_CONFIG.PADDING) {
+      finalTop = altTop;
+    } else {
+      finalTop = Math.max(appRect.top + MENU_CONFIG.PADDING, top);
+      const maxH = appRect.bottom - finalTop - MENU_CONFIG.PADDING;
+      cardStyle = { maxHeight: Math.max(MENU_CONFIG.MIN_HEIGHT, maxH), overflowY: 'auto' };
+    }
+  }
+
+  return {
+    left: Math.round(left),
+    top: Math.round(finalTop),
+    cardStyle,
+  };
+};
+
+const calculateSubMenuPosition = (
+  parentRect: DOMRect,
+  menuDimensions: { width: number; height: number },
+  appRect: DOMRect
+): { left: number; top: number } => {
+  const { width: menuWidth, height: menuHeight } = menuDimensions;
+  let left = parentRect.right - MENU_CONFIG.HORIZONTAL_OVERLAP;
+  let top = parentRect.top - MENU_CONFIG.VERTICAL_OVERLAP;
+
+  // Horizontal positioning
+  if (left + menuWidth + MENU_CONFIG.PADDING > appRect.right) {
+    left = parentRect.left - menuWidth + MENU_CONFIG.HORIZONTAL_OVERLAP;
+  }
+  if (left < appRect.left + MENU_CONFIG.PADDING) {
+    left = appRect.left + MENU_CONFIG.PADDING;
+  }
+
+  // Vertical positioning
+  if (top + menuHeight + MENU_CONFIG.PADDING > appRect.bottom) {
+    top = appRect.bottom - menuHeight - MENU_CONFIG.PADDING;
+  }
+  if (top < appRect.top + MENU_CONFIG.PADDING) {
+    top = appRect.top + MENU_CONFIG.PADDING;
+  }
+
+  return { left: Math.round(left), top: Math.round(top) };
+};
+
+// Custom hooks for better organization
+function useMenuState(): [MenuState, {
+  setRootStyle: (style: React.CSSProperties) => void;
+  setCardStyle: (style?: React.CSSProperties) => void;
+  setAppRect: (rect: DOMRect | null) => void;
+  setActiveSubMenu: (id: string | null) => void;
+}] {
+  const [state, setState] = useState<MenuState>({
+    appRect: null,
+    activeSubMenu: null,
+  });
+
+  const actions = useMemo(() => ({
+    setRootStyle: (rootStyle: React.CSSProperties) =>
+      setState(prev => ({ ...prev, rootStyle })),
+    setCardStyle: (cardStyle?: React.CSSProperties) =>
+      setState(prev => ({ ...prev, cardStyle })),
+    setAppRect: (appRect: DOMRect | null) =>
+      setState(prev => ({ ...prev, appRect })),
+    setActiveSubMenu: (activeSubMenu: string | null) =>
+      setState(prev => ({ ...prev, activeSubMenu })),
+  }), []);
+
+  return [state, actions];
+}
+
+function useSubmenuTimer() {
+  const timerRef = useRef<number | null>(null);
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const setTimer = useCallback((callback: () => void, delay: number = MENU_CONFIG.SUBMENU_DELAY) => {
+    clearTimer();
+    timerRef.current = window.setTimeout(callback, delay);
+  }, [clearTimer]);
+
+  useEffect(() => clearTimer, [clearTimer]);
+
+  return { clearTimer, setTimer };
+}
+
+function useMenuPositioning(
+  cardRef: React.RefObject<HTMLElement>,
+  options: { x: number; y: number },
+  appRect: DOMRect | null,
+  dependencies: any[] = []
+) {
+  const [position, setPosition] = useState<React.CSSProperties>({
+    left: options.x,
+    top: options.y,
+    position: 'fixed',
+  });
+  const [cardStyle, setCardStyle] = useState<React.CSSProperties | undefined>();
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const card = cardRef.current;
+      if (!card || !appRect) {
+        setPosition({ left: options.x, top: options.y, position: 'fixed' });
+        setCardStyle(undefined);
+        return;
+      }
+
+      const menuDimensions = {
+        width: card.offsetWidth,
+        height: card.offsetHeight,
+      };
+
+      const result = calculateMenuPosition(options, menuDimensions, appRect);
+      
+      setPosition({
+        left: result.left,
+        top: result.top,
+        position: 'fixed',
+        opacity: 1,
+      });
+      setCardStyle(result.cardStyle);
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [options.x, options.y, appRect, ...dependencies]);
+
+  return { position, cardStyle };
+}
+
+// Optimized SubMenu Component
+const SubMenu = React.memo<{
   items: ContextMenuItem[];
   parentRef: React.RefObject<HTMLDivElement>;
   appRect: DOMRect | null;
   onClose: (v: string | null) => void;
-  handleMouseEnter: () => void; // <-- New prop
-  handleMouseLeave: () => void; // <-- New prop
-}) {
-  const cardRef = useRef<HTMLDivElement | null>(null);
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}>(({ items, parentRef, appRect, onClose, onMouseEnter, onMouseLeave }) => {
+  const cardRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<React.CSSProperties>({
     position: 'fixed',
-    top: '-9999px',
-    left: '-9999px',
-    opacity: 0,
+    ...MENU_CONFIG.INITIAL_POSITION,
   });
 
-  // Positioning logic remains the same...
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
       const card = cardRef.current;
@@ -34,111 +206,125 @@ function SubMenu({
       if (!card || !parent || !appRect) return;
 
       const parentRect = parent.getBoundingClientRect();
-      const menuWidth = card.offsetWidth;
-      const menuHeight = card.offsetHeight;
-      const padding = 8;
-      const horizontalOverlap = 4;
-      const verticalOverlap = 5;
+      const menuDimensions = {
+        width: card.offsetWidth,
+        height: card.offsetHeight,
+      };
 
-      let left = parentRect.right - horizontalOverlap;
-      let top = parentRect.top - verticalOverlap;
-
-      if (left + menuWidth + padding > appRect.right) {
-        left = parentRect.left - menuWidth + horizontalOverlap;
-      }
-      if (left < appRect.left + padding) {
-        left = appRect.left + padding;
-      }
-      if (top + menuHeight + padding > appRect.bottom) {
-        top = appRect.bottom - menuHeight - padding;
-      }
-      if (top < appRect.top + padding) {
-        top = appRect.top + padding;
-      }
-
+      const position = calculateSubMenuPosition(parentRect, menuDimensions, appRect);
+      
       setStyle({
         position: 'fixed',
-        left: Math.round(left),
-        top: Math.round(top),
+        left: position.left,
+        top: position.top,
         opacity: 1,
       });
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [items, parentRef, appRect]);
+  }, [items.length, parentRef, appRect]);
 
-  function handleAction(item: ContextMenuItem) {
+  const handleAction = useCallback((item: ContextMenuItem) => {
     if (item.disabled || item.hide) return;
     if (item.type === 'link' && item.href) {
       window.open(item.href, '_blank');
     }
     onClose(item.id);
-  }
+  }, [onClose]);
+
+  const menuItems = useMemo(() => 
+    items.map(item => (
+      <div
+        key={item.id}
+        className={`cm-item ${item.disabled ? 'disabled' : ''}${item.hide ? ' hidden' : ''}`}
+        onClick={() => handleAction(item)}
+      >
+        <div className="cm-label">
+          {item.icon && (
+            <span 
+              className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} 
+              aria-hidden
+            >
+              {item.icon}
+            </span>
+          )}
+          {item.label}
+        </div>
+      </div>
+    )), 
+    [items, handleAction]
+  );
 
   return createPortal(
-    // Apply the mouse handlers to the submenu card
     <div
       className="cm-card cm-submenu-card"
       ref={cardRef}
       style={style}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
-      {items.map(s => (
-        <div
-          key={s.id}
-          className={`cm-item ${s.disabled ? 'disabled' : ''}${s.hide ? ' hidden' : ''}`}
-          onClick={() => handleAction(s)}
-        >
-          <div className="cm-label">
-            {s.icon && <span className={`cm-icon material-symbols-rounded ${s.iconFilled ? 'filled' : ''}`} aria-hidden>{s.icon}</span>}
-            {s.label}
-          </div>
-        </div>
-      ))}
+      {menuItems}
     </div>,
     document.body
   );
-}
+});
 
-// --- MenuItem Component (Updated) ---
-function MenuItem({
-  item,
-  appRect,
-  activeSubMenu,
-  setActiveSubMenu,
-  handleAction,
-  onClose,
-  handleMouseEnter, // <-- New prop
-  handleMouseLeave, // <-- New prop
-}: {
+// Optimized MenuItem Component
+const MenuItem = React.memo<{
   item: ContextMenuItem;
   appRect: DOMRect | null;
   activeSubMenu: string | null;
-  setActiveSubMenu: (id: string | null) => void;
-  handleAction: (item: ContextMenuItem) => void;
+  onSetActiveSubMenu: (id: string | null) => void;
+  onAction: (item: ContextMenuItem) => void;
   onClose: (v: string | null) => void;
-  handleMouseEnter: () => void; // <-- New prop
-  handleMouseLeave: () => void; // <-- New prop
-}) {
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}>(({ item, appRect, activeSubMenu, onSetActiveSubMenu, onAction, onClose, onMouseEnter, onMouseLeave }) => {
   const itemRef = useRef<HTMLDivElement>(null);
   const isSubMenuOpen = activeSubMenu === item.id;
 
+  const handleMouseEnterItem = useCallback(() => {
+    onMouseEnter();
+    if (item.type === 'submenu') {
+      onSetActiveSubMenu(item.id);
+    } else {
+      onSetActiveSubMenu(null);
+    }
+  }, [item.type, item.id, onMouseEnter, onSetActiveSubMenu]);
+
+  const handleItemClick = useCallback(() => {
+    if (item.type !== 'submenu') {
+      onAction(item);
+    }
+  }, [item, onAction]);
+
+  // Memoized icon component
+  const iconElement = useMemo(() => {
+    if (!item.icon) return null;
+    return (
+      <span 
+        className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} 
+        aria-hidden
+      >
+        {item.icon}
+      </span>
+    );
+  }, [item.icon, item.iconFilled]);
+
+  // Submenu item
   if (item.type === 'submenu' && item.submenu) {
     return (
       <div
         className={`cm-item cm-submenu ${item.disabled ? 'disabled' : ''}${item.hide ? ' hidden' : ''}`}
         ref={itemRef}
-        onMouseEnter={() => {
-          handleMouseEnter(); // Clear any closing timer
-          setActiveSubMenu(item.id); // Open this submenu
-        }}
-      // The main leave handler is on the parent, so we don't need one here
+        onMouseEnter={handleMouseEnterItem}
       >
         <div className={`cm-label ${item.disabled ? 'disabled' : ''}`}>
-          {item.icon && <span className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} aria-hidden>{item.icon}</span>}
+          {iconElement}
           {item.label}
-          <span className='material-symbols-rounded cm-icon' aria-hidden>{'chevron_right'}</span>
+          <span className="material-symbols-rounded cm-icon" aria-hidden>
+            chevron_right
+          </span>
         </div>
         {isSubMenuOpen && (
           <SubMenu
@@ -146,8 +332,8 @@ function MenuItem({
             parentRef={itemRef}
             appRect={appRect}
             onClose={onClose}
-            handleMouseEnter={handleMouseEnter} // Pass handlers down
-            handleMouseLeave={handleMouseLeave}
+            onMouseEnter={onMouseEnter}
+            onMouseLeave={onMouseLeave}
           />
         )}
       </div>
@@ -156,167 +342,187 @@ function MenuItem({
 
   // Separator
   if (item.type === 'separator') {
-    return <div key={item.id} className="cm-separator" />;
+    return <div className="cm-separator" />;
   }
 
-  // Group: renders a title and a list of items
+  // Group
   if (item.type === 'group') {
+    const groupItems = useMemo(() => 
+      (item.items || []).map(groupItem => (
+        <MenuItem
+          key={groupItem.id}
+          item={groupItem}
+          appRect={appRect}
+          activeSubMenu={activeSubMenu}
+          onSetActiveSubMenu={onSetActiveSubMenu}
+          onAction={onAction}
+          onClose={onClose}
+          onMouseEnter={onMouseEnter}
+          onMouseLeave={onMouseLeave}
+        />
+      )), 
+      [item.items, appRect, activeSubMenu, onSetActiveSubMenu, onAction, onClose, onMouseEnter, onMouseLeave]
+    );
+
     return (
-      <div key={item.id} className={`cm-group${item.hide ? ' hidden' : ''}`}>
+      <div className={`cm-group${item.hide ? ' hidden' : ''}`}>
         {item.title && <div className="cm-group-title">{item.title}</div>}
         <div className="cm-group-items">
-          {(item.items || []).map(i => (
-            <MenuItem
-              key={i.id}
-              item={i}
-              appRect={appRect}
-              activeSubMenu={activeSubMenu}
-              setActiveSubMenu={setActiveSubMenu}
-              handleAction={handleAction}
-              onClose={onClose}
-              handleMouseEnter={handleMouseEnter}
-              handleMouseLeave={handleMouseLeave}
-            />
-          ))}
+          {groupItems}
         </div>
       </div>
     );
   }
 
-  // Custom item type (for title with image, etc.)
+  // Custom item
   if (item.type === 'custom' && item.meta) {
-    return (
-      <div
-        className={`cm-item custom-item ${item.disabled ? 'disabled' : 'disabled'}${item.hide ? ' hidden' : ''}`}
-      >
-        <div className="cm-label">
-          <div
-            className={`cm-custom-image ${item.image ? '' : 'no-image'}`}
-            style={item.image ? { backgroundImage: `url(${item.image})` } : undefined}
+    const customImage = useMemo(() => {
+      if (item.image) {
+        return (
+          <div 
+            className="cm-custom-image"
+            style={{ backgroundImage: `url(${item.image})` }}
+          />
+        );
+      }
+      return (
+        <div className="cm-custom-image no-image">
+          <span 
+            className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} 
+            aria-hidden
           >
-            {!item.image && <span className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} aria-hidden>{item.icon || 'hide_image'}</span>}
-          </div>
+            {item.icon || 'hide_image'}
+          </span>
+        </div>
+      );
+    }, [item.image, item.icon, item.iconFilled]);
+
+    return (
+      <div className={`cm-item custom-item disabled${item.hide ? ' hidden' : ''}`}>
+        <div className="cm-label">
+          {customImage}
           <div className="cm-custom-meta">
             <div className="cm-custom-title overflow-ellipsis">{item.meta.title}</div>
-            {item.meta.subtitle && <div className="cm-custom-subtitle overflow-ellipsis">{item.meta.subtitle}</div>}
+            {item.meta.subtitle && (
+              <div className="cm-custom-subtitle overflow-ellipsis">{item.meta.subtitle}</div>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
+  // Regular item
   return (
     <div
       className={`cm-item ${item.disabled ? 'disabled' : ''}${item.hide ? ' hidden' : ''}`}
-      onClick={() => handleAction(item)}
-      onMouseEnter={() => {
-        handleMouseEnter(); // Clear any closing timer
-        setActiveSubMenu(null); // Close any open submenu
-      }}
+      onClick={handleItemClick}
+      onMouseEnter={handleMouseEnterItem}
     >
       <div className="cm-label">
-        {item.icon && <span className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} aria-hidden>{item.icon}</span>}
+        {iconElement}
         {item.label}
       </div>
     </div>
   );
-}
+});
 
-// --- Main ContextMenu Component (Updated) ---
-export default function ContextMenu({ options, onClose }: { options: ContextMenuOptions; onClose: (v: string | null) => void }) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const [rootStyle, setRootStyle] = useState<React.CSSProperties | undefined>(undefined);
-  const [cardStyle, setCardStyle] = useState<React.CSSProperties | undefined>(undefined);
-  const [appRect, setAppRect] = useState<DOMRect | null>(null);
-  const [activeSubMenu, setActiveSubMenu] = useState<string | null>(null);
+// Main optimized ContextMenu Component
+export default function ContextMenu({ 
+  options, 
+  onClose 
+}: { 
+  options: ContextMenuOptions; 
+  onClose: (v: string | null) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [menuState, menuActions] = useMenuState();
+  const { clearTimer, setTimer } = useSubmenuTimer();
 
-  // --- NEW: Timer logic for handling mouse leave events ---
-  const leaveTimer = useRef<number | null>(null);
+  // Memoized positioning
+  const { position: rootStyle, cardStyle } = useMenuPositioning(
+    cardRef,
+    { x: options.x, y: options.y },
+    menuState.appRect,
+    [options.items?.length]
+  );
 
-  const handleMouseLeave = () => {
-    // If a timer is already running, clear it
-    if (leaveTimer.current) clearTimeout(leaveTimer.current);
-    // Start a new timer to close the submenu
-    leaveTimer.current = window.setTimeout(() => {
-      setActiveSubMenu(null);
-    }, 150); // 150ms grace period
-  };
-
-  const handleMouseEnter = () => {
-    // When the mouse enters, clear any pending timer to prevent closing
-    if (leaveTimer.current) clearTimeout(leaveTimer.current);
-  };
-  // --- END of new logic ---
-
-
-  // useEffect for click outside (unchanged)
+  // Initialize app rect and click outside handler
   useEffect(() => {
-    const appEl = document.getElementById('app') || document.querySelector('.app') || document.documentElement;
-    setAppRect((appEl as Element).getBoundingClientRect());
-    function onClick(e: MouseEvent) {
-      if (!rootRef.current) return;
-      if (!(e.target instanceof Element)) return;
+    const appEl = document.getElementById('app') || 
+      document.querySelector('.app') || 
+      document.documentElement;
+    menuActions.setAppRect((appEl as Element).getBoundingClientRect());
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (!rootRef.current || !(e.target instanceof Element)) return;
       const isOutside = !rootRef.current.contains(e.target) && !e.target.closest('.cm-card');
       if (isOutside) onClose(null);
-    }
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
-  }, [onClose]);
+    };
 
-  // useEffect for main menu positioning (unchanged)
-  useEffect(() => {
-    let raf = 0;
-    raf = requestAnimationFrame(() => {
-      const card = cardRef.current;
-      const root = rootRef.current;
-      if (!root || !card || !appRect) {
-        setRootStyle({ left: options.x, top: options.y, position: 'fixed' });
-        setCardStyle(undefined);
-        return;
-      }
-      const menuWidth = card.offsetWidth;
-      const menuHeight = card.offsetHeight;
-      let left = typeof options.x === 'number' ? options.x : 0;
-      let top = typeof options.y === 'number' ? options.y : 0;
-      const padding = 8;
-      let cardStyleToSet: React.CSSProperties | undefined = undefined;
-      if (left + menuWidth + padding > appRect.right) {
-        left = Math.max(appRect.left + padding, appRect.right - menuWidth - padding);
-      }
-      if (left < appRect.left + padding) left = appRect.left + padding;
-      let finalTop = top;
-      if (top + menuHeight + padding > appRect.bottom) {
-        const altTop = top - menuHeight - 8;
-        if (altTop >= appRect.top + padding) {
-          finalTop = altTop;
-        } else {
-          finalTop = Math.max(appRect.top + padding, top);
-          const maxH = appRect.bottom - finalTop - padding;
-          cardStyleToSet = { maxHeight: Math.max(80, maxH), overflowY: 'auto' };
-        }
-      }
-      setRootStyle({ left: Math.round(left), top: Math.round(finalTop), position: 'fixed', opacity: 1 });
-      setCardStyle(cardStyleToSet);
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [options.x, options.y, options.items?.length, appRect]);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [onClose, menuActions]);
 
-  // handleAction (unchanged)
-  function handleAction(item: ContextMenuItem) {
+  // Mouse event handlers
+  const handleMouseLeave = useCallback(() => {
+    setTimer(() => menuActions.setActiveSubMenu(null));
+  }, [setTimer, menuActions]);
+
+  const handleMouseEnter = useCallback(() => {
+    clearTimer();
+  }, [clearTimer]);
+
+  // Action handler
+  const handleAction = useCallback((item: ContextMenuItem) => {
     if (item.disabled || item.type === 'submenu') return;
-    if (item.type === 'link' && item.href) window.open(item.href, '_blank');
+    
+    if (item.type === 'link' && item.href) {
+      window.open(item.href, '_blank');
+    }
+    
     if (item.type === 'action' && typeof item.onClick === 'function') {
       try {
-        const r = item.onClick(item);
-        if (r && typeof (r as Promise<any>).then === 'function') {
-          (r as Promise<any>).finally(() => onClose(item.id));
+        const result = item.onClick(item);
+        if (result && typeof (result as Promise<any>).then === 'function') {
+          (result as Promise<any>).finally(() => onClose(item.id));
           return;
         }
-      } catch (e) { console.error('ContextMenu action error', e); }
+      } catch (e) {
+        console.error('ContextMenu action error', e);
+      }
     }
+    
     onClose(item.id);
-  }
+  }, [onClose]);
+
+  // Memoized menu items
+  const menuItems = useMemo(() =>
+    options.items.map(item => (
+      <MenuItem
+        key={item.id}
+        item={item}
+        appRect={menuState.appRect}
+        activeSubMenu={menuState.activeSubMenu}
+        onSetActiveSubMenu={menuActions.setActiveSubMenu}
+        onAction={handleAction}
+        onClose={onClose}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      />
+    )),
+    [
+      options.items, 
+      menuState.appRect, 
+      menuState.activeSubMenu, 
+      menuActions.setActiveSubMenu, 
+      handleAction, 
+      onClose, 
+      handleMouseEnter, 
+      handleMouseLeave
+    ]
+  );
 
   return (
     <div
@@ -324,23 +530,11 @@ export default function ContextMenu({ options, onClose }: { options: ContextMenu
       ref={rootRef}
       style={rootStyle}
       role="menu"
-      onMouseLeave={handleMouseLeave} // Apply the handlers
-      onMouseEnter={handleMouseEnter} // Apply the handlers
+      onMouseLeave={handleMouseLeave}
+      onMouseEnter={handleMouseEnter}
     >
       <div className="cm-card" ref={cardRef} style={cardStyle}>
-        {options.items.map(item => (
-          <MenuItem
-            key={item.id}
-            item={item}
-            appRect={appRect}
-            activeSubMenu={activeSubMenu}
-            setActiveSubMenu={setActiveSubMenu}
-            handleAction={handleAction}
-            onClose={onClose}
-            handleMouseEnter={handleMouseEnter} // Pass the handlers down
-            handleMouseLeave={handleMouseLeave}
-          />
-        ))}
+        {menuItems}
       </div>
     </div>
   );
@@ -379,7 +573,7 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
     {
       id: 'playlist', label: t('common.addToPlaylist', 'Add to playlist'), type: 'action', icon: 'playlist_add',
       onClick: () => {
-        window.dispatchEvent(new CustomEvent('freely:openAddToPlaylistModal', { detail: { track: trackData, fromBottomPlayer: false } }));
+        playbackEvents.openAddToPlaylistModal(trackData);
       }
     },
     ...(queueOptions ? [
@@ -393,7 +587,7 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
               const rest = currentSegment.filter(id => id !== trackData.id);
               const newQueue = [trackData.id, ...rest];
               // Set new queue beginning with this track and start playback at index 0
-              window.dispatchEvent(new CustomEvent('freely:playback:setQueue', { detail: { queueIds: newQueue, startIndex: 0 } }));
+              playbackEvents.setQueue(newQueue, 0);
             }
           },
           {
@@ -404,7 +598,7 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
               const q = Array.isArray(queueList) ? [...queueList] : [];
               // If queue empty just enqueue (don't force immediate play)
               if (!q.length) {
-                window.dispatchEvent(new CustomEvent('freely:playback:enqueue', { detail: { ids: [id] } }));
+                playbackEvents.enqueue([id]);
                 return;
               }
               const curIdx = (typeof currentIndex === 'number' && currentIndex >= 0) ? currentIndex : 0;
@@ -418,13 +612,13 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
               // Insert at desired position (could be end)
               q.splice(desiredPos, 0, id);
               // Reorder queue without changing the currently playing track
-              window.dispatchEvent(new CustomEvent('freely:playback:reorderQueue', { detail: { queueIds: q } }));
+              playbackEvents.reorderQueue(q);
             }
           },
           {
             id: 'act-add-queue', label: t('player.addToQueue', 'Add to queue'), type: 'action', icon: 'queue',
             onClick: () => {
-              if (trackData?.id) window.dispatchEvent(new CustomEvent('freely:playback:enqueue', { detail: { ids: [trackData.id] } }));
+              if (trackData?.id) playbackEvents.enqueue([trackData.id]);
             }
           },
           ...(queueRemovable ? [
@@ -432,7 +626,7 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
               id: 'act-remove', label: t('player.removeFromPlaylist', 'Remove from playlist'), type: 'action', icon: 'close',
               onClick: () => {
                 if (trackData?.id) {
-                  window.dispatchEvent(new CustomEvent('freely:playback:removeTrack', { detail: { id: trackData.id } }));
+                  playbackEvents.removeTrack(trackData.id);
                 }
               }
             }

@@ -6,6 +6,7 @@ import useFollowedArtists from '../core/artists';
 import { useSpotifyClient } from '../core/spotify-client';
 import { useDB } from '../core/dbIndexed';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers';
+import { useStableTabAPI, useHeroImage, playbackEvents } from './tabHelpers';
 
 // Constants for performance
 const CONSTANTS = {
@@ -37,51 +38,17 @@ interface CollectionCache {
   [key: string]: any[] | undefined;
 }
 
-// Custom hooks for better organization
-function useAPI(spotifyClient: any) {
-  return useMemo(() => {
-    const w = (window as any);
-    const electron = w?.electron;
-    return {
-      hasElectron: !!electron?.spotify,
-      imageRes: (images: any, idx = 1) => {
-        if (typeof w.imageRes === 'function') return w.imageRes(images, idx);
-        if (!images || !images.length) return null;
-        return images[Math.min(idx, images.length - 1)]?.url || images[0]?.url || null;
-      },
-      getArtistAlbums: (id: string, opts?: any) => {
-        if (electron?.spotify?.getArtistAlbums) return electron.spotify.getArtistAlbums(id, opts);
-        if (spotifyClient && typeof (spotifyClient as any).getArtistAlbums === 'function') return (spotifyClient as any).getArtistAlbums(id, opts);
-        return Promise.reject(new Error('No spotify API available'));
-      },
-      getArtistTopTracks: (id: string, opts?: any) => {
-        if (electron?.spotify?.getArtistTopTracks) return electron.spotify.getArtistTopTracks(id, opts);
-        if (spotifyClient && typeof (spotifyClient as any).getArtistTopTracks === 'function') return (spotifyClient as any).getArtistTopTracks(id, opts);
-        return Promise.reject(new Error('No spotify API available'));
-      },
-      getRecommendations: (opts: any) => {
-        if (electron?.spotify?.getRecommendations) return electron.spotify.getRecommendations(opts);
-        if (spotifyClient && typeof (spotifyClient as any).getRecommendations === 'function') return (spotifyClient as any).getRecommendations(opts);
-        return Promise.reject(new Error('No spotify API available'));
-      },
-    };
-  }, [spotifyClient]);
-}
-
-function usePlayNow() {
-  return useCallback((ids: string | string[]) => {
-    const arr = Array.isArray(ids) ? ids : [ids];
-    window.dispatchEvent(new CustomEvent('freely:playback:playNow', { detail: { ids: arr } }));
-  }, []);
-}
-
 export default function HomeTab() {
   const { t } = useI18n();
-  const playNow = usePlayNow();
-  const spotifyClient = useSpotifyClient();
   const { artists: followedArtists } = useFollowedArtists();
   const { getTopPlayed } = useDB();
-  const api = useAPI(spotifyClient);
+  const api = useStableTabAPI();
+
+  // Use optimized playback actions from tabHelpers
+  const playNow = useCallback((ids: string | string[]) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    playbackEvents.setQueue(arr, 0);
+  }, []);
 
   // Consolidated state management
   const [homeData, setHomeData] = useState<HomeDataState>({
@@ -153,9 +120,8 @@ export default function HomeTab() {
           let tracksData: any[] = [];
           
           try {
-            if (ids.length && spotifyClient && typeof (spotifyClient as any).getTracks === 'function') {
-              const resp = await (spotifyClient as any).getTracks(ids);
-              tracksData = Array.isArray(resp) ? resp : (resp?.tracks || []);
+            if (ids.length) {
+              tracksData = await api.getTracks(ids);
             }
           } catch { /* ignore metadata fetch failures */ }
           
@@ -194,12 +160,14 @@ export default function HomeTab() {
       }
     })();
     return () => { cancelled = true; };
-  }, [getTopPlayed, spotifyClient]);
+  }, [getTopPlayed, api]);
 
   // ---- Latest releases for followed artists ----
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      console.log('[HomeTab] Latest releases - Following', followedArtists?.length || 0, 'artists');
+
       if (!followedArtists || followedArtists.length === 0) {
         if (!cancelled && mountedRef.current) {
           setHomeData(prev => ({ ...prev, latestReleases: [] }));
@@ -207,19 +175,34 @@ export default function HomeTab() {
         return;
       }
 
-      const ready = await waitForApi(() => !!(api.hasElectron || (spotifyClient && typeof (spotifyClient as any).getArtistAlbums === 'function')), 3, 500);
+      const ready = await waitForApi(() => !!api.hasElectron || true, 3, 500);
       if (!ready || !mountedRef.current || cancelled) return;
 
       const toQuery = followedArtists.slice(0, CONSTANTS.maxArtists).filter(a => !!a?.id);
+      console.log('[HomeTab] Fetching albums for', toQuery.length, 'artists');
 
       // Use optimized concurrent task runner
       const albumTasks = toQuery.map(a => async () => {
         if (cancelled || !mountedRef.current) return null;
         const aid = a!.id!;
+        
         try {
           const resp: any = await api.getArtistAlbums(aid, { includeGroups: 'album,single', limit: 5, fetchAll: false });
-          const items = resp?.items ?? [];
-          if (!items || !items.length) return null;
+          
+          // Handle both array format (from tabHelpers) and object format (direct API)
+          let items: any[] = [];
+          if (Array.isArray(resp)) {
+            items = resp;
+          } else if (resp?.items && Array.isArray(resp.items)) {
+            items = resp.items;
+          }
+          
+          console.log('[HomeTab] Albums for artist', aid, ':', { count: items.length, firstAlbum: items[0]?.name });
+          
+          if (!items || !items.length) {
+            console.log('[HomeTab] No albums found for artist', aid);
+            return null;
+          }
           
           // pick most recent by releaseDate
           items.sort((x: any, y: any) => {
@@ -229,6 +212,8 @@ export default function HomeTab() {
           });
           
           const pick = items[0];
+          console.log('[HomeTab] Latest album for', a?.name, ':', pick?.name, '(', pick?.releaseDate, ')');
+          
           return pick ? {
             id: pick.id,
             name: pick.name,
@@ -236,7 +221,8 @@ export default function HomeTab() {
             artists: pick.artists || [],
             rank: undefined,
           } as TopAlbum : null;
-        } catch {
+        } catch (error) {
+          console.error('[HomeTab] Error fetching albums for artist', aid, ':', error);
           return null;
         }
       });
@@ -256,12 +242,14 @@ export default function HomeTab() {
         if (deduped.length >= CONSTANTS.latestReleasesLimit) break;
       }
       
+      console.log('[HomeTab] Final latest releases:', deduped.length, 'albums');
+      
       if (!cancelled && mountedRef.current) {
         setHomeData(prev => ({ ...prev, latestReleases: deduped }));
       }
     })();
     return () => { cancelled = true; };
-  }, [followedArtists, spotifyClient, api, waitForApi, runConcurrentTasks]);
+  }, [followedArtists, api, waitForApi, runConcurrentTasks]);
 
   // ---- Recommendations (derive seed tracks and fetch recommendations) ----
   useEffect(() => {
@@ -275,14 +263,14 @@ export default function HomeTab() {
         return;
       }
 
-      const ready = await waitForApi(() => !!(api.hasElectron || (spotifyClient && typeof (spotifyClient as any).getArtistTopTracks === 'function')), 3, 500);
+      const ready = await waitForApi(() => !!api.hasElectron || true, 3, 500); // Always ready with our API
       if (!ready || cancelled || !mountedRef.current) return;
 
       // fetch top tracks for each seed artist concurrently
       const seedTasks = artistIds.map(aid => async () => {
         if (cancelled || !mountedRef.current) return null;
         try {
-          const topResp: any = await api.getArtistTopTracks(aid, undefined);
+          const topResp: any = await api.getArtistTopTracks(aid);
           let arr: any[] = [];
           if (Array.isArray(topResp)) arr = topResp;
           else if (topResp?.tracks && Array.isArray(topResp.tracks)) arr = topResp.tracks;
@@ -324,7 +312,7 @@ export default function HomeTab() {
       }
     })();
     return () => { cancelled = true; };
-  }, [followedArtists, spotifyClient, api, waitForApi, runConcurrentTasks]);
+  }, [followedArtists, api, waitForApi, runConcurrentTasks]);
 
   // ---- Horizontal scroller helpers (stable per ref) ----
   const makeScroller = useCallback((ref: React.RefObject<HTMLDivElement>) => {

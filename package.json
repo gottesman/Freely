@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -13,8 +13,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-  "build:server": "webpack --config webpack.server.config.js",
-  "fetch:ytdlp": "node scripts/fetch-ytdlp.js"
+    "build:server": "webpack --config webpack.server.config.js",
+    "fetch:ytdlp": "node scripts/fetch-ytdlp.js",
+    "version:update": "node scripts/update-version.js"
   },
   "dependencies": {
     "@tauri-apps/plugin-shell": "^2.3.1",

@@ -1,35 +1,54 @@
-import React from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { useDB } from './dbIndexed'; // Using the new provider
 
-// --- Pub/Sub Logic (debounced calls preserved) ---
+// Performance constants
+const SUBSCRIBER_DEBOUNCE_MS = 25;
+const NOTIFICATION_DELAY_MS = 20;
+
+// Database operation configurations
+const DB_STORES = {
+  PLAYLISTS: 'playlists',
+  PLAYLIST_ITEMS: 'playlist_items'
+} as const;
+
+const DB_INDICES = {
+  PLAYLIST_ID: 'playlist_id'
+} as const;
+
+const DB_OPERATIONS = {
+  READ_ONLY: 'readonly' as IDBTransactionMode,
+  READ_WRITE: 'readwrite' as IDBTransactionMode
+} as const;
+
+// --- Optimized Pub/Sub Logic ---
 const playlistSubscribers = new Set<() => void>();
-let notifyScheduled = false; // coalesce multiple broadcasts in a short window
+let notifyScheduled = false;
 const subscriberTimers = new Map<() => void, number>();
 
-function scheduleSubscriberCall(fn: () => void) {
+const scheduleSubscriberCall = (fn: () => void) => {
   if (subscriberTimers.has(fn)) return;
   const id = setTimeout(() => {
     subscriberTimers.delete(fn);
     try { fn(); } catch (err) { console.warn('[playlists-debug] subscriber error', err); }
-  }, 25) as unknown as number;
+  }, SUBSCRIBER_DEBOUNCE_MS) as unknown as number;
   subscriberTimers.set(fn, id);
-}
+};
 
-function notifyPlaylistSubscribers(){
+const notifyPlaylistSubscribers = () => {
   if (notifyScheduled) return;
   notifyScheduled = true;
   setTimeout(() => {
     notifyScheduled = false;
     try { console.log('[playlists-debug] notify subscribers count=', playlistSubscribers.size); } catch(_) {}
     playlistSubscribers.forEach(fn => scheduleSubscriberCall(fn));
-  }, 20);
-}
+  }, NOTIFICATION_DELAY_MS);
+};
 
-export function broadcastPlaylistsChanged(){
+export const broadcastPlaylistsChanged = () => {
   notifyPlaylistSubscribers();
-}
+};
 
-// --- Interfaces (Unchanged) ---
+// --- Types & Interfaces ---
 export interface PlaylistRecord {
   id: number;
   name: string;
@@ -40,65 +59,165 @@ export interface PlaylistRecord {
   created_at?: number;
   track_count?: number;
 }
-type PlaylistItemRecord = {
+
+interface PlaylistItemRecord {
   playlist_id: number;
   track_id: string;
   title: string;
   added_at: number;
   track_data: string; // JSON string of the full track object
-};
-
-function normalizeTags(raw?: string): string[] {
-  if(!raw) return [];
-  return raw.split(',').map(t=>t.trim()).filter(Boolean);
 }
 
+interface PlaylistState {
+  playlists: PlaylistRecord[];
+  loading: boolean;
+  error?: string;
+}
+
+// --- Database Operation Helpers ---
+class DatabaseOperations {
+  static async executeQuery<T>(
+    store: IDBObjectStore, 
+    operation: (store: IDBObjectStore) => IDBRequest<T>
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const req = operation(store);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  static async executeIndexQuery<T>(
+    index: IDBIndex, 
+    operation: (index: IDBIndex) => IDBRequest<T>
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const req = operation(index);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  static async executeTransaction(
+    db: IDBDatabase,
+    storeNames: string | string[],
+    mode: IDBTransactionMode,
+    operations: (tx: IDBTransaction) => void
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeNames, mode);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      operations(tx);
+    });
+  }
+
+  static async getAllPlaylistsWithCounts(db: IDBDatabase): Promise<PlaylistRecord[]> {
+    const tx = db.transaction([DB_STORES.PLAYLISTS, DB_STORES.PLAYLIST_ITEMS], DB_OPERATIONS.READ_ONLY);
+    const playlistsStore = tx.objectStore(DB_STORES.PLAYLISTS);
+    const itemsStore = tx.objectStore(DB_STORES.PLAYLIST_ITEMS);
+    const itemsIndex = itemsStore.index(DB_INDICES.PLAYLIST_ID);
+
+    const fetchedPlaylists = await this.executeQuery(playlistsStore, store => store.getAll());
+    
+    const normalizedPlaylists = fetchedPlaylists.map((r: any) => ({ 
+      ...r, 
+      tags: PlaylistUtils.normalizeTags(r.tags) 
+    }));
+
+    const counts = await Promise.all(
+      normalizedPlaylists.map(p => this.executeIndexQuery(itemsIndex, index => index.count(p.id)))
+    );
+
+    return normalizedPlaylists
+      .map((p, i) => ({ ...p, track_count: counts[i] }))
+      .sort(PlaylistUtils.compareForSort);
+  }
+}
+
+class PlaylistUtils {
+  static normalizeTags(raw?: string): string[] {
+    if (!raw) return [];
+    return raw.split(',').map(t => t.trim()).filter(Boolean);
+  }
+
+  static compareForSort(a: PlaylistRecord, b: PlaylistRecord): number {
+    if (a.system && !b.system) return -1;
+    if (!a.system && b.system) return 1;
+    return a.name.localeCompare(b.name);
+  }
+
+  static createOptimisticPlaylist(
+    name: string, 
+    tags: string[] = [], 
+    opts?: { artistId?: string; code?: string; system?: boolean }
+  ): PlaylistRecord {
+    return {
+      id: -Date.now(),
+      name,
+      tags,
+      artist_id: opts?.artistId,
+      code: opts?.code,
+      system: opts?.system ? 1 : 0,
+      created_at: Date.now(),
+      track_count: 0,
+    };
+  }
+
+  static createPlaylistRecord(
+    name: string,
+    tags: string[],
+    opts?: { artistId?: string; code?: string; system?: boolean }
+  ) {
+    return {
+      name,
+      tags: tags.join(','),
+      created_at: Date.now(),
+      artist_id: opts?.artistId || null,
+      code: opts?.code || null,
+      system: opts?.system ? 1 : 0
+    };
+  }
+}
+
+// --- Utility functions ---
+const normalizeTags = (raw?: string): string[] => {
+  if(!raw) return [];
+  return raw.split(',').map(t=>t.trim()).filter(Boolean);
+};
+
 // --- Single shared playlist store ---
-const shared: { playlists: PlaylistRecord[]; loading: boolean; error?: string } = { playlists: [], loading: false, error: undefined };
+const shared: PlaylistState = { 
+  playlists: [], 
+  loading: false, 
+  error: undefined 
+};
 let inFlightRefresh: Promise<void> | null = null;
 let pendingShared: PlaylistRecord[] = [];
 
-async function refreshShared(db: any) {
+// --- Optimized refresh function ---
+const refreshShared = async (db: IDBDatabase) => {
   if (!db) return;
   if (inFlightRefresh) return inFlightRefresh;
 
   inFlightRefresh = (async () => {
     try {
       console.log('[playlists-debug] refreshShared() called');
-      shared.loading = true; shared.error = undefined;
+      shared.loading = true;
+      shared.error = undefined;
 
-      const tx = db.transaction(['playlists', 'playlist_items'], 'readonly');
-      const playlistsStore = tx.objectStore('playlists');
-      const itemsStore = tx.objectStore('playlist_items');
-      const itemsIndex = itemsStore.index('playlist_id');
+      const fetchedPlaylists = await DatabaseOperations.getAllPlaylistsWithCounts(db);
 
-      const fetchedPlaylists: PlaylistRecord[] = await new Promise((resolve, reject) => {
-        const req = playlistsStore.getAll();
-        req.onsuccess = () => resolve(req.result.map((r: any) => ({ ...r, tags: normalizeTags(r.tags) })));
-        req.onerror = () => reject(req.error);
-      });
-
-      const counts = await Promise.all(
-        fetchedPlaylists.map(p => new Promise<number>((resolve, reject) => {
-          const countReq = itemsIndex.count(p.id);
-          countReq.onsuccess = () => resolve(countReq.result);
-          countReq.onerror = () => reject(countReq.error);
-        }))
-      );
-
-      let fetched: PlaylistRecord[] = fetchedPlaylists.map((p, i) => ({ ...p, track_count: counts[i] }))
-        .sort((a, b) => {
-          if (a.system && !b.system) return -1;
-          if (!a.system && b.system) return 1;
-          return a.name.localeCompare(b.name);
-        });
-
-      // reconcile pending optimistic items
+      // Reconcile pending optimistic items
       if (pendingShared.length) {
-        pendingShared = pendingShared.filter(p => !fetched.some(f => f.id === p.id || (f.name === p.name && f.created_at === p.created_at)));
+        pendingShared = pendingShared.filter(p => 
+          !fetchedPlaylists.some(f => 
+            f.id === p.id || (f.name === p.name && f.created_at === p.created_at)
+          )
+        );
       }
-      const merged = [...fetched, ...pendingShared];
-      shared.playlists = merged;
+      
+      shared.playlists = [...fetchedPlaylists, ...pendingShared];
 
     } catch (e: any) {
       shared.error = e?.message || String(e);
@@ -111,235 +230,314 @@ async function refreshShared(db: any) {
   })();
 
   return inFlightRefresh;
-}
+};
 
-// --- The React Hook (subscribes to shared store) ---
-export function usePlaylists(){
+// --- Memoized React Hook ---
+export const usePlaylists = () => {
   const { db, ready } = useDB();
-  const [playlists, setPlaylists] = React.useState<PlaylistRecord[]>(shared.playlists);
-  const [loading, setLoading] = React.useState<boolean>(shared.loading);
-  const [error, setError] = React.useState<string|undefined>(shared.error);
+  const [playlists, setPlaylists] = useState<PlaylistRecord[]>(shared.playlists);
+  const [loading, setLoading] = useState<boolean>(shared.loading);
+  const [error, setError] = useState<string | undefined>(shared.error);
 
-  React.useEffect(() => {
-    // sync initial values
+  // Memoized state synchronizer
+  const syncSharedState = useCallback(() => {
     setPlaylists(shared.playlists);
     setLoading(shared.loading);
     setError(shared.error);
-
-    const listener = () => {
-      setPlaylists(shared.playlists);
-      setLoading(shared.loading);
-      setError(shared.error);
-    };
-
-    playlistSubscribers.add(listener);
-    return () => { playlistSubscribers.delete(listener); };
   }, []);
 
-  React.useEffect(() => {
-    if (ready) {
-      // trigger a shared refresh when DB becomes ready
+  // Initial state sync and subscription
+  useEffect(() => {
+    syncSharedState();
+    playlistSubscribers.add(syncSharedState);
+    return () => { playlistSubscribers.delete(syncSharedState); };
+  }, [syncSharedState]);
+
+  // Database ready handler
+  useEffect(() => {
+    if (ready && db) {
       void refreshShared(db);
     }
   }, [ready, db]);
 
-  const refresh = React.useCallback(async () => {
-    await refreshShared(db);
+  // Memoized operations
+  const refresh = useCallback(async () => {
+    if (db) await refreshShared(db);
   }, [db]);
 
-  // --- Mutators now operate on shared store and call refreshShared ---
-  const createPlaylist = React.useCallback(async (name: string, tags: string[] = [], opts?: { artistId?: string; code?: string; system?: boolean }): Promise<number|undefined> => {
-    if(!db) return undefined;
+  // --- Optimized CRUD operations ---
+  const createPlaylist = useCallback(async (
+    name: string, 
+    tags: string[] = [], 
+    opts?: { artistId?: string; code?: string; system?: boolean }
+  ): Promise<number | undefined> => {
+    if (!db) return undefined;
+    
     console.log('[playlists-debug] createPlaylist called name=', name);
-    const created = Date.now();
-
-    const optimisticPlaylist: PlaylistRecord = {
-      id: -Date.now(), name, tags, artist_id: opts?.artistId,
-      code: opts?.code, system: opts?.system ? 1 : 0, created_at: created, track_count: 0,
-    };
+    
+    // Optimistic update
+    const optimisticPlaylist = PlaylistUtils.createOptimisticPlaylist(name, tags, opts);
     pendingShared.push(optimisticPlaylist);
-    // update shared immediately for optimistic UI
     shared.playlists = [...shared.playlists, optimisticPlaylist];
     notifyPlaylistSubscribers();
 
     let newId: number | undefined;
     try {
-      const tx = db.transaction('playlists', 'readwrite');
-      const store = tx.objectStore('playlists');
-      const newPlaylistRecord = {
-        name, tags: tags.join(','), created_at: created,
-        artist_id: opts?.artistId || null, code: opts?.code || null,
-        system: opts?.system ? 1 : 0
-      };
-
-      newId = await new Promise<number>((resolve, reject) => {
-        const req = store.add(newPlaylistRecord);
-        req.onsuccess = () => resolve(req.result as number);
-        req.onerror = () => reject(req.error);
-      });
+      const newPlaylistRecord = PlaylistUtils.createPlaylistRecord(name, tags, opts);
+      
+      newId = await DatabaseOperations.executeQuery(
+        db.transaction(DB_STORES.PLAYLISTS, DB_OPERATIONS.READ_WRITE).objectStore(DB_STORES.PLAYLISTS),
+        store => store.add(newPlaylistRecord)
+      ) as number;
+      
       console.log('[playlists-debug] createPlaylist insert complete newId=', newId);
-    } catch(e){ console.warn('createPlaylist outer error', e); }
-    finally {
+    } catch (e) {
+      console.warn('createPlaylist error', e);
+    } finally {
       await refreshShared(db);
     }
     return newId;
   }, [db]);
 
-  const updatePlaylist = React.useCallback(async (id: number, patch: { name?: string; tags?: string[] }) => {
-    if(!db) return;
-    const p = shared.playlists.find(pl => pl.id === id);
-    if(p?.system && patch.name) delete patch.name;
+  const updatePlaylist = useCallback(async (
+    id: number, 
+    patch: { name?: string; tags?: string[] }
+  ) => {
+    if (!db) return;
+    
+    const playlist = shared.playlists.find(pl => pl.id === id);
+    if (playlist?.system && patch.name) delete patch.name;
     if (!patch.name && !patch.tags) return;
 
     try {
-      const tx = db.transaction('playlists', 'readwrite');
-      const store = tx.objectStore('playlists');
-      const record = await new Promise<any>((resolve, reject) => {
-        const req = store.get(id);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-
-      if (record) {
-        if(patch.name !== undefined) record.name = patch.name;
-        if(patch.tags !== undefined) record.tags = patch.tags.join(',');
-        await new Promise<void>((resolve, reject) => {
-          const req = store.put(record);
-          req.onsuccess = () => resolve();
-          req.onerror = () => reject(req.error);
-        });
-      }
-      await refreshShared(db);
-    } catch(e){ console.warn('updatePlaylist failed', e); }
-  }, [db]);
-
-  const deletePlaylist = React.useCallback(async (id: number) => {
-    if(!db) return;
-    const p = shared.playlists.find(pl => pl.id === id);
-    if(p?.system) return;
-
-    try {
-      const tx = db.transaction(['playlists', 'playlist_items'], 'readwrite');
-      const playlistsStore = tx.objectStore('playlists');
-      const itemsStore = tx.objectStore('playlist_items');
-      const itemsIndex = itemsStore.index('playlist_id');
-
-      playlistsStore.delete(id);
-      const cursorReq = itemsIndex.openKeyCursor(IDBKeyRange.only(id));
-      cursorReq.onsuccess = () => {
-        const cursor = cursorReq.result;
-        if (cursor) {
-          itemsStore.delete(cursor.primaryKey);
-          cursor.continue();
+      await DatabaseOperations.executeTransaction(
+        db,
+        DB_STORES.PLAYLISTS,
+        DB_OPERATIONS.READ_WRITE,
+        (tx) => {
+          const store = tx.objectStore(DB_STORES.PLAYLISTS);
+          const getReq = store.get(id);
+          getReq.onsuccess = () => {
+            const record = getReq.result;
+            if (record) {
+              if (patch.name !== undefined) record.name = patch.name;
+              if (patch.tags !== undefined) record.tags = patch.tags.join(',');
+              store.put(record);
+            }
+          };
         }
-      };
-
-      await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = reject; });
+      );
       await refreshShared(db);
-    } catch(e){ console.warn('deletePlaylist failed', e); }
+    } catch (e) {
+      console.warn('updatePlaylist failed', e);
+    }
   }, [db]);
 
-  const addTracks = React.useCallback(async (playlistId: number, trackData: any[]) => {
-    if(!db || !trackData.length) return;
+  const deletePlaylist = useCallback(async (id: number) => {
+    if (!db) return;
+    
+    const playlist = shared.playlists.find(pl => pl.id === id);
+    if (playlist?.system) return;
 
     try {
-      const tx = db.transaction('playlist_items', 'readwrite');
-      const store = tx.objectStore('playlist_items');
-      const now = Date.now();
+      await DatabaseOperations.executeTransaction(
+        db,
+        [DB_STORES.PLAYLISTS, DB_STORES.PLAYLIST_ITEMS],
+        DB_OPERATIONS.READ_WRITE,
+        (tx) => {
+          const playlistsStore = tx.objectStore(DB_STORES.PLAYLISTS);
+          const itemsStore = tx.objectStore(DB_STORES.PLAYLIST_ITEMS);
+          const itemsIndex = itemsStore.index(DB_INDICES.PLAYLIST_ID);
 
-      for (const item of trackData) {
-        const isObject = typeof item === 'object' && item?.id;
-        const record: Omit<PlaylistItemRecord, 'id'> = {
-          playlist_id: playlistId,
-          track_id: isObject ? item.id : item,
-          title: isObject ? (item.name || '') : '',
-          added_at: now,
-          track_data: isObject ? JSON.stringify(item) : '',
-        };
-        store.add(record);
-      }
-      await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = reject; });
+          playlistsStore.delete(id);
+          
+          const cursorReq = itemsIndex.openKeyCursor(IDBKeyRange.only(id));
+          cursorReq.onsuccess = () => {
+            const cursor = cursorReq.result;
+            if (cursor) {
+              itemsStore.delete(cursor.primaryKey);
+              cursor.continue();
+            }
+          };
+        }
+      );
       await refreshShared(db);
-    } catch(e){ console.warn('addTracks error:', e); throw e; }
+    } catch (e) {
+      console.warn('deletePlaylist failed', e);
+    }
   }, [db]);
 
-  const createPlaylistWithTracks = React.useCallback(async (name: string, tracks: any[], tags: string[] = [], opts?: { artistId?: string; code?: string; system?: boolean }): Promise<number|undefined> => {
-    if(!db) return undefined;
+  const addTracks = useCallback(async (playlistId: number, trackData: any[]) => {
+    if (!db || !trackData.length) return;
+
+    try {
+      await DatabaseOperations.executeTransaction(
+        db,
+        DB_STORES.PLAYLIST_ITEMS,
+        DB_OPERATIONS.READ_WRITE,
+        (tx) => {
+          const store = tx.objectStore(DB_STORES.PLAYLIST_ITEMS);
+          const now = Date.now();
+
+          for (const item of trackData) {
+            const isObject = typeof item === 'object' && item?.id;
+            const record: Omit<PlaylistItemRecord, 'id'> = {
+              playlist_id: playlistId,
+              track_id: isObject ? item.id : item,
+              title: isObject ? (item.name || '') : '',
+              added_at: now,
+              track_data: isObject ? JSON.stringify(item) : '',
+            };
+            store.add(record);
+          }
+        }
+      );
+      await refreshShared(db);
+    } catch (e) {
+      console.warn('addTracks error:', e);
+      throw e;
+    }
+  }, [db]);
+
+  const createPlaylistWithTracks = useCallback(async (
+    name: string, 
+    tracks: any[], 
+    tags: string[] = [], 
+    opts?: { artistId?: string; code?: string; system?: boolean }
+  ): Promise<number | undefined> => {
+    if (!db) return undefined;
 
     let newId: number | undefined;
     try {
-      const tx = db.transaction(['playlists', 'playlist_items'], 'readwrite');
-      const playlistsStore = tx.objectStore('playlists');
-      const itemsStore = tx.objectStore('playlist_items');
+      await DatabaseOperations.executeTransaction(
+        db,
+        [DB_STORES.PLAYLISTS, DB_STORES.PLAYLIST_ITEMS],
+        DB_OPERATIONS.READ_WRITE,
+        (tx) => {
+          const playlistsStore = tx.objectStore(DB_STORES.PLAYLISTS);
+          const itemsStore = tx.objectStore(DB_STORES.PLAYLIST_ITEMS);
 
-      newId = await new Promise<number>((resolve, reject) => {
-        const newPlaylistRecord = { name, tags: tags.join(','), created_at: Date.now(), artist_id: opts?.artistId || null, code: opts?.code || null, system: opts?.system ? 1 : 0 };
-        const req = playlistsStore.add(newPlaylistRecord);
-        req.onsuccess = () => resolve(req.result as number);
-        req.onerror = reject;
-      });
-
-      if (newId && tracks.length) {
-        const now = Date.now();
-        for (const track of tracks) {
-          if(!track?.id) continue;
-          itemsStore.add({ playlist_id: newId, track_id: track.id, title: track.name || '', added_at: now, track_data: JSON.stringify(track) });
+          const newPlaylistRecord = PlaylistUtils.createPlaylistRecord(name, tags, opts);
+          const addReq = playlistsStore.add(newPlaylistRecord);
+          
+          addReq.onsuccess = () => {
+            newId = addReq.result as number;
+            
+            if (newId && tracks.length) {
+              const now = Date.now();
+              for (const track of tracks) {
+                if (!track?.id) continue;
+                itemsStore.add({
+                  playlist_id: newId,
+                  track_id: track.id,
+                  title: track.name || '',
+                  added_at: now,
+                  track_data: JSON.stringify(track)
+                });
+              }
+            }
+          };
         }
-      }
-    } catch(e){ console.error('createPlaylistWithTracks outer error', e); }
-    finally { await refreshShared(db); }
+      );
+    } catch (e) {
+      console.error('createPlaylistWithTracks error', e);
+    } finally {
+      await refreshShared(db);
+    }
     return newId;
   }, [db]);
 
-  const removeTrack = React.useCallback(async (playlistId: number, trackId: string) => {
-    if(!db) return;
+  const removeTrack = useCallback(async (playlistId: number, trackId: string) => {
+    if (!db) return;
+    
     try {
-      const tx = db.transaction('playlist_items', 'readwrite');
-      const store = tx.objectStore('playlist_items');
-      const index = store.index('playlist_id');
+      await DatabaseOperations.executeTransaction(
+        db,
+        DB_STORES.PLAYLIST_ITEMS,
+        DB_OPERATIONS.READ_WRITE,
+        (tx) => {
+          const store = tx.objectStore(DB_STORES.PLAYLIST_ITEMS);
+          const index = store.index(DB_INDICES.PLAYLIST_ID);
 
-      const keyToDelete = await new Promise<IDBValidKey | undefined>((resolve, reject) => {
-        const cursorReq = index.openCursor(IDBKeyRange.only(playlistId));
-        cursorReq.onsuccess = () => {
-          const cursor = cursorReq.result;
-          if (cursor) {
-            if (cursor.value.track_id === trackId) { resolve(cursor.primaryKey); return; }
-            cursor.continue();
-          } else { resolve(undefined); }
-        };
-        cursorReq.onerror = reject;
-      });
-
-      if (keyToDelete !== undefined) {
-        store.delete(keyToDelete);
-        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = reject; });
-        await refreshShared(db);
-      } else {
-        console.warn('removeTrack: track not found in playlist.');
-      }
-    } catch(e){ console.error('removeTrack failed:', e); throw e; }
+          const cursorReq = index.openCursor(IDBKeyRange.only(playlistId));
+          cursorReq.onsuccess = () => {
+            const cursor = cursorReq.result;
+            if (cursor) {
+              if (cursor.value.track_id === trackId) {
+                store.delete(cursor.primaryKey);
+                return;
+              }
+              cursor.continue();
+            } else {
+              console.warn('removeTrack: track not found in playlist.');
+            }
+          };
+        }
+      );
+      await refreshShared(db);
+    } catch (e) {
+      console.error('removeTrack failed:', e);
+      throw e;
+    }
   }, [db]);
 
-  // data readers remain as async functions that query the DB directly
-  const getPlaylistTracks = React.useCallback(async (playlistId: number): Promise<any[]> => {
-    if(!db) return [];
+  // --- Optimized data readers ---
+  const getPlaylistTracks = useCallback(async (playlistId: number): Promise<any[]> => {
+    if (!db) return [];
+    
     try {
-      const tx = db.transaction('playlist_items', 'readonly');
-      const store = tx.objectStore('playlist_items');
-      const index = store.index('playlist_id');
-      const items = await new Promise<PlaylistItemRecord[]>((resolve, reject) => {
-        const req = index.getAll(playlistId);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = reject;
-      });
-      return items.sort((a,b) => a.added_at - b.added_at).map(item => { try { return item.track_data ? JSON.parse(item.track_data) : { id: item.track_id }; } catch { return { id: item.track_id }; } });
-    } catch(e) { console.warn('getPlaylistTracks failed:', e); return []; }
+      const tx = db.transaction(DB_STORES.PLAYLIST_ITEMS, DB_OPERATIONS.READ_ONLY);
+      const store = tx.objectStore(DB_STORES.PLAYLIST_ITEMS);
+      const index = store.index(DB_INDICES.PLAYLIST_ID);
+      
+      const items = await DatabaseOperations.executeIndexQuery(index, idx => idx.getAll(playlistId));
+      
+      return items
+        .sort((a: PlaylistItemRecord, b: PlaylistItemRecord) => a.added_at - b.added_at)
+        .map((item: PlaylistItemRecord) => {
+          try {
+            return item.track_data ? JSON.parse(item.track_data) : { id: item.track_id };
+          } catch {
+            return { id: item.track_id };
+          }
+        });
+    } catch (e) {
+      console.warn('getPlaylistTracks failed:', e);
+      return [];
+    }
   }, [db]);
 
-  const getPlaylistTrackIds = React.useCallback(async (playlistId: number): Promise<string[]> => {
+  const getPlaylistTrackIds = useCallback(async (playlistId: number): Promise<string[]> => {
     const tracks = await getPlaylistTracks(playlistId);
     return tracks.map(t => t.id).filter(Boolean);
   }, [getPlaylistTracks]);
 
-  return { playlists, loading, error, refresh, createPlaylist, createPlaylistWithTracks, updatePlaylist, deletePlaylist, addTracks, removeTrack, getPlaylistTracks, getPlaylistTrackIds };
-}
+  // --- Memoized return value ---
+  return useMemo(() => ({
+    playlists,
+    loading,
+    error,
+    refresh,
+    createPlaylist,
+    createPlaylistWithTracks,
+    updatePlaylist,
+    deletePlaylist,
+    addTracks,
+    removeTrack,
+    getPlaylistTracks,
+    getPlaylistTrackIds
+  }), [
+    playlists,
+    loading,
+    error,
+    refresh,
+    createPlaylist,
+    createPlaylistWithTracks,
+    updatePlaylist,
+    deletePlaylist,
+    addTracks,
+    removeTrack,
+    getPlaylistTracks,
+    getPlaylistTrackIds
+  ]);
+};

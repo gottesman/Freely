@@ -183,22 +183,22 @@ export default function InfoHeader({
         </div>
 
         <div className="np-extras" ref={extrasRef}>
-          {tags && tags.length > 0 && (
-            <div className="np-tags" ref={tagsRef} aria-label="tags">
-              {tags.map((tag, index) => (
+          <div className="np-tags" ref={tagsRef} aria-label="tags">
+          {tags && tags.length > 0 && (            
+              tags.map((tag, index) => (
                 <span key={index} className="tag">{tag}</span>
-              ))}
-            </div>
+              ))            
           )}
-          {actions && actions.length > 0 && (
-            <div 
+          </div>
+          <div 
               className="np-actions" 
               aria-label={ariaActionsLabel ?? 'actions'}
               style={{ pointerEvents: 'auto' }} // Re-enable pointer events for interactive actions
             >
-              {actions}
-            </div>
+          {actions && actions.length > 0 && (            
+              actions            
           )}
+          </div>
         </div>
       </div>
     </header>

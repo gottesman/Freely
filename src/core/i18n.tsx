@@ -1,6 +1,24 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback, useMemo } from 'react';
 import { setSpotifyLocale } from './spotify';
 
+// Performance constants
+const DEFAULT_LANG = 'en';
+const DEFAULT_LOCALE = 'en-US';
+const INTERPOLATION_REGEX = /\{(\w+)\}/g;
+
+// Language to locale mapping configuration
+const LANG_TO_LOCALE_MAP = {
+  'es': 'es-ES',
+  'en': 'en-US'
+} as const;
+
+// Supported languages configuration
+const SUPPORTED_LANGUAGES = {
+  EN: 'en',
+  ES: 'es'
+} as const;
+
+// Type definitions for better performance
 export interface I18nContextValue {
   lang: string;
   setLang: (lang: string) => void;
@@ -12,59 +30,131 @@ export interface I18nContextValue {
    */
   t: (key: string, fallback?: string, vars?: Record<string, string | number>) => string;
   ready: boolean;
-  keys: Record<string,string>;
+  keys: Record<string, string>;
+}
+
+interface I18nProviderProps {
+  children: ReactNode;
+  initialLang?: string;
+}
+
+// Optimized internationalization utilities
+class I18nUtils {
+  /**
+   * Load locale data dynamically with error handling
+   */
+  static async loadLocale(lang: string): Promise<Record<string, string>> {
+    try {
+      switch (lang) {
+        case SUPPORTED_LANGUAGES.ES:
+          return (await import('../lang/es.json')).default as Record<string, string>;
+        case SUPPORTED_LANGUAGES.EN:
+        default:
+          return (await import('../lang/en.json')).default as Record<string, string>;
+      }
+    } catch (error) {
+      console.warn(`[i18n] Failed to load locale for ${lang}:`, error);
+      return {};
+    }
+  }
+
+  /**
+   * Map language code to full locale string
+   */
+  static mapLangToLocale(lang: string): string {
+    if (!lang) return DEFAULT_LOCALE;
+    return LANG_TO_LOCALE_MAP[lang as keyof typeof LANG_TO_LOCALE_MAP] || DEFAULT_LOCALE;
+  }
+
+  /**
+   * Perform string interpolation with variables
+   */
+  static interpolateString(
+    template: string, 
+    vars: Record<string, string | number>
+  ): string {
+    return template.replace(INTERPOLATION_REGEX, (match, key) => 
+      Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : match
+    );
+  }
+
+  /**
+   * Safe Spotify locale setting with error handling
+   */
+  static setSpotifyLocaleSafe(locale: string): void {
+    try {
+      setSpotifyLocale(locale);
+    } catch (error) {
+      console.warn('[i18n] Failed to set Spotify locale:', error);
+    }
+  }
 }
 
 const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 
-async function loadLocale(lang: string): Promise<Record<string,string>> {
-  try {
-    switch(lang){
-      case 'es': return (await import('../lang/es.json')).default as any;
-      case 'en':
-      default: return (await import('../lang/en.json')).default as any;
-    }
-  } catch {
-    return {};
-  }
-}
-
-export function I18nProvider({ children, initialLang = 'en' }: { children: ReactNode; initialLang?: string }) {
+// Memoized I18n Provider with optimized performance
+export const I18nProvider = React.memo<I18nProviderProps>(({ 
+  children, 
+  initialLang = DEFAULT_LANG 
+}) => {
   const [lang, setLang] = useState<string>(initialLang);
-  const [keys, setKeys] = useState<Record<string,string>>({});
+  const [keys, setKeys] = useState<Record<string, string>>({});
   const [ready, setReady] = useState<boolean>(false);
 
+  // Memoized language change effect
   useEffect(() => {
     let cancelled = false;
     setReady(false);
-    loadLocale(lang).then(k => { if(!cancelled){ setKeys(k); setReady(true); } });
-  // Propagate locale to Spotify (map simple lang to regionized form if needed)
-  try { setSpotifyLocale(mapLangToLocale(lang)); } catch {}
+    
+    I18nUtils.loadLocale(lang).then(loadedKeys => {
+      if (!cancelled) {
+        setKeys(loadedKeys);
+        setReady(true);
+      }
+    });
+
+    // Propagate locale to Spotify with safe error handling
+    I18nUtils.setSpotifyLocaleSafe(I18nUtils.mapLangToLocale(lang));
+    
     return () => { cancelled = true; };
   }, [lang]);
 
-  const t = useCallback((key: string, fallback?: string, vars?: Record<string,string|number>) => {
-    let out = keys[key] || fallback || key;
-    if(vars){
-      out = out.replace(/\{(\w+)\}/g, (m, k) => Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m);
+  // Memoized translation function
+  const t = useCallback((
+    key: string, 
+    fallback?: string, 
+    vars?: Record<string, string | number>
+  ) => {
+    let output = keys[key] || fallback || key;
+    
+    if (vars) {
+      output = I18nUtils.interpolateString(output, vars);
     }
-    return out;
+    
+    return output;
   }, [keys]);
 
-  const value: I18nContextValue = { lang, setLang, t, ready, keys };
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
-}
+  // Memoized context value to prevent unnecessary re-renders
+  const contextValue = useMemo((): I18nContextValue => ({
+    lang,
+    setLang,
+    t,
+    ready,
+    keys
+  }), [lang, setLang, t, ready, keys]);
 
-export function useI18n(): I18nContextValue {
-  const ctx = useContext(I18nContext);
-  if(!ctx) throw new Error('useI18n must be used within I18nProvider');
-  return ctx;
-}
+  return (
+    <I18nContext.Provider value={contextValue}>
+      {children}
+    </I18nContext.Provider>
+  );
+});
 
-function mapLangToLocale(lang: string){
-  if(!lang) return 'en-US';
-  switch(lang){
-    case 'es': return 'es-ES';
-    case 'en': default: return 'en-US';
+// Optimized hook with error boundary
+export const useI18n = (): I18nContextValue => {
+  const context = useContext(I18nContext);
+  if (!context) {
+    throw new Error('useI18n must be used within I18nProvider');
   }
-}
+  return context;
+};

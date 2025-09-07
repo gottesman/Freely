@@ -63,7 +63,7 @@
 .np-art-wrapper { position:relative; width:240px; max-width:60%; aspect-ratio:1/1; border-radius:18px; overflow:hidden; box-shadow: var(--shadow-lg), 0 2px 6px rgba(0 0 0 / .4); }
 .np-meta-line { display:flex; align-items:center; gap:10px; font-size:14px; opacity:.85; }
 .np-dot { width:4px; height:4px; border-radius:50%; background:rgba(255,255,255,0.4); }
-.np-link { background:none; border:none; color:var(--accent); font:inherit; cursor:pointer; padding:0; }
+.np-link { background:none; border:none; color:var(--accent); font:inherit; cursor:pointer; padding:0; pointer-events: auto; }
 .np-link:hover { text-decoration:underline; }
 .np-extras { display:grid; grid-template-columns:1fr auto; width:100%; gap:8px; align-items:center; }
 .np-tags { display:flex; gap:6px; flex-wrap:wrap; }
