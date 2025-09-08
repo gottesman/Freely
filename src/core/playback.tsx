@@ -185,8 +185,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [trackCache, setTrackCache] = useState<Record<string, SpotifyTrack | undefined>>({});
   const [playbackUrlCache, setPlaybackUrlCache] = useState<Record<string, string | undefined>>({});
   
-  const { getApiCache, setApiCache, ready } = useDB();
-  const { addPlay } = useDB();
+  const { getApiCache, setApiCache, addPlay, ready } = useDB();
 
   // Memoize Spotify client to prevent recreation
   const spotifyClient = useMemo(() => {
@@ -247,9 +246,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     fetchTrack(trackId); 
   }, [trackId, fetchTrack]);
 
-  // Optimize play history recording
+  // Optimize play history recording - wait for database to be ready
   useEffect(() => {
-    if (!trackId) return;
+    if (!trackId || !ready) return;
     
     const recordPlay = async () => {
       try {
@@ -260,7 +259,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     };
     
     recordPlay();
-  }, [trackId, addPlay]);
+  }, [trackId, addPlay, ready]);
 
   // Optimize queue index synchronization
   useEffect(() => {

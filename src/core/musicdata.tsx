@@ -3,7 +3,7 @@ import { env } from './accessEnv';
 // Performance constants
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
-const DEFAULT_USER_AGENT = 'FreelyPlayer/0.9.3';
+const DEFAULT_USER_AGENT = 'FreelyPlayer/0.9.4';
 
 // API configuration
 const API_ENDPOINTS = {
@@ -318,7 +318,7 @@ class ResponseMapper {
       url: song.url,
       headerImageUrl: song.header_image_url,
       songArtImageUrl: song.song_art_image_url,
-      primaryArtist: this.mapArtistSummary(song.primary_artist),
+      primaryArtist: ResponseMapper.mapArtistSummary(song.primary_artist),
       type: song._type || 'song'
     };
   }
@@ -343,7 +343,7 @@ class DescriptionProcessor {
     
     if (Array.isArray(root.children)) {
       for (const child of root.children) {
-        this.flattenDescriptionDom(child, acc);
+        DescriptionProcessor.flattenDescriptionDom(child, acc);
       }
     }
     
@@ -363,7 +363,7 @@ class DescriptionProcessor {
     
     if (Array.isArray(root.children)) {
       childrenHtml = root.children
-        .map(child => this.buildDescriptionHtml(child as any))
+        .map(child => DescriptionProcessor.buildDescriptionHtml(child as any))
         .join('');
     }
     

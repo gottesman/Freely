@@ -6,14 +6,15 @@
     "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Node",
-  "strict": false,
-  "rootDir": "src",
-  "outDir": "build",
-  "declaration": false,
+    "strict": false,
+    "rootDir": "src",
+    "outDir": "build",
+    "declaration": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "downlevelIteration": true
   },
   "include": ["src"]
 }

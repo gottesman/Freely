@@ -1,120 +1,168 @@
-// TorrentClient.ts
+// TorrentClient.ts - Optimized torrent file list retrieval
 import { runTauriCommand } from "./tauriCommands";
 
-type FileInfo = { name: string; length: number };
+// Performance constants
+const DEFAULT_TIMEOUT_MS = 20000;
+const ERROR_PREFIX = 'ERR: ';
 
+// Types
+type FileInfo = { name: string; length: number };
+type TorrentErrorResponse = { error?: string; err?: string; message?: string };
+type TorrentResponse = FileInfo[] | TorrentErrorResponse;
+
+// Module state
 let client: any = null;
 const inflight = new Map<string, Promise<FileInfo[]>>();
 
-// WebSocket trackers used only if running in a browser (rare)
-const BROWSER_WS_TRACKERS = [
-    'wss://tracker.openwebtorrent.com',
-    'wss://tracker.btorrent.xyz',
-    'wss://tracker.webtorrent.io',
-    'wss://tracker.fastcast.nz'
-];
-
-async function ensureClient(): Promise<any> {
-    if (client) return client;
-    let wt: any = null;
-    try {
-        wt = await import('webtorrent');
-    } catch (err) {
-        throw new Error('Failed to import webtorrent module. Ensure it is installed (npm install webtorrent). Original error: ' + String(err));
+// Error handling utility class
+class TorrentErrorHandler {
+  /**
+   * Normalize error messages to consistent format
+   */
+  static normalizeError(e: any): string {
+    const errStr = (typeof e === 'string' ? e : e?.message || String(e || '')).trim();
+    if (!errStr) return ERROR_PREFIX + 'NULL';
+    
+    const lower = errStr.toLowerCase();
+    if (lower.includes('timeout')) return ERROR_PREFIX + 'TIMEOUT';
+    if (lower.includes('no torrent')) return ERROR_PREFIX + 'NO-TORRENT';
+    if (lower.includes('no id')) return ERROR_PREFIX + 'NO-ID';
+    
+    // Return the original error message (truncated if too long)
+    const maxLength = 100;
+    if (errStr.length > maxLength) {
+      return ERROR_PREFIX + errStr.substring(0, maxLength) + '...';
     }
+    return ERROR_PREFIX + errStr;
+  }
 
-    const NodeWebTorrent = wt && (wt.default || wt);
-    if (!NodeWebTorrent) throw new Error('WebTorrent bundle not found');
-
-    try {
-        if (typeof NodeWebTorrent === 'function') client = new (NodeWebTorrent as any)();
-        else if (NodeWebTorrent && typeof (NodeWebTorrent as any).default === 'function') client = new (NodeWebTorrent as any).default();
-        else if (NodeWebTorrent && typeof (NodeWebTorrent as any).WebTorrent === 'function') client = new (NodeWebTorrent as any).WebTorrent();
-        else throw new Error('Unsupported WebTorrent module shape: ' + String(Object.keys(NodeWebTorrent || {})));
-    } catch (e) {
-        throw new Error('Failed to construct WebTorrent client: ' + String(e));
+  /**
+   * Create Error from response object
+   */
+  static createError(res: any): Error {
+    if (!res) return new Error('Unknown error');
+    if (typeof res === 'string') return new Error(res);
+    
+    // Extract message from various possible fields
+    const msg = res.message ?? res.err ?? res.error;
+    if (msg && typeof msg === 'string' && msg.trim()) {
+      return new Error(msg);
     }
-
-    return client;
+    
+    // If it's an object with specific error structure, format it properly
+    if (res && typeof res === 'object') {
+      if (res.error && res.message) {
+        return new Error(`${res.error}: ${res.message}`);
+      }
+      if (res.status_code && res.message) {
+        return new Error(`HTTP ${res.status_code}: ${res.message}`);
+      }
+    }
+    
+    // Fallback: provide a generic error message instead of stringifying
+    return new Error('Request failed with invalid response format');
+  }
 }
 
-function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+// WebTorrent client management
+class WebTorrentManager {
+  /**
+   * Ensure client is initialized (simplified initialization)
+   */
+  static async ensureClient(): Promise<any> {
+    if (client) return client;
+    
+    try {
+      const wt = await import('webtorrent');
+      const WebTorrent = wt?.default || wt;
+      
+      if (!WebTorrent) {
+        throw new Error('WebTorrent module not found');
+      }
+      
+      // Simplified client creation
+      if (typeof WebTorrent === 'function') {
+        client = new WebTorrent();
+      } else if (WebTorrent.default && typeof WebTorrent.default === 'function') {
+        client = new WebTorrent.default();
+      } else {
+        throw new Error('Unsupported WebTorrent module structure');
+      }
+      
+      return client;
+    } catch (error) {
+      throw new Error(`Failed to initialize WebTorrent: ${String(error)}`);
+    }
+  }
+}
 
 /**
  * Get file list for a torrent identified by magnet/infoHash/url.
- * Waits up to timeoutMs for metadata/ready. Returns array of {name,length}.
- *
- * This implementation coalesces concurrent calls for the same id,
- * retries the native helper a few times (good for transient failures),
- * and only falls back to Node-side webtorrent in non-browser contexts.
+ * Optimized with coalesced requests and simplified error handling.
  */
+export async function getTorrentFileList(
+  id: string, 
+  opts?: { timeoutMs?: number }
+): Promise<FileInfo[]> {
+  if (!id) throw new Error('No torrent id provided');
+  
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-function errorToString(e: any): string {
-    const prev = 'ERR: ';
-    const errStr = (typeof e === 'string' ? e : (e && e.message) ? e.message : String(e || '')).trim();
-    const lower = errStr.toLowerCase();
-    if (!errStr) return prev + 'NULL';
-    if (lower.includes('timed out') || lower.includes('timeout')) return prev + 'TIMEOUT';
-    if (lower.includes('no torrent with that info hash') || lower.includes('no torrent')) return prev + 'NO-TORRENT';
-    if (lower.includes('no torrent id') || lower.includes('no id')) return prev + 'NO-ID';
-    // fallback: produce a short, safe token from the message
-    const safe = errStr.split(/\s+/).slice(0,3).join('_').replace(/[^A-Za-z0-9_-]/g,'').toUpperCase() || 'UNKNOWN';
-    return prev + safe;
-}
+  // Return existing inflight request if available (coalescing)
+  if (inflight.has(id)) {
+    return inflight.get(id)!;
+  }
 
-// Create an Error instance from various response shapes returned by the native helper
-function makeErrorFromRes(res: any): Error {
-    if (!res) return new Error('Unknown error');
-    if (typeof res === 'string') return new Error(res);
+  const task = (async (): Promise<FileInfo[]> => {
     try {
-        // Prefer explicit message fields if present
-        const msg = res.message ?? res.err ?? res.error;
-        if (msg && typeof msg === 'string' && msg.trim()) return new Error(msg);
-        // If message is an object, stringify it for debugging
-        return new Error(JSON.stringify(res));
-    } catch (e) {
-        return new Error(String(res));
-    }
-}
-
-export async function getTorrentFileList(id: string, opts?: { timeoutMs?: number }): Promise<FileInfo[]> {
-    if (!id) throw new Error('No torrent id provided');
-    const timeoutMs = opts?.timeoutMs ?? 20000;
-
-    // If there's already an inflight request, return it (coalescing)
-    if (inflight.has(id)) {
-        return inflight.get(id)!;
-    }
-
-    const task = (async (): Promise<FileInfo[]> => {
-        try {
-            // call tauri helper
-            const res = await runTauriCommand<any>('torrent_get_files', { id, timeoutMs });
-            // if helper returned structured error, surface it with a readable message
-            if (res && !Array.isArray(res) && (res.error || res.err || res.message)) {
-                throw makeErrorFromRes(res);
-            }
-            if (Array.isArray(res)) {
-                return res;
-            } else {
-                // unexpected shape from helper, stringify for clarity
-                throw makeErrorFromRes(res);
-            }
-        } catch (e) {
-            throw new Error(errorToString(e));
+      // Call optimized Tauri command
+      const res = await runTauriCommand<any>('torrent_get_files', { 
+        id, 
+        timeoutMs 
+      });
+      
+      // Handle structured responses from the server
+      if (res && typeof res === 'object') {
+        // Check for error responses first
+        if (res.error || res.err || res.message) {
+          throw TorrentErrorHandler.createError(res);
         }
-    })();
-
-    // store in inflight and ensure it's removed after completion
-    inflight.set(id, task);
-    try {
-        const out = await task;
-        return out;
-    } finally {
-        inflight.delete(id);
+        
+        // Extract files array from successful response
+        if (res.success && Array.isArray(res.files)) {
+          return res.files;
+        }
+        
+        // Handle direct array response (legacy)
+        if (Array.isArray(res)) {
+          return res;
+        }
+      }
+      
+      // Handle direct array response
+      if (Array.isArray(res)) {
+        return res;
+      }
+      
+      // Unexpected response shape
+      throw TorrentErrorHandler.createError(res);
+    } catch (error) {
+      throw new Error(TorrentErrorHandler.normalizeError(error));
     }
+  })();
+
+  // Track inflight request and ensure cleanup
+  inflight.set(id, task);
+  try {
+    return await task;
+  } finally {
+    inflight.delete(id);
+  }
 }
 
+/**
+ * Debug utility to access client instance
+ */
 export function _getClientForDebug() {
-    return client;
+  return client;
 }

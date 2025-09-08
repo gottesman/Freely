@@ -7,7 +7,7 @@ import { useDB } from '../core/dbIndexed';
 import * as tc from '../core/torrentClient';
 
 // Constants
-const DEFAULT_TIMEOUT = 10000;
+const DEFAULT_TIMEOUT = 20000;
 const MAX_SOURCES = 50;
 const CONCURRENCY_LIMIT = 4;
 const MIN_SEEDS = 1;
@@ -53,8 +53,8 @@ class CacheManager {
 const cacheManager = CacheManager.getInstance();
 
 // Utility functions
-const generateCacheKey = (albumTitle: string, artist: string, year?: string): string => 
-  `${albumTitle || ''}::${artist || ''}::${year || ''}`;
+const generateCacheKey = (title: string, artist: string, year?: string): string => 
+  `${title || ''}::${artist || ''}::${year || ''}`;
 
 const generateSourceKey = (source: any, index: number): string => 
   source.infoHash ?? source.magnetURI ?? source.id ?? source.url ?? String(index);
@@ -104,14 +104,14 @@ export default function TrackSources({ track, album, primaryArtist }: {
   const currentTrackName = useMemo(() => track?.name?.trim() || '', [track?.name]);
   
   const searchParams = useMemo(() => {
-    const albumTitle = album?.name ?? track?.album?.name ?? track?.name ?? "";
+    const title = album?.name ?? track?.album?.name ?? track?.name ?? "";
     const artist = track?.artists?.[0]?.name ?? primaryArtist?.name ?? "";
     const year = album?.releaseDate ?? track?.album?.releaseDate ?? undefined;
-    return { albumTitle, artist, year };
+    return { title, artist, year };
   }, [album, track, primaryArtist]);
 
   const cacheKey = useMemo(() => 
-    generateCacheKey(searchParams.albumTitle, searchParams.artist, searchParams.year),
+    generateCacheKey(searchParams.title, searchParams.artist, searchParams.year),
     [searchParams]
   );
 
@@ -136,8 +136,8 @@ export default function TrackSources({ track, album, primaryArtist }: {
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
     
-    const { albumTitle, artist, year } = searchParams;
-    const query = `${albumTitle} ${artist}`.trim();
+    const { title, artist, year } = searchParams;
+    const query = `${title} ${artist}`.trim();
     
     setState(prev => ({ 
       ...prev, 
@@ -146,7 +146,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       sources: undefined 
     }));
 
-    if (!track || (!albumTitle && !artist)) {
+    if (!track || (!title && !artist)) {
       setState(prev => ({ ...prev, sources: [] }));
       return;
     }
@@ -166,9 +166,9 @@ export default function TrackSources({ track, album, primaryArtist }: {
           let promise = searchInflight.get(cacheKey);
           if (!promise) {
             promise = (async () => {
-              const torrentPayload = { title: albumTitle, artist, year, page: 1, type: 'torrents' };
-              const youtubeTitle = track?.name || albumTitle;
-              const youtubePayload = { title: youtubeTitle, artist, page: 1, type: 'youtube' };
+              const torrentPayload = { title: title, artist, type: 'torrents' };
+              const youtubeTitle = track?.name || title;
+              const youtubePayload = { title: youtubeTitle, artist, type: 'youtube' };
               
               const [torrentResp, youtubeResp] = await Promise.allSettled([
                 runTauriCommand('source_search', { payload: torrentPayload }),
@@ -275,7 +275,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       const fileListCache = cacheManager.getFileListCache();
       const fileListInflight = cacheManager.getFileListInflight();
 
-      // Return cached files if available
+      // Return cached files if available (only for successful results)
       if (fileListCache.has(sourceKey)) {
         const cached = fileListCache.get(sourceKey) || [];
         setState(prev => ({
@@ -290,51 +290,53 @@ export default function TrackSources({ track, album, primaryArtist }: {
       let promise = fileListInflight.get(id);
       if (!promise) {
         promise = (async () => {
-          const maybeInfoHash = String(id || '');
-          const isMagnet = maybeInfoHash.startsWith('magnet:');
-          const isInfoHash = /^[a-f0-9]{40}$/i.test(maybeInfoHash);
+          try {
+            const maybeInfoHash = String(id || '');
+            const isMagnet = maybeInfoHash.startsWith('magnet:');
+            const isInfoHash = /^[a-f0-9]{40}$/i.test(maybeInfoHash);
 
-          if (isMagnet || isInfoHash) {
-            const files = await tc.getTorrentFileList(id, { timeoutMs: DEFAULT_TIMEOUT });
-            const seen = new Set();
-            const uniqueFiles = (files || []).filter((f: any) => {
-              const name = String(f.name || '').trim();
-              if (!name || seen.has(name)) return false;
-              seen.add(name);
-              return true;
-            });
+            if (isMagnet || isInfoHash) {
+              const files = await tc.getTorrentFileList(id, { timeoutMs: DEFAULT_TIMEOUT });
+              const seen = new Set();
+              const uniqueFiles = (files || []).filter((f: any) => {
+                const name = String(f.name || '').trim();
+                if (!name || seen.has(name)) return false;
+                seen.add(name);
+                return true;
+              });
 
-            const audioFiles = uniqueFiles.filter(f => AUDIO_EXTENSIONS.test(f.name));
-            const chosen = audioFiles.length ? audioFiles : uniqueFiles;
-            fileListCache.set(sourceKey, chosen);
-            fileListInflight.delete(id);
-            return chosen;
-          }
-
-          // YouTube sources
-          if (source.type === 'youtube' && source.id) {
-            const info = await runTauriCommand<any>('youtube_get_info', { 
-              payload: { id: source.id } 
-            });
-            const streamUrl = info?.streamUrl || null;
-            if (streamUrl) {
-              source.streamUrl = streamUrl;
-              source.playUrl = streamUrl;
+              const audioFiles = uniqueFiles.filter(f => AUDIO_EXTENSIONS.test(f.name));
+              const chosen = audioFiles.length ? audioFiles : uniqueFiles;
+              fileListCache.set(sourceKey, chosen);
+              return chosen;
             }
-            const estBytes = info?.format?.filesize || info?.format?.filesize_approx || 0;
-            const syntheticName = source.title || source.name || `youtube:${source.id}`;
-            const synthetic = [{ name: syntheticName, length: estBytes }];
-            fileListCache.set(sourceKey, synthetic);
-            fileListInflight.delete(id);
-            return synthetic;
-          }
 
-          // Generic sources
-          const syntheticName = source.title || source.name || String(id);
-          const synthetic = [{ name: syntheticName, length: source.length || 0 }];
-          fileListCache.set(sourceKey, synthetic);
-          fileListInflight.delete(id);
-          return synthetic;
+            // YouTube sources
+            if (source.type === 'youtube' && source.id) {
+              const info = await runTauriCommand<any>('youtube_get_info', { 
+                payload: { id: source.id } 
+              });
+              const streamUrl = info?.streamUrl || null;
+              if (streamUrl) {
+                source.streamUrl = streamUrl;
+                source.playUrl = streamUrl;
+              }
+              const estBytes = info?.format?.filesize || info?.format?.filesize_approx || 0;
+              const syntheticName = source.title || source.name || `youtube:${source.id}`;
+              const synthetic = [{ name: syntheticName, length: estBytes }];
+              fileListCache.set(sourceKey, synthetic);
+              return synthetic;
+            }
+
+            // Generic sources
+            const syntheticName = source.title || source.name || String(id);
+            const synthetic = [{ name: syntheticName, length: source.length || 0 }];
+            fileListCache.set(sourceKey, synthetic);
+            return synthetic;
+          } finally {
+            // Always clean up inflight promise
+            fileListInflight.delete(id);
+          }
         })();
         fileListInflight.set(id, promise);
       }
@@ -346,8 +348,23 @@ export default function TrackSources({ track, album, primaryArtist }: {
         loadingKeys: { ...prev.loadingKeys, [sourceKey]: false }
       }));
     } catch (e: any) {
-      const msg = e?.message ?? String(e);
+      let msg = e?.message ?? String(e);
+      
+      // Clean up malformed error messages
+      if (msg.startsWith('ERR: ') && msg.length > 50 && !msg.includes(' ')) {
+        // This looks like a malformed concatenated error - provide a generic message
+        msg = 'Failed to load torrent files';
+      }
+      
       console.error('TrackSources: file list error', msg);
+      
+      // Clean up failed request from inflight map
+      const id = source.magnetURI ?? source.infoHash ?? source.id ?? source.url ?? source.path ?? '';
+      if (id) {
+        const fileListInflight = cacheManager.getFileListInflight();
+        fileListInflight.delete(id);
+      }
+      
       setState(prev => ({
         ...prev,
         errors: { ...prev.errors, [sourceKey]: msg },
@@ -430,13 +447,27 @@ export default function TrackSources({ track, album, primaryArtist }: {
         }
       }));
     } else if (!state.loadingKeys[sourceKey]) {
+      // Clear any previous errors and cached failures when retrying
+      const fileListCache = cacheManager.getFileListCache();
+      const fileListInflight = cacheManager.getFileListInflight();
+      const id = source.magnetURI ?? source.infoHash ?? source.id ?? source.url ?? source.path ?? '';
+      
+      // Remove failed cache entries to allow retry
+      if (state.errors[sourceKey]) {
+        fileListCache.delete(sourceKey);
+        if (id) {
+          fileListInflight.delete(id);
+        }
+      }
+      
       setState(prev => ({
         ...prev,
-        visibleOutputs: { ...prev.visibleOutputs, [sourceKey]: true }
+        visibleOutputs: { ...prev.visibleOutputs, [sourceKey]: true },
+        errors: { ...prev.errors, [sourceKey]: undefined }
       }));
       handleSourceData(source, sourceKey);
     }
-  }, [state.fileLists, state.loadingKeys, handleSourceData]);
+  }, [state.fileLists, state.loadingKeys, state.errors, handleSourceData]);
 
   // Memoized filtered and sorted sources
   const validSources = useMemo(() => {

@@ -116,19 +116,19 @@ class MetadataExtractor {
       for (const primaryField of config.primary) {
         const metadata = entry[primaryField];
         if (metadata) {
-          return this.processMetadata(metadata, config, entry, rank, type.toLowerCase());
+          return MetadataExtractor.processMetadata(metadata, config, entry, rank, type.toLowerCase());
         }
       }
     }
     
     // Fallback processing for unknown shapes
-    return this.processFallbackMetadata(entry, rank);
+    return MetadataExtractor.processFallbackMetadata(entry, rank);
   }
 
-  private static processMetadata(metadata: any, config: any, entry: any, rank: number | null, type: string) {
-    const name = this.getMetadataValue(metadata, config.name);
-    const image = this.getMetadataValue(metadata, config.image);
-    const uri = this.getMetadataValue(metadata, config.uri);
+  static processMetadata(metadata: any, config: any, entry: any, rank: number | null, type: string) {
+    const name = MetadataExtractor.getMetadataValue(metadata, config.name);
+    const image = MetadataExtractor.getMetadataValue(metadata, config.image);
+    const uri = MetadataExtractor.getMetadataValue(metadata, config.uri);
     const artists = type === 'artist' ? [] : ArtistNormalizer.normalizeArray(metadata.artists || entry.artists || []);
     
     const parsed = SpotifyUriParser.parse(uri);
@@ -145,7 +145,7 @@ class MetadataExtractor {
     };
   }
 
-  private static processFallbackMetadata(entry: any, rank: number | null) {
+  static processFallbackMetadata(entry: any, rank: number | null) {
     const metaKeys = ['trackMetadata', 'albumMetadata', 'artistMetadata', 'track_metadata', 'album_metadata', 'artist_metadata'];
     const meta = metaKeys.reduce((acc, key) => acc || entry[key], null) || {};
     
@@ -153,9 +153,9 @@ class MetadataExtractor {
     const imageFields = ['displayImageUri', 'imageUri', 'display_image_uri'];
     const uriFields = ['trackUri', 'albumUri', 'artistUri', 'track_uri', 'album_uri', 'artist_uri'];
     
-    const name = this.getMetadataValue(meta, nameFields);
-    const image = this.getMetadataValue(meta, imageFields);
-    const uri = this.getMetadataValue(meta, uriFields);
+    const name = MetadataExtractor.getMetadataValue(meta, nameFields);
+    const image = MetadataExtractor.getMetadataValue(meta, imageFields);
+    const uri = MetadataExtractor.getMetadataValue(meta, uriFields);
     const artists = ArtistNormalizer.normalizeArray(meta.artists || entry.artists || []);
     
     const parsed = SpotifyUriParser.parse(uri);

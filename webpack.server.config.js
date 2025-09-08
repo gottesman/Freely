@@ -5,9 +5,7 @@ module.exports = {
   target: 'node',
   // The entry point of your server
   entry: {
-    'server.bundle': './server/server.js',
-    'utils': './server/utils.js',
-    'torrent-get-files': './server/torrent-get-files.js'
+    'server.bundle': './server/server.js'
   },
   output: {
     path: path.resolve(__dirname, 'src-tauri', 'server-dist'),
@@ -18,7 +16,10 @@ module.exports = {
   externals: {
     'utp-native': 'commonjs utp-native',
     // Keep express external to avoid bundling its dynamic view engine requires (removes warning)
-    'express': 'commonjs express'
+    'express': 'commonjs express',
+    // Keep other native/binary modules external
+    'webtorrent': 'commonjs webtorrent',
+    'node-pty': 'commonjs node-pty'
   },
   module: {
     parser: {
