@@ -43,6 +43,7 @@ const READY_CONSTANTS = {
 // Logging prefixes for better debugging
 const LOG_PREFIXES = {
   FONT: '🔤',
+  CSS: '🎨',
   WARMUP: '🔥'
 } as const;
 
@@ -50,6 +51,7 @@ const LOG_PREFIXES = {
 interface ReadyStates {
   dbReady: boolean;
   fontsReady: boolean;
+  cssReady: boolean;
   preloadReady: boolean;
   warmupDone: boolean;
   minTimePassed: boolean;
@@ -147,16 +149,41 @@ class StylesheetManager {
   }
 
   /**
-   * Load the main app stylesheet
+   * Load the main app stylesheet and return a promise that resolves when loaded
    */
-  static loadAppStylesheet(): void {
-    if (this.isAppCssLoaded()) return;
+  static async loadAppStylesheet(): Promise<boolean> {
+    if (this.isAppCssLoaded()) {
+      console.log(`${LOG_PREFIXES.CSS} App CSS already loaded`);
+      return true;
+    }
     
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = appCssUrl;
-    link.dataset.appCss = 'true';
-    document.head.appendChild(link);
+    return new Promise((resolve) => {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = appCssUrl;
+      link.dataset.appCss = 'true';
+      
+      const handleLoad = () => {
+        console.log(`${LOG_PREFIXES.CSS} App CSS loaded successfully`);
+        resolve(true);
+      };
+      
+      const handleError = () => {
+        console.warn(`${LOG_PREFIXES.CSS} App CSS failed to load, continuing anyway`);
+        resolve(false);
+      };
+      
+      link.addEventListener('load', handleLoad);
+      link.addEventListener('error', handleError);
+      
+      document.head.appendChild(link);
+      
+      // Fallback timeout in case load/error events don't fire
+      setTimeout(() => {
+        console.warn(`${LOG_PREFIXES.CSS} CSS load timeout, assuming loaded`);
+        resolve(true);
+      }, 3000);
+    });
   }
 }
 
@@ -215,12 +242,14 @@ class SpotifyWarmup {
 /** App readiness steps:
  * 1. DB ready (handled externally) 
  * 2. Material Symbols font loaded (document.fonts)
- * 3. Electron preload APIs responsive (window.electron)
- * 4. Spotify client warmed up with database cache
+ * 3. Main app CSS stylesheet loaded 
+ * 4. Electron preload APIs responsive (window.electron)
+ * 5. Spotify client warmed up with database cache
  */
 export function useAppReady(dbReady: boolean): UseAppReadyReturn {
   const { getApiCache, setApiCache } = useDB();
   const [fontsReady, setFontsReady] = useState(false);
+  const [cssReady, setCssReady] = useState(false);
   const [preloadReady, setPreloadReady] = useState(false);
   const [warmupDone, setWarmupDone] = useState(false);
   const [minTimePassed, setMinTimePassed] = useState(false);
@@ -257,10 +286,30 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
     return () => { cancelled = true; };
   }, []);
 
-  // Once fonts are ready, start loading the full app stylesheet if not already
+  // Once fonts are ready, start loading the full app stylesheet and wait for it
   useEffect(() => {
     if (!fontsReady) return;
-    StylesheetManager.loadAppStylesheet();
+    
+    let cancelled = false;
+    
+    const initializeCSS = async () => {
+      try {
+        console.log(`${LOG_PREFIXES.CSS} Starting app CSS loading...`);
+        const success = await StylesheetManager.loadAppStylesheet();
+        if (!cancelled) {
+          setCssReady(true);
+          console.log(`${LOG_PREFIXES.CSS} CSS loading completed, success: ${success}`);
+        }
+      } catch (error) {
+        console.warn(`${LOG_PREFIXES.CSS} CSS loading failed, continuing anyway:`, error);
+        if (!cancelled) {
+          setCssReady(true);
+        }
+      }
+    };
+    
+    initializeCSS();
+    return () => { cancelled = true; };
   }, [fontsReady]);
 
   // Check preload exposure (simple polling up to timeout)
@@ -298,7 +347,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
 
   // Warm-up: Initialize Spotify client with database cache
   useEffect(() => {
-    if (!preloadReady || !dbReady) return;
+    if (!preloadReady || !dbReady || !cssReady) return;
     
     let cancelled = false;
     
@@ -331,30 +380,32 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
     
     initializeWarmup();
     return () => { cancelled = true; };
-  }, [preloadReady, dbReady, getApiCache, setApiCache]); // Use direct dependencies
+  }, [preloadReady, dbReady, cssReady, getApiCache, setApiCache]); // Include cssReady
 
   // Optimize ready state calculation with useMemo
   const ready = useMemo(() => {
-    const isReady = dbReady && fontsReady && preloadReady && warmupDone && minTimePassed;
+    const isReady = dbReady && fontsReady && cssReady && preloadReady && warmupDone && minTimePassed;
     console.log('🚀 Ready state check:', { 
       dbReady, 
       fontsReady, 
+      cssReady,
       preloadReady, 
       warmupDone, 
       minTimePassed, 
       isReady 
     });
     return isReady;
-  }, [dbReady, fontsReady, preloadReady, warmupDone, minTimePassed]);
+  }, [dbReady, fontsReady, cssReady, preloadReady, warmupDone, minTimePassed]);
 
   // Optimize states object with useMemo
   const states = useMemo(() => ({
     dbReady,
     fontsReady,
+    cssReady,
     preloadReady,
     warmupDone,
     minTimePassed
-  }), [dbReady, fontsReady, preloadReady, warmupDone, minTimePassed]);
+  }), [dbReady, fontsReady, cssReady, preloadReady, warmupDone, minTimePassed]);
 
   return { ready, states };
 }

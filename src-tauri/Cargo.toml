@@ -1,6 +1,6 @@
 [package]
 name = "freely_tauri"
-version = "0.9.4"
+version = "0.9.5"
 description = "A local music player with torrent streaming support."
 authors = ["Gottesman <gottesman@example.com>"]
 edition = "2021"

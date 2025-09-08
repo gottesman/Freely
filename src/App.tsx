@@ -691,7 +691,8 @@ function Main() {
           <div className="splash-status">
             {!states.dbReady && t('loading.db')}
             {states.dbReady && !states.fontsReady && t('loading.fonts')}
-            {states.fontsReady && !states.preloadReady && t('loading.services')}
+            {states.fontsReady && !states.cssReady && t('loading.css')}
+            {states.cssReady && !states.preloadReady && t('loading.services')}
             {states.preloadReady && !states.warmupDone && t('loading.warmup')}
           </div>
         </div>

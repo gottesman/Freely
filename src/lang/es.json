@@ -12,6 +12,7 @@
   "queue.nextUp": "A continuación",
   "loading.db": "Preparando base de datos",
   "loading.fonts": "Cargando fuentes",
+  "loading.css": "Cargando estilos",
   "loading.services": "Conectando servicios",
   "loading.warmup": "Calentando",
   "search.placeholder": "Encuentra tu música...",

@@ -14,12 +14,8 @@ module.exports = {
     filename: '[name].js',
   },
   externals: {
-    'utp-native': 'commonjs utp-native',
-    // Keep express external to avoid bundling its dynamic view engine requires (removes warning)
-    'express': 'commonjs express',
-    // Keep other native/binary modules external
-    'webtorrent': 'commonjs webtorrent',
-    'node-pty': 'commonjs node-pty'
+    // Only exclude native modules that must be loaded dynamically
+    'utp-native': 'commonjs utp-native'
   },
   module: {
     parser: {

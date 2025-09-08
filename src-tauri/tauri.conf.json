@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "build": {
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run fetch:ytdlp && npm run dev",
@@ -25,7 +25,8 @@
     ],
     "resources": [
       "server-dist",
-      "bin/*"
+      "bin/*",
+      "../node_modules/utp-native"
     ]
   },
   "app": {
