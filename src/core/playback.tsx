@@ -1,9 +1,11 @@
 import React, { createContext, useEffect, useState, ReactNode, useMemo, useCallback } from 'react';
+import { runTauriCommand, isTauriError, isTauriUnavailable } from './tauriCommands';
 import SpotifyClient, { SpotifyTrack } from './spotify';
 import { createCachedSpotifyClient } from './spotify-client';
 // This import correctly points to the new IndexedDB provider.
 import { useDB } from './dbIndexed';
 import AudioSourceProvider, { resolveAudioSource, AudioSourceSpec } from './audioSource';
+import { startPlaybackWithCache, isCacheableUrl } from './audioCache';
 
 // Performance constants
 const PERFORMANCE_CONSTANTS = {
@@ -118,6 +120,15 @@ interface PlaybackContextValue {
   trackCache: Record<string, SpotifyTrack | undefined>;
   reorderQueue: (nextIds: string[]) => void;
   removeFromQueue: (id: string) => void;
+  // Resolved playback
+  playbackUrl?: string;
+  playing: boolean;
+  duration: number; // seconds
+  position: number; // seconds
+  play: () => void;
+  pause: () => void;
+  toggle: () => void;
+  seek: (time: number) => void;
 }
 
 const PlaybackContext = createContext<PlaybackContextValue | undefined>(undefined);
@@ -132,6 +143,10 @@ type PlaybackStateSnapshot = {
   queueIds: string[];
   currentIndex: number;
   trackCache: Record<string, SpotifyTrack | undefined>;
+  playbackUrl?: string;
+  playing: boolean;
+  duration: number;
+  position: number;
 };
 
 let playbackSnapshot: PlaybackStateSnapshot | null = null;
@@ -159,6 +174,17 @@ export function subscribePlaybackSelector<T>(selector: (s: PlaybackStateSnapshot
   return () => { playbackSubscribers.delete(id); };
 }
 
+// Global cache control for debugging/testing
+let globalPlaybackCacheClear: (() => void) | null = null;
+export function clearPlaybackUrlCache() {
+  if (globalPlaybackCacheClear) {
+    console.log('[playback] Clearing playback URL cache globally');
+    globalPlaybackCacheClear();
+  } else {
+    console.warn('[playback] Cache clear function not available - playback provider not mounted');
+  }
+}
+
 export function usePlaybackSelector<T>(selector: (s: PlaybackStateSnapshot) => T, deps: any[] = []): T | undefined {
   const [val, setVal] = useState<T | undefined>(() => playbackSnapshot ? selector(playbackSnapshot) : undefined);
   useEffect(() => {
@@ -184,8 +210,38 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [currentIndex, setCurrentIndex] = useState<number>(PERFORMANCE_CONSTANTS.DEFAULT_QUEUE_INDEX);
   const [trackCache, setTrackCache] = useState<Record<string, SpotifyTrack | undefined>>({});
   const [playbackUrlCache, setPlaybackUrlCache] = useState<Record<string, string | undefined>>({});
+  const [playbackUrl, setPlaybackUrl] = useState<string | undefined>();
+  const [playing, setPlaying] = useState<boolean>(false);
+  const [duration, setDuration] = useState<number>(0); // duration unknown until we implement probing
+  const [position, setPosition] = useState<number>(0);
+  const pollRef = React.useRef<any>(null);
+  // Seek debounce refs
+  const seekDebounceRef = React.useRef<any>(null);
+  const lastSeekSentRef = React.useRef<number>(0);
+  const pendingSeekRef = React.useRef<number | null>(null);
+  const SEEK_DEBOUNCE_MS = 180; // wait after last movement
+  const SEEK_MIN_INTERVAL_MS = 120; // ensure not more often than this even while moving
   
-  const { getApiCache, setApiCache, addPlay, ready } = useDB();
+  const { getApiCache, setApiCache, addPlay, ready, getSetting } = useDB();
+
+  // Connect global cache clear function
+  React.useEffect(() => {
+    globalPlaybackCacheClear = () => {
+      setPlaybackUrlCache({});
+    };
+    
+    // Make it available on window for testing
+    if (typeof window !== 'undefined') {
+      (window as any).clearPlaybackCache = clearPlaybackUrlCache;
+    }
+    
+    return () => {
+      globalPlaybackCacheClear = null;
+      if (typeof window !== 'undefined') {
+        delete (window as any).clearPlaybackCache;
+      }
+    };
+  }, []);
 
   // Memoize Spotify client to prevent recreation
   const spotifyClient = useMemo(() => {
@@ -209,6 +265,51 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       } else {
         track = await spotifyClient.getTrack(id);
       }
+
+      // Load and attach selected source from database if available
+      if (ready && getSetting) {
+        try {
+          const savedSource = await getSetting(`source:selected:${id}`);
+          
+          if (savedSource && savedSource.trim()) {
+            const parsedSource = JSON.parse(savedSource);
+            
+            // Determine the correct value based on source type
+            let sourceValue: string = '';
+            if (parsedSource.type === 'youtube') {
+              // For YouTube, use the original video ID, not the playUrl (which is the proxy URL)
+              sourceValue = parsedSource.id || parsedSource.value || '';
+            } else if (parsedSource.type === 'torrent') {
+              // For torrents, prefer infoHash over magnetURI for streaming
+              sourceValue = parsedSource.infoHash || parsedSource.magnetURI || '';
+            } else if (parsedSource.type === 'http') {
+              sourceValue = parsedSource.playUrl || parsedSource.url || '';
+            } else if (parsedSource.type === 'local') {
+              sourceValue = parsedSource.playUrl || parsedSource.path || '';
+            } else {
+              sourceValue = parsedSource.playUrl || parsedSource.value || '';
+            }
+
+            if (sourceValue) {
+              // Attach source metadata to track
+              (track as any).source = {
+                type: parsedSource.type,
+                value: sourceValue,
+                meta: {
+                  id: parsedSource.id,
+                  infoHash: parsedSource.infoHash,
+                  magnetURI: parsedSource.magnetURI,
+                  playUrl: parsedSource.playUrl,
+                  title: parsedSource.title
+                }
+              };
+            }
+          }
+        } catch (e) {
+          // Ignore source loading errors - track will just not have a source
+          console.warn('Failed to load track source:', e);
+        }
+      }
       
       setCurrentTrack(track);
       setTrackCache(prev => ({ ...prev, [id]: track }));
@@ -221,30 +322,286 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     } finally { 
       setLoading(false); 
     }
-  }, [spotifyClient]);
+  }, [spotifyClient, ready, getSetting]);
 
   // Extract URL resolution to separate function
   const resolvePlaybackUrl = useCallback(async (track: SpotifyTrack, id: string) => {
+    const sourceMeta = (track as any).source;
+    console.log('[playback] Resolving playback URL for:', { id, sourceMeta });
+    
     try {
-      const sourceMeta = (track as any).source;
       if (sourceMeta && sourceMeta.type && sourceMeta.value) {
         const spec: AudioSourceSpec = { 
           type: sourceMeta.type, 
           value: sourceMeta.value, 
           meta: sourceMeta.meta 
         };
+        console.log('[playback] Resolving audio source with spec:', spec);
         const url = await resolveAudioSource(spec);
+        console.log('[playback] Resolved audio URL:', { id, url });
         setPlaybackUrlCache(prev => ({ ...prev, [id]: url }));
+        // If this is the currently focused track set playback url
+        if (id === trackId) {
+          console.log('[playback] Setting playback URL for current track:', url);
+          setPlaybackUrl(url);
+        }
+      } else {
+        console.log('[playback] Cannot resolve - missing source meta:', { id, sourceMeta });
       }
     } catch (e) {
+      console.error('[playback] URL resolution failed:', { id, error: e });
       // Ignore resolution errors silently
     }
-  }, []);
+  }, [trackId]);
 
   // Optimize main track fetch effect
   useEffect(() => { 
     fetchTrack(trackId); 
   }, [trackId, fetchTrack]);
+
+  // (moved) audio element setup placed after queue navigation callbacks
+
+  // Start backend playback when playbackUrl set; stop when cleared
+  useEffect(() => {
+    console.log('[playback] Playback URL effect triggered, playbackUrl:', playbackUrl);
+    let cancelled = false;
+    const start = async () => {
+      if (!playbackUrl) {
+        console.log('[playback] No playbackUrl, stopping playback');
+        try {
+          const stopResult = await runTauriCommand('playback_stop');
+          if (!stopResult.success) {
+            console.warn('[playback] Stop failed:', stopResult.error);
+          }
+        } catch (e) {
+          console.warn('[playback] Stop failed (might be browser):', e);
+        }
+        setPlaying(false); setPosition(0); setDuration(0); return;
+      }
+      try {
+        console.log('[playback] Starting playback for URL:', playbackUrl);
+        
+        // Use cache-aware playback for supported URLs
+        let result;
+        if (trackId && isCacheableUrl(playbackUrl)) {
+          console.log('[playback] Using cache-aware playback for track:', trackId);
+          
+          // Try to get original source information for better caching
+          const track = (currentTrack?.id === trackId ? currentTrack : trackCache[trackId]) || currentTrack;
+          const sourceMeta = (track as any)?.source;
+          
+          let sourceType: string | undefined;
+          let sourceHash: string | undefined;
+          
+          if (sourceMeta?.type === 'youtube' && sourceMeta?.value) {
+            sourceType = 'youtube';
+            sourceHash = sourceMeta.value; // Use original YouTube video ID
+            console.log('[playback] Using original YouTube video ID for cache:', sourceHash);
+          }
+          
+          result = await startPlaybackWithCache(trackId, playbackUrl, true, sourceType, sourceHash);
+        } else {
+          console.log('[playback] Using direct playback (not cacheable)');
+          result = await runTauriCommand('playback_start', { url: playbackUrl });
+        }
+        
+        console.log('[playback] Start result:', result);
+        
+        // Don't set playing=true here - let the status polling handle it
+        // The backend will return success info and duration
+        if (result.success && result.data && typeof result.data.duration === 'number') {
+          setDuration(result.data.duration);
+        }
+      } catch (error) {
+        console.error('[playback] Failed to start:', error);
+        if (error.message?.includes('invoke not available')) {
+          setError('Audio playback requires the desktop app. Please open the Tauri application window instead of the browser.');
+        } else {
+          setError(`Playback failed: ${error}`);
+        }
+        if (!cancelled) {
+          setPlaying(false);
+        }
+      }
+    };
+    start();
+    return () => { cancelled = true; };
+  }, [playbackUrl]);
+
+  // When track changes, only use selected source (never preview_url)
+  useEffect(() => {
+    if (!trackId) {
+      console.log('[playback] No trackId, clearing playback URL');
+      setPlaybackUrl(undefined);
+      return;
+    }
+    
+    // Prioritize currentTrack if it matches the trackId, as it's more likely to have fresh source data
+    const track = (currentTrack?.id === trackId ? currentTrack : trackCache[trackId]) || currentTrack;
+    if (!track) {
+      console.log('[playback] No track found for ID:', trackId);
+      setPlaybackUrl(undefined);
+      return;
+    }
+    
+    const sourceMeta = (track as any).source;
+    console.log('[playback] Track source meta:', { trackId, sourceMeta });
+    
+    if (sourceMeta) {
+      // First, check if we have a cached audio file for this track
+      const checkCachedFile = async () => {
+        try {
+          let sourceType = 'unknown';
+          let sourceHash = '';
+          
+          if (sourceMeta.type === 'youtube' && sourceMeta.value) {
+            sourceType = 'youtube';
+            sourceHash = sourceMeta.value;
+          }
+          
+          console.log('[playback] Checking for cached file:', { trackId, sourceType, sourceHash });
+          
+          const cacheResult = await runTauriCommand('cache_get_file', {
+            trackId,
+            sourceType,
+            sourceHash
+          });
+          
+          if (cacheResult && cacheResult.cached_path) {
+            console.log('[playback] Found cached file, using local file:', cacheResult.cached_path);
+            setPlaybackUrl(`file://${cacheResult.cached_path}`);
+            return;
+          }
+          
+          console.log('[playback] No cached file found, proceeding with URL resolution');
+          proceedWithUrlResolution();
+        } catch (error) {
+          console.log('[playback] Cache check failed, proceeding with URL resolution:', error);
+          proceedWithUrlResolution();
+        }
+      };
+      
+      const proceedWithUrlResolution = () => {
+        // For YouTube sources, always re-resolve to get fresh direct CDN URLs
+        const isYouTubeSource = sourceMeta.type === 'youtube';
+        
+        if (playbackUrlCache[trackId] && !isYouTubeSource) {
+          console.log('[playback] Using cached playback URL for:', trackId, playbackUrlCache[trackId]);
+          setPlaybackUrl(playbackUrlCache[trackId]);
+        } else if (isYouTubeSource && playbackUrlCache[trackId]) {
+          console.log('[playback] YouTube source found in cache, using cached URL:', trackId, playbackUrlCache[trackId]);
+          setPlaybackUrl(playbackUrlCache[trackId]);
+        } else {
+          if (isYouTubeSource) {
+            console.log('[playback] YouTube source detected, waiting for fresh resolution for:', trackId);
+          } else {
+            console.log('[playback] No cached URL, clearing until resolved for:', trackId);
+          }
+          // Clear until resolved
+          setPlaybackUrl(undefined);
+        }
+      };
+      
+      // Start with cache check
+      checkCachedFile();
+    } else {
+      console.log('[playback] No source meta found - track has no selected source for:', trackId);
+      // No selected source meta => no playback
+      setPlaybackUrl(undefined);
+    }
+  }, [trackId, currentTrack, trackCache, playbackUrlCache]);
+
+  // Control helpers
+  const play = useCallback(async () => { 
+    if (!playbackUrl) return; 
+    try {
+      console.log('[playback] Resuming playback');
+      const result = await runTauriCommand('playback_resume');
+      if (!result.success) {
+        console.error('[playback] Resume failed:', result.error);
+        setPlaying(false);
+      }
+      // Don't set playing=true here - let status polling handle it
+    } catch (error) {
+      console.error('[playback] Resume failed:', error);
+      setPlaying(false);
+    }
+  }, [playbackUrl]);
+  
+  const pause = useCallback(async () => { 
+    try {
+      console.log('[playback] Pausing playback');
+      const result = await runTauriCommand('playback_pause');
+      if (!result.success) {
+        console.error('[playback] Pause failed:', result.error);
+      }
+      // Don't set playing=false here - let status polling handle it
+    } catch (error) {
+      console.error('[playback] Pause failed:', error);
+    }
+  }, []);
+  
+  const toggle = useCallback(() => { if (playing) pause(); else play(); }, [playing, play, pause]);
+  const seek = useCallback((time: number) => {
+    if (!playbackUrl) return;
+    console.log('[playback] Seeking to:', time);
+    
+    const originalPosition = position; // Store original position for rollback
+    setPosition(time); // optimistic UI update
+    pendingSeekRef.current = time;
+    const now = Date.now();
+    
+    const send = async () => {
+      const val = pendingSeekRef.current;
+      if (val == null) return;
+      try {
+        const result = await runTauriCommand('playback_seek', { position: val });
+        
+        if (!result?.success || result.data?.success === false) {
+          const seekData = result?.data || result;
+          const reason = seekData?.reason || 'unknown';
+          const message = seekData?.message || 'Unknown error';
+          
+          console.warn('[playback] Seek failed:', reason, '-', message);
+          
+          // Handle different types of seek failures
+          if (reason === 'data_not_available' || reason === 'not_buffered') {
+            console.warn('[playback] Seek position not yet buffered, ignoring seek failure');
+            // Don't rollback position for buffering issues - the UI position is aspirational
+          } else if (reason === 'streaming_limitation' || reason === 'invalid_position') {
+            console.warn('[playback] Seek not supported or invalid position, rolling back');
+            setPosition(originalPosition); // Rollback for unsupported seeks
+          } else {
+            console.warn('[playback] General seek error, rolling back');
+            setPosition(originalPosition); // Rollback for other errors
+          }
+        } else {
+          const seekPosition = result.data?.position || val;
+          console.log('[playback] Seek successful to:', seekPosition);
+          // Position already optimistically updated, no need to change it
+        }
+        
+        lastSeekSentRef.current = Date.now();
+        pendingSeekRef.current = null;
+      } catch (error) {
+        console.warn('[playback] Seek failed:', error);
+        // Rollback optimistic update on failure
+        setPosition(originalPosition);
+      }
+    };
+    // If enough time passed since last send, send immediately
+    if (now - lastSeekSentRef.current > SEEK_MIN_INTERVAL_MS) {
+      if (seekDebounceRef.current) { clearTimeout(seekDebounceRef.current); seekDebounceRef.current = null; }
+      send();
+      return;
+    }
+    // Otherwise debounce
+    if (seekDebounceRef.current) clearTimeout(seekDebounceRef.current);
+    seekDebounceRef.current = setTimeout(() => {
+      send();
+      seekDebounceRef.current = null;
+    }, SEEK_DEBOUNCE_MS);
+  }, [playbackUrl]);
 
   // Optimize play history recording - wait for database to be ready
   useEffect(() => {
@@ -301,21 +658,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           }
         }
         
-        // Prefetch playback URL
-        if (trackCache[id] && !playbackUrlCache[id]) {
-          try {
-            const track = trackCache[id] as any;
-            const preview = track?.preview_url;
-            if (preview) {
-              const url = await resolveAudioSource({ type: 'http', value: preview });
-              if (!cancelled) {
-                setPlaybackUrlCache(prev => ({ ...prev, [id]: url }));
-              }
-            }
-          } catch {
-            // Ignore URL resolution errors
-          }
-        }
+  // (Removed) Do not prefetch preview_url; only real selected sources will populate cache
       }
     };
     
@@ -377,6 +720,91 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playAt(prevIndex);
   }, [queueIds.length, currentIndex, playAt]);
 
+  // Poll backend playback status (only in Tauri app, not browser)
+  useEffect(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    
+    console.log('[playback] Setting up status polling interval');
+    pollRef.current = setInterval(async () => {
+      try {
+        const result = await runTauriCommand('playback_status');
+        
+        // Check if Tauri is unavailable
+        if (isTauriUnavailable(result)) {
+          // Only log this occasionally to avoid spam
+          if (Math.random() < 0.01) {
+            console.log('[playback] Tauri not available, skipping status update');
+          }
+          return;
+        }
+        
+        if (!result) {
+          console.warn('[playback] Status command returned null - Tauri invoke may not be available');
+          return;
+        }
+        
+        if (!result.success) {
+          console.warn('[playback] Status query failed:', result.error);
+          return;
+        }
+        
+        const status = result.data;
+        
+        // Update UI state based on actual backend state
+        const wasPlaying = playing;
+        const isPlaying = !!status.playing;
+        setPlaying(isPlaying);
+        
+        // Update position and duration from backend
+        if (typeof status.position === 'number') {
+          setPosition(status.position);
+        }
+        if (typeof status.duration === 'number') {
+          setDuration(status.duration);
+        }
+        
+        // Handle errors from backend
+        if (status.error) {
+          // Don't treat seek errors as critical playback errors
+          if (status.error.includes('BASS_ERROR_NOTAVAIL')) {
+            // This is likely a seek error, don't stop playback or show persistent error
+            console.debug('[playback] Backend seek error (not critical):', status.error);
+          } else {
+            console.warn('[playback] Backend error:', status.error);
+            setError(status.error);
+            setPlaying(false);
+          }
+        } else {
+          // Clear error if playback is working
+          if (isPlaying && error) {
+            setError(undefined);
+          }
+        }
+        
+        // Auto advance queue when track ends
+        if (status.ended && playbackUrl && wasPlaying) {
+          console.log('[playback] Track ended, advancing to next');
+          next();
+        }
+        
+        // Debug logging when state changes
+        if (wasPlaying !== isPlaying) {
+          console.log('[playback] State changed:', { wasPlaying, isPlaying, url: status.url });
+        }
+        
+      } catch (pollError) {
+        // Don't spam console with polling errors, but log occasionally
+        if (Math.random() < 0.1) {
+          console.warn('[playback] Status polling error:', pollError);
+        }
+      }
+    }, 500);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [playing, playbackUrl, error, next]);
+
+  // Cleanup debounce timer on unmount
+  useEffect(()=>()=>{ if (seekDebounceRef.current) clearTimeout(seekDebounceRef.current); }, []);
+
   const reorderQueue = useCallback((nextIds: string[]) => {
     if (!nextIds.length) return;
     const currentId = trackId;
@@ -431,10 +859,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playNow,
     trackCache,
     reorderQueue,
-    removeFromQueue
+  removeFromQueue,
+  playbackUrl,
+  playing,
+  duration,
+  position,
+  play,
+  pause,
+  toggle,
+  seek
   }), [
     currentTrack, loading, error, trackId, queueIds, currentIndex, trackCache,
-    fetchTrack, setQueue, enqueue, next, prev, playAt, playTrack, playNow, reorderQueue, removeFromQueue
+  fetchTrack, setQueue, enqueue, next, prev, playAt, playTrack, playNow, reorderQueue, removeFromQueue,
+  playbackUrl, playing, duration, position, play, pause, toggle, seek
   ]);
 
   // Optimize playback snapshot updates
@@ -446,11 +883,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       trackId, 
       queueIds, 
       currentIndex, 
-      trackCache 
+    trackCache,
+    playbackUrl,
+    playing,
+    duration,
+    position
     };
     playbackSnapshot = snap;
     notifyPlaybackSubscribers(snap);
-  }, [currentTrack, loading, error, trackId, queueIds, currentIndex, trackCache]);
+  }, [currentTrack, loading, error, trackId, queueIds, currentIndex, trackCache, playbackUrl, playing, duration, position]);
 
   // Optimize event handling with useCallback for event handlers
   const handleSetQueue = useCallback((ev: Event) => {
@@ -493,6 +934,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (id) removeFromQueue(String(id));
   }, [removeFromQueue]);
 
+  const handleSourceChanged = useCallback((ev: Event) => {
+    const detail = PlaybackEventManager.extractEventDetail(ev);
+    const changedTrackId = detail.trackId;
+    
+    // If the source changed for the currently playing track, refresh it
+    if (changedTrackId && changedTrackId === trackId) {
+      fetchTrack(trackId);
+    }
+  }, [trackId, fetchTrack]);
+
   // Optimize event listeners registration
   useEffect(() => {
     const eventHandlers = [
@@ -504,7 +955,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       { event: PLAYBACK_EVENTS.REORDER_QUEUE, handler: handleReorder },
       { event: PLAYBACK_EVENTS.NEXT, handler: next },
       { event: PLAYBACK_EVENTS.PREV, handler: prev },
-      { event: PLAYBACK_EVENTS.REMOVE_TRACK, handler: handleRemoveTrack }
+      { event: PLAYBACK_EVENTS.REMOVE_TRACK, handler: handleRemoveTrack },
+      { event: 'freely:track:sourceChanged', handler: handleSourceChanged }
     ];
 
     // Register all event listeners
@@ -520,7 +972,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     };
   }, [
     handleSetQueue, handleEnqueue, handlePlayAt, handlePlayTrack, 
-    handlePlayNow, handleReorder, next, prev, handleRemoveTrack
+    handlePlayNow, handleReorder, next, prev, handleRemoveTrack, handleSourceChanged
   ]);
 
   return (

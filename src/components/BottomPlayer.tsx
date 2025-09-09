@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { usePlaybackSelector } from '../core/playback';
+import { usePlaybackSelector, usePlayback } from '../core/playback';
 import { useI18n } from '../core/i18n';
 import { useAlerts } from '../core/alerts';
 import { usePlaylists } from '../core/playlists';
@@ -62,6 +62,12 @@ export default function BottomPlayer({
   const currentTrack = usePlaybackSelector(s => s.currentTrack);
   const trackLoading = usePlaybackSelector(s => s.loading);
   const error = usePlaybackSelector(s => s.error);
+  const playbackUrl = usePlaybackSelector(s => s.playbackUrl);
+  const playingFlag = usePlaybackSelector(s => s.playing);
+  const backendPosition = usePlaybackSelector(s => s.position); // Position in seconds from BASS
+  const backendDuration = usePlaybackSelector(s => s.duration); // Duration in seconds from BASS
+  const playbackCtx = usePlayback(); // for real seek
+  const backendSeek = playbackCtx.seek;
   
   // Hooks
   const { t } = useI18n();
@@ -70,6 +76,10 @@ export default function BottomPlayer({
 
   // Combined state for better performance
   const [playerState, setPlayerState] = useState<PlayerState>(initialPlayerState);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekPreviewMs, setSeekPreviewMs] = useState<number | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const dragInfoRef = useRef<{ rect: DOMRect; duration: number } | null>(null);
   
   // Optimized refs
   const refs = useRef({
@@ -94,11 +104,37 @@ export default function BottomPlayer({
     return { title, artist, album, cover, durationMs };
   }, [currentTrack, trackLoading, t]);
 
-  // Memoized progress calculation
-  const progress = useMemo(() => 
-    trackMetadata.durationMs ? Math.min(1, playerState.positionMs / trackMetadata.durationMs) : 0,
-    [playerState.positionMs, trackMetadata.durationMs]
-  );
+  // Detect if current track lacks a selected source (no explicit source meta & no resolved playback url)
+  const noSource = useMemo(() => {
+    if (!currentTrack) return false; // nothing selected yet
+    const sourceMeta = (currentTrack as any).source;
+    return !sourceMeta && !playbackUrl; // treat absence as needing selection
+  }, [currentTrack, playbackUrl]);
+
+  const [showSourcePopup, setShowSourcePopup] = useState(false);
+
+  // When track changes and has no source, show popup (persistent until user action or source appears)
+  useEffect(() => {
+    if (noSource && currentTrack?.id) {
+      setShowSourcePopup(true);
+    } else if (!noSource) {
+      setShowSourcePopup(false);
+    }
+  }, [noSource, currentTrack?.id]);
+
+  // Memoized progress calculation using real backend position
+  const progress = useMemo(() => {
+    // Prioritize backend duration over metadata duration
+    const durationMs = backendDuration ? backendDuration * 1000 : trackMetadata.durationMs;
+    if (!durationMs) return 0;
+    
+    // Use seek preview if seeking, otherwise use real backend position
+    const positionMs = isSeeking && seekPreviewMs != null 
+      ? seekPreviewMs 
+      : (backendPosition ? backendPosition * 1000 : 0);
+    
+    return Math.min(1, positionMs / durationMs);
+  }, [isSeeking, seekPreviewMs, backendPosition, backendDuration, trackMetadata.durationMs]);
   // Cleanup effect
   useEffect(() => {
     refs.current.mounted = true;
@@ -182,12 +218,17 @@ export default function BottomPlayer({
     return () => { cancelled = true; };
   }, [currentTrack?.id, playlists, getPlaylistTrackIds]);
 
-  // Optimized RAF-driven progress updater
+  // RAF-driven progress updater (disabled when backend provides real position)
   useEffect(() => {
     // Cleanup any existing RAF
     if (refs.current.raf) {
       cancelAnimationFrame(refs.current.raf);
       refs.current.raf = null;
+    }
+
+    // If we have backend position data, don't use RAF animation
+    if (backendPosition !== undefined && backendPosition !== null) {
+      return;
     }
 
     // No duration or not playing => do not start RAF
@@ -197,7 +238,14 @@ export default function BottomPlayer({
     
     setPlayerState(prev => ({ ...prev, positionMs: refs.current.position }));
 
-    if (!playerState.isPlaying || duration <= 0) {
+    // If no source available, freeze progress at 0
+    if (noSource) {
+      refs.current.position = 0;
+      setPlayerState(prev => ({ ...prev, positionMs: 0 }));
+      return; // do not start RAF
+    }
+
+    if (!playingFlag || duration <= 0) {
       return;
     }
 
@@ -252,27 +300,63 @@ export default function BottomPlayer({
       }
       refs.current.lastFrameTime = null;
     };
-  }, [playerState.isPlaying, currentTrack?.id, trackMetadata.durationMs, playbackControls.next]);
+  }, [playingFlag, currentTrack?.id, trackMetadata.durationMs, playbackControls.next, noSource, backendPosition]);
 
   // Event handlers (memoized for performance)
   const togglePlay = useCallback(() => {
-    setPlayerState(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
+    if (noSource) {
+      // re-trigger popup if user clicks while no source
+      setShowSourcePopup(true);
+      return;
+    }
+    // Use the actual playback context toggle method
+    playbackCtx.toggle();
+  }, [noSource, playbackCtx]);
+
+  const beginSeek = useCallback((clientX: number) => {
+    if (!trackMetadata.durationMs || noSource) return;
+    if (!barRef.current) return;
+    const rect = barRef.current.getBoundingClientRect();
+    dragInfoRef.current = { rect, duration: trackMetadata.durationMs };
+    setIsSeeking(true);
+    // initial preview update
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    setSeekPreviewMs(Math.floor(ratio * trackMetadata.durationMs));
+  }, [trackMetadata.durationMs, noSource]);
+
+  const updateSeek = useCallback((clientX: number) => {
+    const info = dragInfoRef.current;
+    if (!info) return;
+    const ratio = Math.min(1, Math.max(0, (clientX - info.rect.left) / info.rect.width));
+    setSeekPreviewMs(Math.floor(ratio * info.duration));
   }, []);
 
-  const onSeek = useCallback(
-    (e: React.MouseEvent<HTMLDivElement, MouseEvent>) => {
-      if (!trackMetadata.durationMs) return;
-      
-      const rect = e.currentTarget.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const ratio = Math.min(1, Math.max(0, x / rect.width));
-      const newPos = Math.floor(ratio * trackMetadata.durationMs);
-      
-      refs.current.position = newPos;
-      setPlayerState(prev => ({ ...prev, positionMs: newPos }));
-    },
-    [trackMetadata.durationMs]
-  );
+  const endSeek = useCallback(() => {
+    if (!isSeeking) return;
+    const preview = seekPreviewMs;
+    dragInfoRef.current = null;
+    setIsSeeking(false);
+    if (preview != null) {
+      // Update local state
+      refs.current.position = preview;
+      setPlayerState(prev => ({ ...prev, positionMs: preview }));
+      // Invoke backend seek (seconds)
+      try { backendSeek(preview / 1000); } catch {/* ignore */}
+    }
+  }, [isSeeking, seekPreviewMs, backendSeek]);
+
+  // Global mouse listeners for drag seek
+  useEffect(() => {
+    if (!isSeeking) return;
+    const onMove = (e: MouseEvent) => { updateSeek(e.clientX); };
+    const onUp = () => { endSeek(); };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp, { once: true });
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isSeeking, updateSeek, endSeek]);
 
   const onAddToPlaylist = useCallback(() => {
     if (!currentTrack) return;
@@ -325,22 +409,25 @@ export default function BottomPlayer({
   return (
     <div className="bottom-player main-panels">
       <div className="track-progress">
-        <div className="time current">{formatTime(playerState.positionMs)}</div>
+        <div className="time current">{formatTime((backendPosition || 0) * 1000)}</div>
 
         <div
-          className="bar"
-          onClick={onSeek}
+          ref={barRef}
+          className={`bar${noSource ? ' disabled' : ''}`}
+          onMouseDown={(e) => { if (noSource) return; beginSeek(e.clientX); }}
           role="progressbar"
           aria-valuemin={0}
-          aria-valuemax={trackMetadata.durationMs}
-          aria-valuenow={playerState.positionMs}
+          aria-valuemax={(backendDuration || trackMetadata.durationMs / 1000) * 1000}
+          aria-valuenow={isSeeking && seekPreviewMs != null ? seekPreviewMs : (backendPosition || 0) * 1000}
           aria-label={t('np.trackPosition', 'Track position')}
+          aria-disabled={noSource ? 'true' : 'false'}
+          style={noSource ? { cursor: 'not-allowed', opacity: 0.5 } : undefined}
         >
           <div className="fill" style={{ width: `${progress * 100}%` }} />
           <div className="handle" style={{ left: `${progress * 100}%` }} />
         </div>
 
-        <div className="time total">{formatTime(trackMetadata.durationMs)}</div>
+        <div className="time total">{formatTime((backendDuration ? backendDuration * 1000 : trackMetadata.durationMs))}</div>
       </div>
 
       <div className="track-player">
@@ -415,15 +502,64 @@ export default function BottomPlayer({
             <span className="material-symbols-rounded filled">skip_previous</span>
           </button>
 
-          <button 
-            className="play player-icons player-icons-play" 
-            aria-label={playerState.isPlaying ? t('player.pause') : t('player.play')} 
-            onClick={togglePlay}
-          >
-            <span className="material-symbols-rounded filled">
-              {playerState.isPlaying ? 'pause_circle' : 'play_circle'}
-            </span>
-          </button>
+          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            <button 
+              className={`play player-icons player-icons-play ${noSource ? 'disabled' : ''}`} 
+              aria-label={noSource ? t('player.noSource', 'No source selected') : (playingFlag ? t('player.pause') : t('player.play'))} 
+              onClick={togglePlay}
+              disabled={noSource}
+            >
+              {noSource ? (
+                <div className="loading-dots" style={{ width: 52, textAlign: 'center' }} aria-label={t('np.loading', 'Loading')}>
+                  <span></span><span></span><span></span>
+                </div>
+              ) : (
+                <span className="material-symbols-rounded filled">
+                  {playingFlag ? 'pause_circle' : 'play_circle'}
+                </span>
+              )}
+            </button>
+            {noSource && showSourcePopup && currentTrack?.id && (
+              <div
+                className="no-source-popup"
+                role="alert"
+                style={{
+                  position: 'absolute',
+                  bottom: '110%',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  background: 'var(--bg3, #222)',
+                  color: 'var(--fg, #fff)',
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                  maxWidth: 240,
+                  textAlign: 'center',
+                  zIndex: 10
+                }}
+              >
+                <div style={{ marginBottom: 4 }}>{t('player.selectSource', 'Select a source to play this track')}</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      createCustomEvent('freely:selectTrack', { trackId: currentTrack.id, source: 'bottom-player-no-source' });
+                      // Don't close popup here; it will close automatically when a source is selected (noSource becomes false)
+                    } catch { /* ignore */ }
+                  }}
+                  style={{
+                    background: 'var(--accent, #5a67d8)',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 4,
+                    padding: '4px 8px',
+                    cursor: 'pointer'
+                  }}
+                >{t('player.goSelectSource', 'Open track info')}</button>
+              </div>
+            )}
+          </div>
 
           <button 
             className="player-icons player-icons-next" 

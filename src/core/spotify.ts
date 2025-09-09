@@ -119,7 +119,7 @@ export class SpotifyClient {
     }
     
     // Start new fetch
-    console.log('🎫 Fetching Spotify access token...');
+    //console.log('🎫 Fetching Spotify access token...');
     SharedState.tokenInflight = this.tokenInflight = this.fetchNewToken();
 
     try { 
@@ -128,17 +128,17 @@ export class SpotifyClient {
       this.tokenInflight = undefined; 
       SharedState.tokenInflight = undefined; 
     }
-    console.log('🎫 Token fetch completed successfully');
+    //console.log('🎫 Token fetch completed successfully');
   }
 
   private async fetchNewToken(): Promise<void> {
     const externalEndpoint = await env('SPOTIFY_TOKEN_ENDPOINT');
-    console.log('🔗 Environment check:', { SPOTIFY_TOKEN_ENDPOINT: externalEndpoint });
+    //console.log('🔗 Environment check:', { SPOTIFY_TOKEN_ENDPOINT: externalEndpoint });
     
     if (externalEndpoint) {
-      console.log('🌐 Using external token endpoint:', externalEndpoint);
+      //console.log('🌐 Using external token endpoint:', externalEndpoint);
       try {
-        console.log('📞 Making fetch request to token endpoint...');
+        //console.log('📞 Making fetch request to token endpoint...');
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PERFORMANCE_CONSTANTS.FETCH_TIMEOUT_MS);
 
@@ -148,7 +148,7 @@ export class SpotifyClient {
         });
         clearTimeout(timeout);
 
-        console.log('📨 Got response, status:', r.status, 'content-type:', r.headers.get('content-type'));
+        //console.log('📨 Got response, status:', r.status, 'content-type:', r.headers.get('content-type'));
         const ct = r.headers.get('content-type') || '';
         
         if (!r.ok) {
@@ -163,9 +163,9 @@ export class SpotifyClient {
           throw new Error('token_ct:' + ct + ' snippet:' + raw.slice(0, 40));
         }
         
-        console.log('🔄 Parsing JSON response...');
+        //console.log('🔄 Parsing JSON response...');
         const j = await r.json();
-        console.log('✅ Parsed token response:', { hasToken: !!j.access_token, expiresIn: j.expires_in });
+        //console.log('✅ Parsed token response:', { hasToken: !!j.access_token, expiresIn: j.expires_in });
         
         if (!j.access_token) throw new Error('token_missing_access_token');
         
@@ -180,7 +180,7 @@ export class SpotifyClient {
         }
         
         this.setAccessToken(j.access_token, expiresInSec);
-        console.log('✅ Successfully got token from external endpoint, expires in', expiresInSec, 'seconds');
+        //console.log('✅ Successfully got token from external endpoint, expires in', expiresInSec, 'seconds');
         return;
       } catch (e) {
         throw new Error('❌ External token endpoint failed: ' + (e as any)?.message);
@@ -213,7 +213,7 @@ export class SpotifyClient {
     if (!this.cfg.accessToken) throw new Error('No Spotify access token available');
     
     // Make API call
-    console.log('🌐 API CALL:', path);
+    //console.log('🌐 API CALL:', path);
     const url = API_BASE + path + (Object.keys(merged).length ? '?' + new URLSearchParams(
       Object.entries(merged).filter(([, v]) => v !== undefined) as any
     ) : '');
@@ -685,7 +685,7 @@ export class SpotifyClient {
       }
     } catch (e) {
       // Enrichment is non-critical; ignore failures
-      console.log('Recommendation enrichment failed:', e);
+      //console.log('Recommendation enrichment failed:', e);
     }
 
     return { tracks: mapped, seeds: seedsArray, raw: json };
@@ -815,15 +815,15 @@ class CacheHelper {
     if (!db) return null;
     
     try {
-      console.log('🔍 Checking DB cache for:', key);
+      //console.log('🔍 Checking DB cache for:', key);
       const cachedData = await db.getApiCache(key);
       if (cachedData) {
-        console.log('📋 Cache HIT:', path);
+        //console.log('📋 Cache HIT:', path);
         return cachedData;
       }
-      console.log('📋 Cache MISS (no data):', path);
+      //console.log('📋 Cache MISS (no data):', path);
     } catch (e) {
-      console.log('📋 Cache MISS (error):', path, e);
+      //console.log('📋 Cache MISS (error):', path, e);
     }
     
     return null;
@@ -832,7 +832,7 @@ class CacheHelper {
   static checkMemoryCache(cache: Map<string, any>, key: string, path: string, ttl = PERFORMANCE_CONSTANTS.MEMORY_CACHE_TTL_MS): any | null {
     const cached = cache.get(key);
     if (cached && Date.now() - cached.t < ttl) {
-      console.log('💾 Memory cache HIT:', path);
+      //console.log('💾 Memory cache HIT:', path);
       return cached.v;
     }
     return null;
@@ -841,17 +841,17 @@ class CacheHelper {
   static async storeInCaches(cache: Map<string, any>, db: any, key: string, data: any, path: string): Promise<void> {
     // Store in memory cache
     cache.set(key, { v: data, t: Date.now() });
-    console.log('💾 Stored in memory cache:', path);
+    //console.log('💾 Stored in memory cache:', path);
     
     // Store in database cache (non-blocking)
     if (db) {
       db.setApiCache(key, data).then(() => {
-        console.log('💾 Stored in DB cache:', path);
+        //console.log('💾 Stored in DB cache:', path);
       }).catch((e: any) => {
-        console.log('💾 DB cache store failed:', path, e);
+        //console.log('💾 DB cache store failed:', path, e);
       });
     } else {
-      console.log('💾 No DB available for caching:', path);
+      //console.log('💾 No DB available for caching:', path);
     }
   }
 }

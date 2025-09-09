@@ -8,7 +8,7 @@ const SERVER_CONSTANTS = {
   TIMEOUTS: {
     YTDLP_SEARCH: 7000,
     YTDLP_INFO: 10000,
-    PROXY_FIRST_BYTE: 3000,
+    PROXY_FIRST_BYTE: 20000, // Increased from 3000 to 20000 for YouTube streaming
     SOCKET: 2000
   },
   CACHE: {

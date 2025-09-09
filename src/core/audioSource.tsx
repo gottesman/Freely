@@ -21,10 +21,10 @@ const URL_PATTERNS = {
 } as const;
 
 const URL_TEMPLATES = {
-    TORRENT: (id: string) => `/server/torrent-stream?id=${encodeURIComponent(id)}`,
-    YOUTUBE_URL: (url: string) => `/audio/stream?url=${encodeURIComponent(url)}`,
-    YOUTUBE_ID: (id: string) => `/audio/stream?videoId=${encodeURIComponent(id)}`,
-    YOUTUBE_FALLBACK: (url: string) => `/youtube/stream?url=${encodeURIComponent(url)}`
+    TORRENT: (id: string) => `http://localhost:9000/stream/${encodeURIComponent(id)}/0`,
+    YOUTUBE_URL: (url: string) => `http://localhost:9000/source/youtube?url=${encodeURIComponent(url)}&get=stream`,
+    YOUTUBE_ID: (id: string) => `http://localhost:9000/source/youtube?id=${encodeURIComponent(id)}&get=stream`,
+    YOUTUBE_FALLBACK: (url: string) => `http://localhost:9000/source/youtube?url=${encodeURIComponent(url)}&get=stream`
 } as const;
 
 // Optimized environment detection
@@ -61,11 +61,56 @@ const resolvers = {
 
     http: async (value: string): Promise<string> => value,
 
-    torrent: async (value: string): Promise<string> => URL_TEMPLATES.TORRENT(value),
+    torrent: async (value: string): Promise<string> => {
+        // Extract infoHash from magnetURI if needed
+        if (value.startsWith('magnet:')) {
+            const match = value.match(/xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/);
+            if (match) {
+                return URL_TEMPLATES.TORRENT(match[1]);
+            }
+        }
+        // Assume it's already an infoHash
+        return URL_TEMPLATES.TORRENT(value);
+    },
 
     youtube: async (value: string): Promise<string> => {
         const trimmedValue = value.trim();
         
+        // If it's already a localhost streaming URL, return as-is
+        if (trimmedValue.startsWith('http://localhost:9000/source/youtube')) {
+            return trimmedValue;
+        }
+        
+        // For YouTube sources, get the direct CDN URL from the info endpoint
+        try {
+            const videoId = URL_PATTERNS.YOUTUBE_ID.test(trimmedValue) 
+                ? trimmedValue 
+                : trimmedValue;
+            
+            // Get the info to extract the direct YouTube CDN URL
+            const infoUrl = `http://localhost:9000/source/youtube?id=${encodeURIComponent(videoId)}&get=info`;
+            console.log('[audioSource] Fetching YouTube info for direct URL:', infoUrl);
+            
+            const response = await fetch(infoUrl);
+            if (response.ok) {
+                const data = await response.json();
+                console.log('[audioSource] Info response:', data);
+                if (data.success && data.data?.format?.url) {
+                    const directUrl = data.data.format.url;
+                    console.log('[audioSource] Successfully extracted direct YouTube CDN URL:', directUrl);
+                    return directUrl;
+                } else {
+                    console.warn('[audioSource] No direct URL in info response. Data structure:', JSON.stringify(data, null, 2));
+                }
+            } else {
+                console.warn('[audioSource] Info request failed with status:', response.status, await response.text());
+            }
+        } catch (error) {
+            console.warn('[audioSource] Failed to fetch YouTube info:', error);
+        }
+        
+        // Fallback to streaming endpoint if direct URL extraction fails
+        console.log('[audioSource] Falling back to streaming endpoint for value:', trimmedValue);
         if (URL_PATTERNS.HTTP.test(trimmedValue)) {
             return URL_TEMPLATES.YOUTUBE_URL(trimmedValue);
         }

@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cache;
 mod commands;
+mod playback;
 mod server;
 mod utils;
 mod window;
@@ -40,6 +42,10 @@ fn main() {
 
             app.manage(paths);
 
+            // Initialize audio cache
+            cache::init_cache(&app_config_dir)
+                .map_err(|e| format!("Failed to initialize audio cache: {}", e))?;
+
             // Initialize window state
             let window = app.handle().get_webview_window("main").unwrap();
             let initial_maximized = window.is_maximized().unwrap_or(false);
@@ -76,6 +82,20 @@ fn main() {
             search::source_search,
             // YouTube commands
             youtube::youtube_get_info,
+            // Playback commands
+            playback::playback_start,
+            playback::playback_start_with_cache,
+            playback::playback_pause,
+            playback::playback_resume,
+            playback::playback_stop,
+            playback::playback_status,
+            playback::playback_seek,
+            playback::playback_cleanup,
+            // Cache commands
+            cache::cache_get_file,
+            cache::cache_download_and_store,
+            cache::cache_get_stats,
+            cache::cache_clear,
             // External API commands
             external::charts_get_weekly_tops,
             external::genius_search,
@@ -89,6 +109,11 @@ fn main() {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     let paths = window.app_handle().state::<PathState>();
                     paths.kill_server();
+                    
+                    // Cleanup BASS resources before closing
+                    tauri::async_runtime::spawn(async move {
+                        let _ = crate::playback::playback_cleanup().await;
+                    });
                 }
                 _ => {} // Ignore other events
             }

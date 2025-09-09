@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -15,6 +15,7 @@
     "tauri": "tauri",
     "build:server": "webpack --config webpack.server.config.js",
     "fetch:ytdlp": "node scripts/fetch-ytdlp.js",
+    "fetch:bass": "node scripts/fetch-bass.js",
     "version:update": "node scripts/update-version.js"
   },
   "dependencies": {
@@ -48,6 +49,7 @@
     "typescript": "^5.4.5",
     "vite": "^5.2.13",
     "webpack": "^5.101.3",
-    "webpack-cli": "^6.0.1"
+    "webpack-cli": "^6.0.1",
+    "adm-zip": "^0.5.10"
   }
 }

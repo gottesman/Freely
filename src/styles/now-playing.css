@@ -346,3 +346,34 @@
 	0%, 70%, 100% { transform: scale(.5); opacity: .25; }
 	35% { transform: scale(1); opacity: 1; }
 }
+.track-progress .bar.disabled {
+    overflow: hidden;
+}
+.track-progress .bar::before{
+    --stripe-width: 20px; /* 10px color + 10px transparent */
+    --diagonal-repeat: calc(var(--stripe-width) * 1.4142); /* stripe-width * sqrt(2) for -45deg */
+    
+    content: "";
+    background: repeating-linear-gradient(-45deg, #fff, #fff 10px, #ffffff00 10px, #ffffff00 20px);
+    width: 200%;
+    left: -100%;
+    height: 100%;
+    display: block;
+    position: relative;
+    z-index: 1;
+    animation: progress-bar-disabled 2s linear infinite;
+    animation-play-state: paused;
+    border-radius: inherit;
+    opacity: 0;
+    transition: opacity 160ms linear;
+    will-change: transform; /* Hint for GPU acceleration */
+}
+.track-progress .bar.disabled::before {
+    animation-play-state: running;
+    opacity:1;
+}
+
+@keyframes progress-bar-disabled {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(var(--diagonal-repeat)); }
+}

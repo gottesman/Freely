@@ -58,6 +58,7 @@ router.get('/youtube', async (req, res) => {
 
     // Get video info (with caching)
     let info = null;
+    const ytdlpManager = new YtDlpManager();
     
     // Try cache first unless force refresh
     if (!forceInfo) {
@@ -70,7 +71,6 @@ router.get('/youtube', async (req, res) => {
 
     // Get fresh info if not cached
     if (!info) {
-      const ytdlpManager = new YtDlpManager();
       info = await ytdlpManager.getVideoInfo(target, formatPreference);
       
       // Cache the info

@@ -7,9 +7,9 @@ import { useDB } from '../core/dbIndexed';
 import * as tc from '../core/torrentClient';
 
 // Constants
-const DEFAULT_TIMEOUT = 20000;
+const DEFAULT_TIMEOUT = 10000;
 const MAX_SOURCES = 50;
-const CONCURRENCY_LIMIT = 4;
+const CONCURRENCY_LIMIT = 5;
 const MIN_SEEDS = 1;
 
 // Audio file extensions for filtering
@@ -291,6 +291,23 @@ export default function TrackSources({ track, album, primaryArtist }: {
       if (!promise) {
         promise = (async () => {
           try {
+            // Handle YouTube FIRST so playUrl/streamUrl becomes available sooner
+            if (source.type === 'youtube' && source.id) {
+              const info = await runTauriCommand<any>('youtube_get_info', { 
+                payload: { id: source.id } 
+              });
+              const streamUrl = info?.streamUrl || null;
+              if (streamUrl) {
+                source.streamUrl = streamUrl;
+                source.playUrl = streamUrl;
+              }
+              const estBytes = info?.format?.filesize || info?.format?.filesize_approx || 0;
+              const syntheticName = source.title || source.name || `youtube:${source.id}`;
+              const synthetic = [{ name: syntheticName, length: estBytes }];
+              fileListCache.set(sourceKey, synthetic);
+              return synthetic;
+            }
+
             const maybeInfoHash = String(id || '');
             const isMagnet = maybeInfoHash.startsWith('magnet:');
             const isInfoHash = /^[a-f0-9]{40}$/i.test(maybeInfoHash);
@@ -309,23 +326,6 @@ export default function TrackSources({ track, album, primaryArtist }: {
               const chosen = audioFiles.length ? audioFiles : uniqueFiles;
               fileListCache.set(sourceKey, chosen);
               return chosen;
-            }
-
-            // YouTube sources
-            if (source.type === 'youtube' && source.id) {
-              const info = await runTauriCommand<any>('youtube_get_info', { 
-                payload: { id: source.id } 
-              });
-              const streamUrl = info?.streamUrl || null;
-              if (streamUrl) {
-                source.streamUrl = streamUrl;
-                source.playUrl = streamUrl;
-              }
-              const estBytes = info?.format?.filesize || info?.format?.filesize_approx || 0;
-              const syntheticName = source.title || source.name || `youtube:${source.id}`;
-              const synthetic = [{ name: syntheticName, length: estBytes }];
-              fileListCache.set(sourceKey, synthetic);
-              return synthetic;
             }
 
             // Generic sources
@@ -386,7 +386,13 @@ export default function TrackSources({ track, album, primaryArtist }: {
       }))
       .filter(({ source }) => !!(
         source.infoHash || source.magnetURI || source.id || source.url
-      ));
+      ))
+      // Prioritize YouTube first so their stream URLs & synthetic file entries populate early
+      .sort((a, b) => {
+        const ay = a.source.type === 'youtube' ? 0 : 1;
+        const by = b.source.type === 'youtube' ? 0 : 1;
+        return ay - by;
+      });
 
     const batchProcess = async () => {
       for (let i = 0; i < candidates.length; i += CONCURRENCY_LIMIT) {
@@ -428,8 +434,18 @@ export default function TrackSources({ track, album, primaryArtist }: {
             title: source.title
           });
           await setSetting?.(`source:selected:${track.id}`, minimal);
+          
+          // Notify playback system that track source has changed
+          window.dispatchEvent(new CustomEvent('freely:track:sourceChanged', {
+            detail: { trackId: track.id, source: minimal }
+          }));
         } else {
           await setSetting?.(`source:selected:${track.id}`, '');
+          
+          // Notify playback system that source was removed
+          window.dispatchEvent(new CustomEvent('freely:track:sourceChanged', {
+            detail: { trackId: track.id, source: null }
+          }));
         }
       } catch {
         // Ignore persistence errors

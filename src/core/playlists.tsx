@@ -39,7 +39,7 @@ const notifyPlaylistSubscribers = () => {
   notifyScheduled = true;
   setTimeout(() => {
     notifyScheduled = false;
-    try { console.log('[playlists-debug] notify subscribers count=', playlistSubscribers.size); } catch(_) {}
+    //try { console.log('[playlists-debug] notify subscribers count=', playlistSubscribers.size); } catch(_) {}
     playlistSubscribers.forEach(fn => scheduleSubscriberCall(fn));
   }, NOTIFICATION_DELAY_MS);
 };
@@ -202,7 +202,7 @@ const refreshShared = async (db: IDBDatabase) => {
 
   inFlightRefresh = (async () => {
     try {
-      console.log('[playlists-debug] refreshShared() called');
+      //console.log('[playlists-debug] refreshShared() called');
       shared.loading = true;
       shared.error = undefined;
 
@@ -273,7 +273,7 @@ export const usePlaylists = () => {
   ): Promise<number | undefined> => {
     if (!db) return undefined;
     
-    console.log('[playlists-debug] createPlaylist called name=', name);
+    //console.log('[playlists-debug] createPlaylist called name=', name);
     
     // Optimistic update
     const optimisticPlaylist = PlaylistUtils.createOptimisticPlaylist(name, tags, opts);
@@ -290,7 +290,7 @@ export const usePlaylists = () => {
         store => store.add(newPlaylistRecord)
       ) as number;
       
-      console.log('[playlists-debug] createPlaylist insert complete newId=', newId);
+      //console.log('[playlists-debug] createPlaylist insert complete newId=', newId);
     } catch (e) {
       console.warn('createPlaylist error', e);
     } finally {

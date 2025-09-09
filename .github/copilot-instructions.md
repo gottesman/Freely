@@ -28,13 +28,13 @@ This will start a Vite development server for the React application but no Tauri
 To build the application for development, you can use the following command:
 
 ```bash
-npm run tauri:dev
+npm run tauri dev
 ```
 
 To build the application for production, you can use the following command:
 
 ```bash
-npm run tauri:build
+npm run tauri build
 ```
 
 This will create a distributable package for your operating system in the `build` directory.
