@@ -13,6 +13,7 @@ import {
   useStableTabAPI,
   usePlaybackActions,
   navigationEvents,
+  playbackEvents,
   extractWritersFromGenius
 } from './tabHelpers';
 
@@ -249,8 +250,9 @@ export default function SongInfoTab({ trackId }: Props) {
   // Play / queue handlers (stable callbacks)
   const handlePlayTrack = useCallback(() => {
     if (!state.track?.id) return;
-    playbackActions.playTrack(state.track.id, queueIds, currentIndex);
-  }, [state.track?.id, queueIds, currentIndex, playbackActions]);
+    // Use optimized playNow event for immediate playback
+    playbackEvents.playNow([state.track.id]);
+  }, [state.track?.id]);
 
   const handleAddToQueue = useCallback(() => {
     if (!state.track?.id) return;
@@ -275,7 +277,7 @@ export default function SongInfoTab({ trackId }: Props) {
   ], [t, state.track?.id, onAddToPlaylist, handlePlayTrack, handleAddToQueue]);
 
   return (
-    <section ref={containerRef} className="now-playing" aria-labelledby="np-heading">
+    <section ref={containerRef} className="center-tab" aria-labelledby="np-heading">
       <InfoHeader
         id="np-heading"
         title={state.track ? state.track.name : state.selectedTrackId ? t('np.loading') : t('np.noTrack')}

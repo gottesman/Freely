@@ -253,3 +253,68 @@ export function unwrapTauriResult<T>(result: TauriResult<T>): T {
   
   return result;
 }
+
+// Audio Settings Commands
+export interface AudioDevice {
+  id: number;
+  name: string;
+  driver: string;
+  is_default: boolean;
+  is_enabled: boolean;
+  is_initialized: boolean;
+}
+
+export interface AudioSettings {
+  device: number;
+  sample_rate: number;
+  bit_depth: number;
+  buffer_size: number;
+  net_buffer: number;
+  volume: number;
+  exclusive_mode: boolean;
+  output_channels: number;
+}
+
+/**
+ * Get available audio devices
+ * @returns Promise resolving to list of audio devices
+ */
+export async function getAudioDevices(): Promise<{ devices: AudioDevice[] }> {
+  const result = await runTauriCommand('get_audio_devices');
+  return result;
+}
+
+/**
+ * Get current audio settings
+ * @returns Promise resolving to current audio settings
+ */
+export async function getAudioSettings(): Promise<{ settings: AudioSettings }> {
+  const result = await runTauriCommand('get_audio_settings');
+  return result;
+}
+
+/**
+ * Update audio settings
+ * @param settings - Partial audio settings to update
+ * @returns Promise resolving to success status
+ */
+export async function setAudioSettings(settings: Partial<AudioSettings>): Promise<{ success: boolean; message: string; reinitialized?: boolean }> {
+  const result = await runTauriCommand('set_audio_settings', settings);
+  return result;
+}
+
+/**
+ * Reinitialize audio with new device and settings
+ * @param deviceId - Audio device ID
+ * @param sampleRate - Sample rate in Hz
+ * @param bufferSize - Buffer size
+ * @returns Promise resolving to success status
+ */
+export async function reinitializeAudio(deviceId: number, sampleRate: number, bufferSize: number): Promise<{ success: boolean; message: string }> {
+  const result = await runTauriCommand('reinitialize_audio', { 
+    device_id: deviceId, 
+    sample_rate: sampleRate, 
+    buffer_size: bufferSize 
+  });
+  return result;
+}

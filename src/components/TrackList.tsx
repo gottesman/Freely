@@ -241,10 +241,11 @@ export default function TrackList({
   }, []);
 
   const handlePlayTrack = useCallback((trackId: string) => {
+    // Use optimized playNow event which handles both UI update and queue management
     const currentSegment = (queueIds || []).slice(currentIndex || 0);
     const rest = currentSegment.filter(id => id !== trackId);
     const newQueue = [trackId, ...rest];
-    playbackEvents.setQueue(newQueue, 0);
+    playbackEvents.playNow(newQueue);
   }, [queueIds, currentIndex]);
 
   const handleEnqueueTrack = useCallback((trackId: string) => {

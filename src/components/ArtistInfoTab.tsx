@@ -530,7 +530,7 @@ export default function ArtistInfoTab({ artistId }: { artistId?: string }) {
   ], [artist, localFollowing, t, toggleFollow]);
 
   return (
-    <section className="now-playing" aria-labelledby="artist-heading">
+    <section className="center-tab" aria-labelledby="artist-heading">
       <InfoHeader
         id="artist-heading"
         title={artist ? artist.name : (artistId ? t('np.loading') : t('np.noArtist'))}

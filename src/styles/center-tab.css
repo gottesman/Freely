@@ -1,4 +1,4 @@
-.now-playing { display:flex; flex-direction:column; gap:24px; padding-top: var(--np-hero-height, 320px); }
+.center-tab { display:flex; flex-direction:column; gap:24px; padding-top: var(--np-hero-height, 320px); }
 .np-hero {
     /* adjustable via JS: --np-hero-height will be set between min/max */
     --np-hero-max-height: 320px;

@@ -23,7 +23,7 @@ src/
     panels.css              # right panel tabs, shelves & small card grid
     center-tabs.css         # central tab system (header + body)
     home.css                # home page & hero sections
-    now-playing.css         # now playing, lyrics overlay, artist sections
+    center-tab.css         # center tab, lyrics overlay, artist sections
     player.css              # bottom player bar, controls, volume & progress
     background.css          # animated background layer
     alerts.css              # transient player alerts / toasts
@@ -56,7 +56,7 @@ Use tokens directly in partials; prefer adding new tokens instead of hard-coded 
 1. `variables.css` – tokens first.
 2. `base.css` – reset & utilities depend on tokens.
 3. Structural & generic components: `components`, `layout`, `titlebar`, `panels`, `center-tabs`.
-4. Feature pages: `home`, `now-playing`.
+4. Feature pages: `home`, `center-tab`.
 5. Player & background & alerts.
 6. Test harness last (least critical precedence) but before future overrides or debug helpers.
 

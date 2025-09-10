@@ -466,7 +466,7 @@ const PlaylistInfoTab = React.memo(({ playlistId }: { playlistId?: string }) => 
   }, [state.playlist, playlistInfo.isLocal, t]);
 
   return (
-    <section className="now-playing" aria-labelledby="playlist-heading">
+    <section className="center-tab" aria-labelledby="playlist-heading">
       <InfoHeader
         id="playlist-heading"
         title={playlistTitle}

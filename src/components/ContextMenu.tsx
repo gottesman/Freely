@@ -583,11 +583,11 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
             id: 'act-play', label: t('common.playNow', 'Play now'), type: 'action', icon: 'play_arrow', iconFilled: true,
             onClick: () => {
               if (!trackData?.id) return;
+              // Use optimized playNow event for immediate playback
               const currentSegment = (queueList || []).slice(currentIndex || 0);
               const rest = currentSegment.filter(id => id !== trackData.id);
               const newQueue = [trackData.id, ...rest];
-              // Set new queue beginning with this track and start playback at index 0
-              playbackEvents.setQueue(newQueue, 0);
+              playbackEvents.playNow(newQueue);
             }
           },
           {

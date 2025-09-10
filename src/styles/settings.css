@@ -27,6 +27,14 @@
 .settings-control:hover, .settings-control-select:hover, .settings-control-file:hover { background: var(--surface-hover); }
 .settings-control:focus-visible, .settings-control-select:focus-visible, .settings-control-file:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 
+/* Range Input (Volume Slider) */
+.settings-range { appearance: none; -webkit-appearance: none; background: var(--surface-3); border: 1px solid var(--border-subtle); height: 6px; border-radius: 3px; outline: none; transition: background var(--dur-med), border-color var(--dur-med); cursor: pointer; min-width: 200px; }
+.settings-range::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); cursor: pointer; transition: transform var(--dur-med); }
+.settings-range::-webkit-slider-thumb:hover { transform: scale(1.1); }
+.settings-range::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); cursor: pointer; border: none; transition: transform var(--dur-med); }
+.settings-range::-moz-range-thumb:hover { transform: scale(1.1); }
+.settings-range:focus-visible { border-color: var(--accent); }
+
 /* Color Picker wrapper */
 .settings-color-wrap { display: flex; align-items: center; gap: 12px; }
 .settings-color-input { appearance: none; -webkit-appearance: none; border: 1px solid var(--border-subtle); width: 44px; height: 36px; padding: 0; background: var(--surface-3); border-radius: var(--radius-sm); cursor: pointer; transition: border-color var(--dur-med), background var(--dur-med), box-shadow var(--dur-med); }
@@ -60,6 +68,29 @@
 .plugin-card .title { font-size: 13px; font-weight: 600; letter-spacing: .4px; }
 .plugin-card .meta { font-size: 11px; opacity: .6; }
 .plugin-empty { text-align: center; font-size: 12px; opacity: .65; padding: 30px 20px; font-style: italic; background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+
+/* Audio Settings Specific */
+.settings-info-panel { background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px 16px; }
+.settings-info-title { margin: 0 0 8px 0; font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; opacity: .7; }
+.settings-info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; font-size: 12px; line-height: 1.4; }
+.settings-info-grid span { opacity: .8; }
+
+.audio-settings-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.audio-settings-control { min-width: 120px; flex: 1; }
+.audio-settings-control-small { min-width: 80px; max-width: 120px; }
+.audio-buffer-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.audio-channel-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.audio-exclusive-checkbox { margin-right: 8px; }
+.audio-apply-button { background: var(--accent); color: white; border: none; padding: 10px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; cursor: pointer; transition: all var(--dur-med); }
+.audio-apply-button:hover { filter: brightness(1.1); }
+.audio-apply-button:disabled { opacity: 0.6; cursor: not-allowed; }
+.audio-apply-button.loading { position: relative; }
+.audio-apply-button.loading::after { content: ''; position: absolute; inset: 0; background: rgba(255, 255, 255, 0.2); border-radius: inherit; animation: pulse 1.5s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.6; }
+}
 
 /* Utility */
 .material-symbols-rounded.settings-icon { --size: 18px; color: var(--accent); }

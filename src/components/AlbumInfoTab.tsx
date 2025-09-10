@@ -260,7 +260,7 @@ export default function AlbumInfoTab({ albumId }: { albumId?: string }) {
   const currentPlayingTrackId = queueIds[currentIndex];
 
   return (
-    <section className="now-playing" aria-labelledby="album-heading">
+    <section className="center-tab" aria-labelledby="album-heading">
       <InfoHeader 
         id="album-heading" 
         title={album ? album.name : metaNode} 

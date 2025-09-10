@@ -47,7 +47,10 @@ export default function HomeTab() {
   // Use optimized playback actions from tabHelpers
   const playNow = useCallback((ids: string | string[]) => {
     const arr = Array.isArray(ids) ? ids : [ids];
-    playbackEvents.setQueue(arr, 0);
+    // Use the new event system for immediate playback
+    if (arr.length > 0) {
+      playbackEvents.playNow(arr);
+    }
   }, []);
 
   // Consolidated state management

@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod cache;
 mod commands;
 mod playback;
 mod server;
@@ -43,7 +42,7 @@ fn main() {
             app.manage(paths);
 
             // Initialize audio cache
-            cache::init_cache(&app_config_dir)
+            playback::init_cache(&app_config_dir)
                 .map_err(|e| format!("Failed to initialize audio cache: {}", e))?;
 
             // Initialize window state
@@ -85,17 +84,27 @@ fn main() {
             // Playback commands
             playback::playback_start,
             playback::playback_start_with_cache,
+            playback::playback_start_with_source,
             playback::playback_pause,
             playback::playback_resume,
             playback::playback_stop,
             playback::playback_status,
             playback::playback_seek,
             playback::playback_cleanup,
-            // Cache commands
-            cache::cache_get_file,
-            cache::cache_download_and_store,
-            cache::cache_get_stats,
-            cache::cache_clear,
+            playback::playback_set_volume,
+            playback::playback_get_volume,
+            playback::playback_set_mute,
+            playback::playback_toggle_mute,
+            // Audio settings commands
+            playback::get_audio_devices,
+            playback::get_audio_settings,
+            playback::set_audio_settings,
+            playback::reinitialize_audio,
+            // Cache commands (now integrated into playback)
+            playback::cache_get_file,
+            playback::cache_download_and_store,
+            playback::cache_get_stats,
+            playback::cache_clear,
             // External API commands
             external::charts_get_weekly_tops,
             external::genius_search,

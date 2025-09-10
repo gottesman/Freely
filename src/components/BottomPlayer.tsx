@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { usePlaybackSelector, usePlayback } from '../core/playback';
+import { usePlaybackSelector, usePlayback, useCacheStatus } from '../core/playback';
 import { useI18n } from '../core/i18n';
 import { useAlerts } from '../core/alerts';
 import { usePlaylists } from '../core/playlists';
@@ -68,6 +68,14 @@ export default function BottomPlayer({
   const backendDuration = usePlaybackSelector(s => s.duration); // Duration in seconds from BASS
   const playbackCtx = usePlayback(); // for real seek
   const backendSeek = playbackCtx.seek;
+  const cacheStatus = useCacheStatus(); // Cache status for hybrid streaming
+  
+  // Volume controls from playback context
+  const volume = playbackCtx.volume;
+  const muted = playbackCtx.muted;
+  const setVolume = playbackCtx.setVolume;
+  const setMute = playbackCtx.setMute;
+  const toggleMute = playbackCtx.toggleMute;
   
   // Hooks
   const { t } = useI18n();
@@ -93,23 +101,44 @@ export default function BottomPlayer({
     lastStateUpdate: 0
   });
 
-  // Memoized track metadata
-  const trackMetadata = useMemo(() => {
-    const title = currentTrack?.name || (trackLoading ? t('np.loading') : t('np.noTrack'));
-    const artist = currentTrack?.artists?.map((a) => a.name).join(', ') || '';
-    const album = currentTrack?.album?.name || '';
-    const cover = (window as any).imageRes?.(currentTrack?.album?.images, 0) || '';
-    const durationMs = currentTrack?.durationMs || 0;
-    
-    return { title, artist, album, cover, durationMs };
-  }, [currentTrack, trackLoading, t]);
-
   // Detect if current track lacks a selected source (no explicit source meta & no resolved playback url)
   const noSource = useMemo(() => {
     if (!currentTrack) return false; // nothing selected yet
     const sourceMeta = (currentTrack as any).source;
     return !sourceMeta && !playbackUrl; // treat absence as needing selection
   }, [currentTrack, playbackUrl]);
+
+  // Detect if track is loading - includes explicit loading state and cases where we have a source but no playback yet
+  const isTrackLoading = useMemo(() => {
+    if (trackLoading) {
+      return true; // Explicit loading state
+    }
+    
+    // If we have a current track with a source but no backend position/duration data and not playing, we're likely loading
+    if (currentTrack && (currentTrack as any).source && !noSource) {
+      const hasBackendData = backendPosition !== undefined || backendDuration !== undefined;
+      const hasPlaybackUrl = playbackUrl && playbackUrl !== '';
+      
+      // Only consider it loading if we have started playback (have URL) but don't have backend data yet
+      // If we don't have a playback URL, the track is ready but not started (not loading)
+      if (hasPlaybackUrl && !hasBackendData && !playingFlag) {
+        return true;
+      }
+    }
+    
+    return false;
+  }, [trackLoading, currentTrack, noSource, backendPosition, backendDuration, playbackUrl, playingFlag]);
+
+  // Memoized track metadata
+  const trackMetadata = useMemo(() => {
+    const title = currentTrack?.name || (isTrackLoading ? t('np.loading') : t('np.noTrack'));
+    const artist = currentTrack?.artists?.map((a) => a.name).join(', ') || '';
+    const album = currentTrack?.album?.name || '';
+    const cover = (window as any).imageRes?.(currentTrack?.album?.images, 0) || '';
+    const durationMs = currentTrack?.durationMs || 0;
+    
+    return { title, artist, album, cover, durationMs };
+  }, [currentTrack, isTrackLoading, t]);
 
   const [showSourcePopup, setShowSourcePopup] = useState(false);
 
@@ -150,17 +179,16 @@ export default function BottomPlayer({
   // Volume CSS variable update (optimized)
   useEffect(() => {
     if (refs.current.volume) {
-      refs.current.volume.style.setProperty('--vol', `${playerState.volume}%`);
+      refs.current.volume.style.setProperty('--vol', `${volume * 100}%`);
     }
-  }, [playerState.volume]);
+  }, [volume]);
 
   // Optimized volume handler
   const onVolume = useCallback((v: number) => {
-    setPlayerState(prev => ({ ...prev, volume: v }));
-    if (refs.current.volume) {
-      refs.current.volume.style.setProperty('--vol', `${v}%`);
-    }
-  }, []);
+    const volumePercent = v / 100; // Convert percentage to 0-1 range
+    setVolume(volumePercent);
+    setPlayerState(prev => ({ ...prev, volume: v })); // Keep UI state in sync
+  }, [setVolume]);
 
   // Alert on playback errors (dedupe by message)
   useEffect(() => {
@@ -238,8 +266,8 @@ export default function BottomPlayer({
     
     setPlayerState(prev => ({ ...prev, positionMs: refs.current.position }));
 
-    // If no source available, freeze progress at 0
-    if (noSource) {
+    // If no source available or track is loading, freeze progress at 0
+    if (noSource || isTrackLoading) {
       refs.current.position = 0;
       setPlayerState(prev => ({ ...prev, positionMs: 0 }));
       return; // do not start RAF
@@ -300,7 +328,7 @@ export default function BottomPlayer({
       }
       refs.current.lastFrameTime = null;
     };
-  }, [playingFlag, currentTrack?.id, trackMetadata.durationMs, playbackControls.next, noSource, backendPosition]);
+  }, [playingFlag, currentTrack?.id, trackMetadata.durationMs, playbackControls.next, noSource, isTrackLoading, backendPosition]);
 
   // Event handlers (memoized for performance)
   const togglePlay = useCallback(() => {
@@ -309,12 +337,16 @@ export default function BottomPlayer({
       setShowSourcePopup(true);
       return;
     }
+    if (isTrackLoading) {
+      // Don't allow toggle while loading
+      return;
+    }
     // Use the actual playback context toggle method
     playbackCtx.toggle();
-  }, [noSource, playbackCtx]);
+  }, [noSource, isTrackLoading, playbackCtx]);
 
   const beginSeek = useCallback((clientX: number) => {
-    if (!trackMetadata.durationMs || noSource) return;
+    if (!trackMetadata.durationMs || noSource || isTrackLoading) return;
     if (!barRef.current) return;
     const rect = barRef.current.getBoundingClientRect();
     dragInfoRef.current = { rect, duration: trackMetadata.durationMs };
@@ -322,7 +354,7 @@ export default function BottomPlayer({
     // initial preview update
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
     setSeekPreviewMs(Math.floor(ratio * trackMetadata.durationMs));
-  }, [trackMetadata.durationMs, noSource]);
+  }, [trackMetadata.durationMs, noSource, isTrackLoading]);
 
   const updateSeek = useCallback((clientX: number) => {
     const info = dragInfoRef.current;
@@ -413,15 +445,15 @@ export default function BottomPlayer({
 
         <div
           ref={barRef}
-          className={`bar${noSource ? ' disabled' : ''}`}
-          onMouseDown={(e) => { if (noSource) return; beginSeek(e.clientX); }}
+          className={`bar${(noSource || isTrackLoading) ? ' disabled' : ''}`}
+          onMouseDown={(e) => { if (noSource || isTrackLoading) return; beginSeek(e.clientX); }}
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={(backendDuration || trackMetadata.durationMs / 1000) * 1000}
           aria-valuenow={isSeeking && seekPreviewMs != null ? seekPreviewMs : (backendPosition || 0) * 1000}
           aria-label={t('np.trackPosition', 'Track position')}
-          aria-disabled={noSource ? 'true' : 'false'}
-          style={noSource ? { cursor: 'not-allowed', opacity: 0.5 } : undefined}
+          aria-disabled={(noSource || isTrackLoading) ? 'true' : 'false'}
+          style={(noSource || isTrackLoading) ? { cursor: 'not-allowed', opacity: 0.5 } : undefined}
         >
           <div className="fill" style={{ width: `${progress * 100}%` }} />
           <div className="handle" style={{ left: `${progress * 100}%` }} />
@@ -504,12 +536,12 @@ export default function BottomPlayer({
 
           <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
             <button 
-              className={`play player-icons player-icons-play ${noSource ? 'disabled' : ''}`} 
-              aria-label={noSource ? t('player.noSource', 'No source selected') : (playingFlag ? t('player.pause') : t('player.play'))} 
+              className={`play player-icons player-icons-play ${(noSource || isTrackLoading) ? 'disabled' : ''}`} 
+              aria-label={noSource ? t('player.noSource', 'No source selected') : isTrackLoading ? t('np.loading', 'Loading') : (playingFlag ? t('player.pause') : t('player.play'))} 
               onClick={togglePlay}
-              disabled={noSource}
+              disabled={noSource || isTrackLoading}
             >
-              {noSource ? (
+              {(noSource || isTrackLoading) ? (
                 <div className="loading-dots" style={{ width: 52, textAlign: 'center' }} aria-label={t('np.loading', 'Loading')}>
                   <span></span><span></span><span></span>
                 </div>
@@ -561,6 +593,31 @@ export default function BottomPlayer({
             )}
           </div>
 
+          {/* Cache status indicator */}
+          {cacheStatus?.isCaching && (
+            <div
+              className="cache-status"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                marginLeft: '8px',
+                fontSize: '12px',
+                color: 'var(--accent, #007acc)',
+                opacity: 0.8
+              }}
+              title={cacheStatus.cacheProgress ? 
+                `Caching: ${Math.round(cacheStatus.cacheProgress)}%` : 
+                'Downloading to cache...'}
+            >
+              <span className="material-symbols-rounded" style={{ fontSize: '16px', marginRight: '4px' }}>
+                download
+              </span>
+              {cacheStatus.cacheProgress ? 
+                `${Math.round(cacheStatus.cacheProgress)}%` : 
+                'Caching...'}
+            </div>
+          )}
+
           <button 
             className="player-icons player-icons-next" 
             aria-label={t('player.next')} 
@@ -593,8 +650,14 @@ export default function BottomPlayer({
             <span className="material-symbols-rounded filled">line_weight</span>
           </button>
 
-          <button className="small player-icons player-icons-mute" aria-label={t('player.mute')}>
-            <span className="material-symbols-rounded filled">volume_up</span>
+          <button 
+            className="small player-icons player-icons-mute" 
+            aria-label={muted ? t('player.unmute', 'Unmute') : t('player.mute', 'Mute')}
+            onClick={toggleMute}
+          >
+            <span className="material-symbols-rounded filled">
+              {muted ? 'volume_off' : (volume > 0.7 ? 'volume_up' : volume > 0.3 ? 'volume_down' : 'volume_mute')}
+            </span>
           </button>
 
           <input
@@ -603,9 +666,9 @@ export default function BottomPlayer({
             type="range"
             min={0}
             max={100}
-            value={playerState.volume}
+            value={volume * 100} // Convert 0-1 range to percentage
             onChange={(e) => onVolume(Number(e.target.value))}
-            style={{ ['--vol' as any]: `${playerState.volume}%` }}
+            style={{ ['--vol' as any]: `${volume * 100}%` }}
             aria-label={t('player.volume', 'Volume')}
           />
 

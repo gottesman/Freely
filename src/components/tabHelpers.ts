@@ -80,8 +80,8 @@ export const navigationEvents = {
 
 // Playback event helpers
 export const playbackEvents = {
-  setQueue: (queueIds: string[], startIndex = 0) =>
-    dispatchFreelyEvent('freely:playback:setQueue', { queueIds, startIndex }),
+  setQueue: (queueIds: string[], startIndex = 0, shouldPlay = false) =>
+    dispatchFreelyEvent('freely:playback:setQueue', { queueIds, startIndex, shouldPlay }),
   
   enqueue: (ids: string[]) =>
     dispatchFreelyEvent('freely:playback:enqueue', { ids }),
@@ -91,6 +91,12 @@ export const playbackEvents = {
   
   removeTrack: (id: string) =>
     dispatchFreelyEvent('freely:playback:removeTrack', { id }),
+  
+  // Optimized event for immediate playback
+  playNow: (ids: string | string[]) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    dispatchFreelyEvent('freely:playback:playNow', { ids: arr });
+  },
   
   openAddToPlaylistModal: (track: SpotifyTrack) =>
     dispatchFreelyEvent('freely:openAddToPlaylistModal', { track }),
@@ -304,13 +310,17 @@ export function useStableTabAPI() {
 export function usePlaybackActions() {
   return useMemo(() => ({
     playTrack: (trackId: string, queueIds: string[] = [], currentIndex = 0) => {
+      // Use the optimized playNow event for immediate playback
       const newQueue = deduplicateQueue([trackId], queueIds, currentIndex);
-      playbackEvents.setQueue(newQueue, 0);
+      playbackEvents.playNow(newQueue);
     },
     
     playTracks: (trackIds: string[], queueIds: string[] = [], currentIndex = 0) => {
       const newQueue = deduplicateQueue(trackIds, queueIds, currentIndex);
-      playbackEvents.setQueue(newQueue, 0);
+      // Use the optimized playNow event for immediate playback
+      if (newQueue.length > 0) {
+        playbackEvents.playNow(newQueue);
+      }
     },
     
     addToQueue: (trackIds: string[], queueIds: string[] = []) => {

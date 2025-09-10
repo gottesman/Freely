@@ -9,8 +9,9 @@ import * as tc from '../core/torrentClient';
 // Constants
 const DEFAULT_TIMEOUT = 10000;
 const MAX_SOURCES = 50;
-const CONCURRENCY_LIMIT = 5;
+const CONCURRENCY_LIMIT = 2; // Reduced from 5 to 2 to limit ytdlp processes
 const MIN_SEEDS = 1;
+const AUTO_FETCH_LIMIT = 5; // Only auto-fetch first 5 sources to reduce CPU load
 
 // Audio file extensions for filtering
 const AUDIO_EXTENSIONS = /\.(mp3|m4a|flac|wav|ogg|aac|opus|webm)$/i;
@@ -374,12 +375,14 @@ export default function TrackSources({ track, album, primaryArtist }: {
   }, []);
 
 
-  // Auto-fetch file lists for all sources
+  // Auto-fetch file lists for priority sources only (reduced CPU load)
   useEffect(() => {
     const { lastQuery, sources } = state;
     if (!lastQuery || !sources?.length || fetchedQueriesRef.current[lastQuery]) return;
 
+    // Only auto-fetch first few sources to reduce CPU load
     const candidates = sources
+      .slice(0, AUTO_FETCH_LIMIT) // Limit auto-fetching
       .map((s: any, i: number) => ({ 
         source: s, 
         key: generateSourceKey(s, i) 
@@ -395,6 +398,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       });
 
     const batchProcess = async () => {
+      // Process with even smaller batches to reduce concurrent ytdlp processes
       for (let i = 0; i < candidates.length; i += CONCURRENCY_LIMIT) {
         const batch = candidates.slice(i, i + CONCURRENCY_LIMIT);
         await Promise.allSettled(
@@ -405,10 +409,16 @@ export default function TrackSources({ track, album, primaryArtist }: {
             return handleSourceData(source, key);
           })
         );
+        
+        // Add small delay between batches to prevent overwhelming the system
+        if (i + CONCURRENCY_LIMIT < candidates.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
       }
       fetchedQueriesRef.current[lastQuery] = true;
     };
 
+    console.log(`[TrackSources] Auto-fetching ${candidates.length} priority sources`);
     batchProcess();
   }, [state.sources, state.lastQuery, state.fileLists, state.loadingKeys, handleSourceData]);
 
