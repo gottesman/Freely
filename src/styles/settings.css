@@ -19,7 +19,9 @@
 .settings-fields { display: flex; flex-direction: column; gap: 16px; }
 .settings-field { display: flex; flex-direction: column; gap: 6px; }
 .settings-field.inline { flex-direction: row; align-items: center; gap: 14px; }
-.settings-field-label { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; opacity: .7; min-width: 110px; }
+.settings-field-label { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; opacity: .7; min-width: 110px; display: flex;
+    align-items: center;
+    gap: 5px;}
 .settings-field-hint { font-size: 11px; opacity: .55; line-height: 1.3; }
 
 /* Controls */
@@ -35,8 +37,6 @@
 .settings-range::-moz-range-thumb:hover { transform: scale(1.1); }
 .settings-range:focus-visible { border-color: var(--accent); }
 
-/* Color Picker wrapper */
-.settings-color-wrap { display: flex; align-items: center; gap: 12px; }
 .settings-color-input { appearance: none; -webkit-appearance: none; border: 1px solid var(--border-subtle); width: 44px; height: 36px; padding: 0; background: var(--surface-3); border-radius: var(--radius-sm); cursor: pointer; transition: border-color var(--dur-med), background var(--dur-med), box-shadow var(--dur-med); }
 .settings-color-input::-webkit-color-swatch-wrapper { padding: 0; }
 .settings-color-input::-webkit-color-swatch { border: 0; border-radius: var(--radius-sm); }
@@ -57,7 +57,7 @@
 .btn-danger:active { transform: scale(.95); }
 .btn-outline { background: transparent; border: 1px solid var(--border-subtle); color: var(--text); }
 .btn-outline:hover { background: var(--surface-hover); }
-.btn-subtle { background: var(--surface-3); }
+.btn-subtle { background: var(--surface-3); color: var(--text) }
 .btn-subtle:hover { background: var(--surface-hover); }
 
 /* Plugin List */

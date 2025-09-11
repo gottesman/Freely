@@ -11,7 +11,7 @@ const CONFIG = {
   QUEUE: {
     DEFAULT_INDEX: 0,
     PREFETCH_SIZE: 3, // Reduced from 5 for better performance
-    TEST_TRACKS: ['3n3Ppam7vgaVa1iaRUc9Lp', '7ouMYWpwJ422jRcDASZB7P', '11dFghVXANMlKmJXsNCbNl']
+    TEST_TRACKS: ['3n3Ppam7vgaVa1iaRUc9Lp', '7ouMYWpwJ422jRcDASZB7P', '6EJiVf7U0p1BBfs0qqeb1f']
   },
   POLLING: {
     INTERVAL: 500,
@@ -24,6 +24,12 @@ const CONFIG = {
   VOLUME: {
     DEFAULT: 0.4
   }
+} as const;
+
+// Settings keys for persistence
+const SETTINGS_KEYS = {
+  VOLUME: 'audio_volume',
+  MUTED: 'audio_muted'
 } as const;
 
 // Consolidated event constants
@@ -347,7 +353,7 @@ export function usePlaybackTransition() {
 
 export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(playbackReducer, initialState);
-  const { getApiCache, setApiCache, addPlay, ready, getSetting } = useDB();
+  const { getApiCache, setApiCache, addPlay, ready, getSetting, setSetting } = useDB();
   
   // Refs for performance optimization
   const pollRef = React.useRef<any>(null);
@@ -463,6 +469,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   // Main track fetch effect - optimized with reduced dependencies
   useEffect(() => { 
     if (!state.trackId) return;
+    if (!ready) return;
     
     if (state.fetchInProgress === state.trackId) {
       console.log('[playback] Fetch already in progress for:', state.trackId);
@@ -476,20 +483,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
     
-    // If we have the track but no source, only refetch if database is ready and we haven't tried yet
-    if (existingTrack && !ready) {
-      console.log('[playback] Track exists but database not ready, skipping fetch:', state.trackId);
-      return;
-    }
-    
-    if (existingTrack && ready && state.sourceLoadAttempted.has(state.trackId)) {
+    if (existingTrack && state.sourceLoadAttempted.has(state.trackId)) {
       console.log('[playback] Already attempted to load source for track, skipping fetch:', state.trackId);
       return;
     }
     
     console.log('[playback] Triggering track fetch for:', state.trackId);
     fetchTrack(state.trackId); 
-  }, [state.trackId, fetchTrack]);
+  }, [state.trackId, fetchTrack, ready]);
 
   // Clear cache status when track changes
   useEffect(() => {
@@ -1034,10 +1035,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (result?.success && result.data) {
         dispatch({ type: 'SET_VOLUME', volume: result.data.volume || clampedVolume, muted: result.data.muted || false });
       }
+      
+      // Save to database
+      if (ready) {
+        try {
+          await setSetting(SETTINGS_KEYS.VOLUME, clampedVolume.toString());
+        } catch (e) {
+          console.warn('Failed to save volume setting:', e);
+        }
+      }
     } catch (e) {
       console.warn('Failed to set volume:', e);
     }
-  }, []);
+  }, [ready, setSetting]);
 
   const setMute = useCallback(async (shouldMute: boolean) => {
     try {
@@ -1045,10 +1055,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (result?.success && result.data) {
         dispatch({ type: 'SET_VOLUME', volume: result.data.volume || state.volume, muted: result.data.muted || false });
       }
+      
+      // Save to database
+      if (ready) {
+        try {
+          await setSetting(SETTINGS_KEYS.MUTED, shouldMute.toString());
+        } catch (e) {
+          console.warn('Failed to save mute setting:', e);
+        }
+      }
     } catch (e) {
       console.warn('Failed to set mute:', e);
     }
-  }, [state.volume]);
+  }, [state.volume, ready, setSetting]);
 
   const toggleMute = useCallback(async () => {
     try {
@@ -1056,10 +1075,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (result?.success && result.data) {
         dispatch({ type: 'SET_VOLUME', volume: result.data.volume || state.volume, muted: result.data.muted || false });
       }
+      
+      // Save to database
+      if (ready && result?.success && result.data) {
+        try {
+          await setSetting(SETTINGS_KEYS.MUTED, (result.data.muted || false).toString());
+        } catch (e) {
+          console.warn('Failed to save mute setting:', e);
+        }
+      }
     } catch (e) {
       console.warn('Failed to toggle mute:', e);
     }
-  }, [state.volume]);
+  }, [state.volume, ready, setSetting]);
 
   // Optimize play history recording
   useEffect(() => {
@@ -1076,13 +1104,63 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     recordPlay();
   }, [state.trackId, addPlay, ready]);
 
-  // Initialize volume from backend
+  // Initialize volume from database and backend
   useEffect(() => {
     const initVolume = async () => {
       try {
+        // First try to load from database
+        let savedVolume: number = CONFIG.VOLUME.DEFAULT;
+        let savedMuted = false;
+        let hasSavedSettings = false;
+
+        if (ready) {
+          try {
+            const volumeStr = await getSetting(SETTINGS_KEYS.VOLUME);
+            const mutedStr = await getSetting(SETTINGS_KEYS.MUTED);
+            
+            if (volumeStr) {
+              const parsed = parseFloat(volumeStr);
+              if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+                savedVolume = parsed;
+                hasSavedSettings = true;
+              }
+            }
+            
+            if (mutedStr) {
+              savedMuted = mutedStr === 'true';
+              hasSavedSettings = true;
+            }
+          } catch (e) {
+            console.warn('Failed to load saved volume settings:', e);
+          }
+        }
+
+        // Get current backend volume
         const result = await runTauriCommand('playback_get_volume');
+        
+        let finalVolume = savedVolume;
+        let finalMuted = savedMuted;
+        
         if (result?.success && result.data) {
-          dispatch({ type: 'SET_VOLUME', volume: result.data.volume || CONFIG.VOLUME.DEFAULT, muted: result.data.muted || false });
+          // Only use backend values if we don't have saved settings
+          if (!hasSavedSettings) {
+            finalVolume = result.data.volume || CONFIG.VOLUME.DEFAULT;
+            finalMuted = result.data.muted || false;
+          }
+          
+          // Update state with final values
+          dispatch({ type: 'SET_VOLUME', volume: finalVolume, muted: finalMuted });
+          
+          // Sync backend with our final values if they differ
+          if (result.data.volume !== finalVolume) {
+            await runTauriCommand('playback_set_volume', { volume: finalVolume });
+          }
+          if (result.data.muted !== finalMuted) {
+            await runTauriCommand('playback_set_mute', { muted: finalMuted });
+          }
+        } else {
+          // Backend failed, use our saved/default values
+          dispatch({ type: 'SET_VOLUME', volume: finalVolume, muted: finalMuted });
         }
       } catch (e) {
         console.warn('Failed to get initial volume:', e);
@@ -1090,7 +1168,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     };
     
     initVolume();
-  }, []);
+  }, [ready, getSetting]);
 
   // Optimize queue index synchronization
   useEffect(() => {
@@ -1490,13 +1568,26 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (id) removeFromQueue(String(id));
     };
 
-    const handleSourceChanged = (ev: Event) => {
+  const handleSourceChanged = async (ev: Event) => {
       const detail = eventUtils.extractDetail(ev);
       const changedTrackId = detail.trackId;
-      
-      // If the source changed for the currently playing track, refresh it
+
+      // If the source changed for the current track, stop/reset and optionally autoplay
       if (changedTrackId && changedTrackId === state.trackId) {
-        fetchTrack(state.trackId);
+    const shouldAutoplay = !!state.playing; // remember if we were playing
+
+        // Stop and reset local playback state; clearing the URL triggers backend stop via effect
+        dispatch({ type: 'SET_PLAYBACK_URL', url: undefined });
+        dispatch({ type: 'SET_PLAYING', playing: false });
+        dispatch({ type: 'SET_POSITION', position: 0 });
+        dispatch({ type: 'SET_DURATION', duration: 0 });
+
+  // Re-fetch the track to attach the newly selected source from DB (await to ensure order)
+  await fetchTrack(state.trackId);
+
+  // If it was playing, mark as user-initiated so it autoplays with the new source
+  // If it wasn't playing, ensure no autoplay
+  dispatch({ type: 'SET_SHOULD_FORCE_PLAY', shouldPlay: shouldAutoplay });
       }
     };
 
@@ -1569,7 +1660,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     ];
   }, [
     setQueue, enqueue, playAt, playTrack, playNow, reorderQueue, next, prev, 
-    removeFromQueue, fetchTrack, switchToTrackSynchronously, state.trackId, state.trackCache
+    removeFromQueue, fetchTrack, switchToTrackSynchronously, state.trackId, state.trackCache, state.playing
   ]);
 
   // Optimize event listeners registration

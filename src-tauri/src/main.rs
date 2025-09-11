@@ -10,7 +10,50 @@ use commands::{db, external, search, torrent, youtube};
 use server::{server_start, server_status, PathState};
 use window::{handle_window_resize, WindowState};
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+#[tauri::command]
+async fn close_splashscreen(window: tauri::WebviewWindow) {
+    // Close the splashscreen window
+    if let Some(splashscreen) = window.get_webview_window("splashscreen") {
+        splashscreen.close().unwrap();
+    }
+}
+
+#[tauri::command] 
+async fn show_main_window(window: tauri::WebviewWindow) {
+    // Show the main window
+    if let Some(main_window) = window.get_webview_window("main") {
+        main_window.show().unwrap();
+        main_window.set_focus().unwrap();
+    }
+}
+
+#[tauri::command]
+async fn app_ready(app_handle: tauri::AppHandle) {
+    // Called when the React app is fully ready
+    println!("App is ready, transitioning from splashscreen to main window");
+    
+    // Close splashscreen and show main window
+    if let Some(splashscreen) = app_handle.get_webview_window("splashscreen") {
+        let _ = splashscreen.emit("close-splashscreen", ());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await; // Wait for fade animation
+        let _ = splashscreen.close();
+    }
+
+    if let Some(main_window) = app_handle.get_webview_window("main") {
+        let _ = main_window.show();
+        let _ = main_window.set_focus();
+    }
+}
+
+#[tauri::command]
+async fn update_loading_status(app_handle: tauri::AppHandle, status: String) {
+    // Send loading status update to splashscreen
+    if let Some(splashscreen) = app_handle.get_webview_window("splashscreen") {
+        let _ = splashscreen.emit("loading-status", &status);
+    }
+}
 
 fn main() {
     tauri::Builder::default()
@@ -46,13 +89,14 @@ fn main() {
                 .map_err(|e| format!("Failed to initialize audio cache: {}", e))?;
 
             // Initialize window state
-            let window = app.handle().get_webview_window("main").unwrap();
-            let initial_maximized = window.is_maximized().unwrap_or(false);
+            let main_window = app.handle().get_webview_window("main").unwrap();
+            let initial_maximized = main_window.is_maximized().unwrap_or(false);
             app.manage(WindowState::new(initial_maximized));
 
-            // Start server in background
+            // Start initialization tasks and handle splashscreen
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // Start server in background
                 let paths_state = app_handle.state::<PathState>();
                 match server_start(paths_state).await {
                     Ok(status) => {
@@ -62,11 +106,18 @@ fn main() {
                         eprintln!("Failed to start server: {}", e);
                     }
                 }
+                // Note: No longer auto-closing splashscreen here
+                // The React app will call app_ready() when it's fully loaded
             });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Window commands
+            close_splashscreen,
+            show_main_window,
+            app_ready,
+            update_loading_status,
             // Database commands
             db::db_path,
             db::db_read,
@@ -116,13 +167,16 @@ fn main() {
                     handle_window_resize(window);
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
-                    let paths = window.app_handle().state::<PathState>();
-                    paths.kill_server();
-                    
-                    // Cleanup BASS resources before closing
-                    tauri::async_runtime::spawn(async move {
-                        let _ = crate::playback::playback_cleanup().await;
-                    });
+                    // Only kill server when main window is closing, not splashscreen
+                    if window.label() == "main" {
+                        let paths = window.app_handle().state::<PathState>();
+                        paths.kill_server();
+                        
+                        // Cleanup BASS resources before closing
+                        tauri::async_runtime::spawn(async move {
+                            let _ = crate::playback::playback_cleanup().await;
+                        });
+                    }
                 }
                 _ => {} // Ignore other events
             }

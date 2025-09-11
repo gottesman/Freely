@@ -3,7 +3,7 @@
 .right-tabs-header { display:flex; gap:6px; -webkit-app-region:no-drag; }
 .right-tabs-header button { flex:1 1 auto; background:var(--surface-3); border:1px solid var(--glass-border); color:var(--text); font-size:11px; letter-spacing:.5px; padding:8px 10px; border-radius:10px; cursor:pointer; transition:background var(--dur-med),border-color var(--dur-med),color var(--dur-med); }
 .right-tabs-header button:hover { background:var(--glass-bg-hover); border-color:var(--glass-border-hover); }
-.right-tabs-header button.active { background:var(--accent); border-color:var(--accent); color:#021; box-shadow:0 2px 10px -4px rgba(0,0,0,.5); }
+.right-tabs-header button.active { background:var(--accent); border-color:var(--accent); color:var(--text-dark); box-shadow:0 2px 10px -4px rgba(0,0,0,.5); }
 .right-tabs-body { display:flex; flex-direction:column; gap:16px; min-height:0; flex:1 1 auto; overflow-y:auto; overflow-x:hidden; /* mask: linear-gradient(to bottom, #fff0 0, #fff 16px); -webkit-mask: linear-gradient(to bottom, #fff0 0, #fff 16px); */ }
 .rt-panel { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; gap: 6px; }
 .queue-title {
@@ -171,7 +171,7 @@
     cursor: pointer;
     opacity: 0.9;
     border-style: dashed;
-    height: 54px;
+    min-height: 54px;
     overflow: hidden;
     transition: all 0.2s ease;
 }

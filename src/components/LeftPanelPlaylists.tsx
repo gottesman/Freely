@@ -207,14 +207,8 @@ const LeftPanelPlaylists = React.memo(({
           value={filters.query}
           onChange={e => filterActions.setQuery(e.target.value)}
           placeholder={t('pl.search', 'Search playlists')}
-          style={{
-            flex: 1, 
-            padding: '4px 6px', 
-            borderRadius: 6, 
-            border: '1px solid var(--border-subtle)', 
-            background: 'rgba(255,255,255,0.05)', 
-            color: 'inherit'
-          }}
+          className="np-input"
+          style={{ flex: 1 }}
         />
         <button
           type="button"

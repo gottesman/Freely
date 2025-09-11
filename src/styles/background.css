@@ -14,12 +14,14 @@
 .bg::after {
 	content: "";
 	position: absolute;
-	width: 200%;
-	height: 200%;
-	border-radius: 100em;
+	width: var(--bg-size, 200%);
+	height: var(--bg-size, 200%);
+	border-radius: var(--bg-radius, 100em);
 	transform-origin: 50% 50%;
-	animation: rotate 40s linear infinite;
-	filter: blur(200px) brightness(0.7);
+
+	/* Allow runtime control via CSS variables with sensible defaults */
+	animation: var(--bg-animation, rotate 40s linear infinite);
+	filter: var(--bg-filter, blur(200px) brightness(0.7));
 	background-repeat: no-repeat;
 	background-size: cover;
 	background-position: center;
@@ -30,7 +32,7 @@
 	top: 0;
 	z-index: 10;
 	mix-blend-mode: luminosity;
-	background-image: var(--bg-image), var(--bg-color-default);
+	background-image: linear-gradient(var(--bg-overlay, rgba(0,0,0,0))), var(--bg-image), var(--bg-color-default);
 }
 
 .bg::after {
@@ -39,7 +41,7 @@
 	z-index: 1;
 	animation-direction: reverse;
 	animation-delay: 10s;
-	background-image: var(--bg-image), var(--bg-black-default);
+	background-image: linear-gradient(var(--bg-overlay, rgba(0,0,0,0))), var(--bg-image), var(--bg-black-default);
 }
 
 @keyframes rotate {

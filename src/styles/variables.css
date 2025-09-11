@@ -7,6 +7,8 @@
   --card: hsla(220, 49%, 8%, 0.58); /* already has alpha in hex */
   --accent: hsl(189, 94%, 43%);
   --accent-rgb: 7, 182, 213; /* approx for fallbacks */
+  --accent-hue: 189;
+  --text-dark-hue: 237;
   --secondary: hsl(34 94% 43%);
   --warning: hsl(43 100% 50%);
   --warning-bg: hsla(43, 100%, 50%, 0.4);
@@ -17,6 +19,8 @@
   --info: hsl(210, 100%, 50%);
   --info-bg: hsla(210, 100%, 50%, 0.4);
   --text: #e6eef6;
+  --muted: color-mix(in srgb, var(--text) 70%, rgb(var(--bg)) 30%);
+  --text-dark: #002211;
   --text-dim: hsla(210, 47%, 93%, 0.7);
   --border-subtle: hsla(0, 0%, 100%, 0.06);
   --border-soft: hsla(0, 0%, 100%, 0.08);
@@ -24,8 +28,8 @@
   --surface-1: hsla(0, 0%, 100%, 0.02);
   --surface-2: hsla(0, 0%, 100%, 0.04);
   --surface-3: hsla(0, 0%, 100%, 0.06);
-  --surface-alt: hsla(161, 100%, 50%, 0.14);
-  --surface-alt2: hsla(194, 100%, 50%, 0.14);
+  --surface-alt: hsla(var(--text-dark-hue), 100%, 50%, 0.14);
+  --surface-alt2: hsla(var(--accent-hue), 100%, 50%, 0.14);
   --surface-hover: hsla(0, 0%, 100%, 0.1);
   --surface-active: hsla(0, 0%, 100%, 0.14);
   --panels-bg: hsla(0, 0%, 100%, 0.05);

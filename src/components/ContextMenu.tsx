@@ -615,15 +615,9 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
               playbackEvents.reorderQueue(q);
             }
           },
-          {
-            id: 'act-add-queue', label: t('player.addToQueue', 'Add to queue'), type: 'action', icon: 'queue',
-            onClick: () => {
-              if (trackData?.id) playbackEvents.enqueue([trackData.id]);
-            }
-          },
           ...(queueRemovable ? [
             {
-              id: 'act-remove', label: t('player.removeFromPlaylist', 'Remove from playlist'), type: 'action', icon: 'close',
+              id: 'act-remove', label: t('player.removeFromQueue', 'Remove'), type: 'action', icon: 'close',
               onClick: () => {
                 if (trackData?.id) {
                   playbackEvents.removeTrack(trackData.id);

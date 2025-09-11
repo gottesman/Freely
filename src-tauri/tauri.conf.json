@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "0.10.5",
+  "version": "0.11.6",
   "build": {
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run fetch:ytdlp && npm run fetch:bass && npm run dev",
@@ -26,12 +26,13 @@
     "resources": [
       "server-dist",
       "bin/*",
-      "../node_modules/utp-native"
+      "../node_modules/utp-native/prebuilds"
     ]
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Freely Player",
         "width": 1200,
         "height": 800,
@@ -48,6 +49,25 @@
         "devtools": true,
         "center": true,
         "contentProtected": false,
+        "backgroundThrottling": "disabled",
+        "visible": false
+      },
+      {
+        "label": "splashscreen",
+        "title": "Freely Player",
+        "url": "splashscreen.html",
+        "width": 440,
+        "height": 340,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "resizable": false,
+        "fullscreen": false,
+        "maximizable": false,
+        "closable": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "visible": true,
         "backgroundThrottling": "disabled"
       }
     ],
@@ -82,5 +102,6 @@
     }
   },
   "productName": "Freely Player",
-  "identifier": "com.freely.player"
+  "identifier": "com.freely.player",
+  "mainBinaryName": "freely_player"
 }

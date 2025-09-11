@@ -195,7 +195,7 @@ export default function APIsTests(){
   }
 
   return (
-    <section className="genius-tests" aria-label="tests">
+    <section className="genius-tests no-hero" aria-label="tests">
   <h2 className="np-sec-title" style={{marginTop:0}}>{t('tests.logs')}</h2>
       <div className="gt-log" aria-label="Results log" >
   {log.length === 0 && <div className="gt-empty">{t('tests.emptyLog')}</div>}

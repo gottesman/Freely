@@ -2195,9 +2195,7 @@ pub async fn playback_set_volume(volume: f32) -> Result<serde_json::Value, Strin
     // Clamp volume between 0.0 and 1.0
     let clamped_volume = volume.max(0.0).min(1.0);
     state.volume = clamped_volume;
-    
-    println!("[bass] Setting volume to {:.2}", clamped_volume);
-    
+        
     // If currently muted, don't actually set the volume yet
     if state.muted {
         state.volume_before_mute = clamped_volume;

@@ -16,7 +16,7 @@ router.get('/youtube', async (req, res) => {
     const debug = String(req.query.debug || '').trim() === '1';
     const raw = String(req.query.id || req.query.url || '').trim();
     const mode = String(req.query.get || 'info').toLowerCase();
-    const formatPreference = req.query.format || 'bestaudio[ext=m4a]';
+    const formatPreference = req.query.format || '140'; // Use format ID instead of yt-dlp selector
     const forceInfo = String(req.query.forceInfo || req.query.force || '').toLowerCase() === '1';
 
     const tStart = Date.now();

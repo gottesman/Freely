@@ -84,7 +84,7 @@
 .np-queue-list li:hover { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
 .queue-more-btn{opacity: 0;}
 .np-queue-list li:hover .queue-more-btn { opacity:1; }
-.np-queue-list li.active { background:var(--accent); color:#021; border:transparent; font-weight:inherit; box-shadow:0 0 0 1px rgba(0,0,0,0.15) inset; }
+.np-queue-list li.active { background:var(--accent); color:var(--text-dark); border:transparent; font-weight:inherit; box-shadow:0 0 0 1px rgba(0,0,0,0.15) inset; }
 .np-queue-list li .track { flex:1 1 auto; }
 .np-queue-list li .artist { opacity:.7; }
 .np-queue-list li .queue-art { width:38px; height:38px; border-radius:8px; overflow:hidden; background:rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 2px 4px -1px rgba(0,0,0,.4); }
@@ -117,7 +117,7 @@
 .np-tracklist li:hover .track-action, .np-tracklist li:not(.playing):hover .track-action { opacity:1; transform:translateY(-50%) scale(1); }
 .np-tracklist li:hover .index:not(.playing-icon), .np-tracklist li:not(.playing):hover .tl-actions .duration { opacity:0; }
 .track-action:hover { color:var(--accent) }
-.selected .track-action{ color:#021; }
+.selected .track-action{ color:var(--text-dark); }
 .selected .track-action:hover{ color:#fff; }
 .np-tracklist li:hover .track-action:active { transform:translateY(-50%) scale(.8); }
 
@@ -125,14 +125,14 @@
 .delete-track-btn { background:#fff0; border:none; color:var(--text); width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center; padding:0; cursor:pointer; opacity:0; transition: opacity var(--dur-med), transform var(--dur-med), color var(--dur-med); }
 .np-tracklist li:hover .delete-track-btn { opacity:1; }
 .delete-track-btn:hover { color:#ff4444; transform:scale(1.1); }
-.selected .delete-track-btn { color:#021; opacity:0.7; }
+.selected .delete-track-btn { color:var(--text-dark); opacity:0.7; }
 .selected .delete-track-btn:hover { color:#ff6666; opacity:1; }
 .delete-track-btn:active { transform:scale(.9); }
 .np-tracklist li:hover { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
 
 
 
-.np-tracklist li.selected { background:var(--accent); color:#021 !important; border-color:transparent; font-weight:600; }
+.np-tracklist li.selected { background:var(--accent); color:var(--text-dark) !important; border-color:transparent; font-weight:600; }
 .np-tracklist li.playing:not(.selected) { background:var(--surface-active); border-color:rgba(255,255,255,0.12); }
 .np-tracklist li .t-title { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .np-tracklist li .t-artist-col { font-size:12px; font-weight:400; opacity:.55; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; letter-spacing:.2px; text-align: center; }
@@ -143,7 +143,7 @@
 .np-tracklist li .duration { font-variant-numeric:tabular-nums; opacity:.55; font-size:12px; margin-right:4px; transition: opacity var(--dur-med); }
 .np-tracklist li.selected .duration { opacity:.9; }
 .np-tracklist li .playing-icon .material-symbols-rounded { --size:20px; color:#fff; }
-.np-tracklist li.selected .playing-icon .material-symbols-rounded { color:#021; }
+.np-tracklist li.selected .playing-icon .material-symbols-rounded { color:var(--text-dark); }
 @media (max-width:900px){ .np-tracklist li { grid-template-columns:28px 1fr 60px; } .np-tracklist li .t-artist-col { display:none; } .np-title { font-size:32px; } .np-hero-inner { padding:28px 24px 24px; } }
 @media (max-width:600px){ .np-title { font-size:26px; } .np-hero { min-height:240px; } .np-hero-inner { padding:24px 20px 20px; } }
 
@@ -157,11 +157,11 @@
     opacity:0;
     display:flex;
     justify-content:center;
-    background: radial-gradient(circle at 50% 50%, rgba(var(--bg),0.6), rgba(0,0,0,0.8));
+    background: rgba(var(--bg),0.6);
     backdrop-filter: blur(60px) saturate(120%);
     transition: opacity .35s;
     border-radius:inherit;
-    box-shadow:0 0 0 1px rgba(255,255,255,0.04) inset;
+    box-shadow:0 0 0 1px var(--text) inset;
 }
 .np-lyrics-overlay.active { pointer-events:auto; opacity:1; }
 .lyrics-section {
@@ -290,7 +290,7 @@
 }
 .track-file.current {
     background: var(--accent);
-    color: #021;
+    color: var(--text-dark);
     font-weight: bold;
     border-radius: 4px;
     padding: 2px 6px;

@@ -555,38 +555,16 @@ export default function BottomPlayer({
               <div
                 className="no-source-popup"
                 role="alert"
-                style={{
-                  position: 'absolute',
-                  bottom: '110%',
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  background: 'var(--bg3, #222)',
-                  color: 'var(--fg, #fff)',
-                  padding: '6px 10px',
-                  borderRadius: 6,
-                  fontSize: 12,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-                  maxWidth: 240,
-                  textAlign: 'center',
-                  zIndex: 10
-                }}
               >
-                <div style={{ marginBottom: 4 }}>{t('player.selectSource', 'Select a source to play this track')}</div>
+                <div className="message">{t('player.selectSource', 'Select a source to play this track')}</div>
                 <button
                   type="button"
+                  className="action-button"
                   onClick={() => {
                     try {
                       createCustomEvent('freely:selectTrack', { trackId: currentTrack.id, source: 'bottom-player-no-source' });
                       // Don't close popup here; it will close automatically when a source is selected (noSource becomes false)
                     } catch { /* ignore */ }
-                  }}
-                  style={{
-                    background: 'var(--accent, #5a67d8)',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 4,
-                    padding: '4px 8px',
-                    cursor: 'pointer'
                   }}
                 >{t('player.goSelectSource', 'Open track info')}</button>
               </div>
@@ -668,6 +646,12 @@ export default function BottomPlayer({
             max={100}
             value={volume * 100} // Convert 0-1 range to percentage
             onChange={(e) => onVolume(Number(e.target.value))}
+            onWheel={(e) => {
+              e.preventDefault();
+              const delta = e.deltaY > 0 ? -5 : 5; // Scroll up increases volume, scroll down decreases
+              const newVolume = Math.max(0, Math.min(100, volume * 100 + delta));
+              onVolume(newVolume);
+            }}
             style={{ ['--vol' as any]: `${volume * 100}%` }}
             aria-label={t('player.volume', 'Volume')}
           />

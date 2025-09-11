@@ -33,7 +33,7 @@ export default function AddToPlaylistDemo() {
   onClick={() => triggerAddToPlaylist(sampleTrack)}
         style={{
           background: 'var(--accent)',
-          color: '#021',
+          color: 'var(--text-dark)',
           border: 'none',
           padding: '12px 24px',
           borderRadius: '8px',

@@ -247,12 +247,229 @@ class SpotifyWarmup {
  * 5. Spotify client warmed up with database cache
  */
 export function useAppReady(dbReady: boolean): UseAppReadyReturn {
-  const { getApiCache, setApiCache } = useDB();
+  const { getApiCache, setApiCache, getSetting } = useDB();
   const [fontsReady, setFontsReady] = useState(false);
   const [cssReady, setCssReady] = useState(false);
   const [preloadReady, setPreloadReady] = useState(false);
   const [warmupDone, setWarmupDone] = useState(false);
   const [minTimePassed, setMinTimePassed] = useState(false);
+
+  // Apply appearance settings ASAP once DB is ready (before CSS load to avoid flash)
+  useEffect(() => {
+    if (!dbReady) return;
+
+    let cancelled = false;
+
+    const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
+    const parseBool = (v: string | null | undefined): boolean => {
+      if (v == null) return false;
+      const s = String(v).trim().toLowerCase();
+      return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+    };
+    const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
+      if (!hex) return null;
+      let h = hex.trim();
+      if (h.startsWith('#')) h = h.slice(1);
+      if (h.length === 3) {
+        const r = parseInt(h[0] + h[0], 16);
+        const g = parseInt(h[1] + h[1], 16);
+        const b = parseInt(h[2] + h[2], 16);
+        return { r, g, b };
+      }
+      if (h.length === 6) {
+        const r = parseInt(h.slice(0, 2), 16);
+        const g = parseInt(h.slice(2, 4), 16);
+        const b = parseInt(h.slice(4, 6), 16);
+        return { r, g, b };
+      }
+      return null;
+    };
+    const rgbToHsl = (r: number, g: number, b: number): { h: number; s: number; l: number } => {
+      r /= 255; g /= 255; b /= 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      let h, s, l = (max + min) / 2;
+      if (max === min) {
+        h = s = 0; // achromatic
+      } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+      }
+      return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+    };
+    const hexToHue = (hex: string): number => {
+      const rgb = hexToRgb(hex);
+      if (!rgb) return 0;
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      return hsl.h;
+    };
+
+    (async () => {
+      try {
+        const [
+          accent,
+          text,
+          textDark,
+          bgImage,
+          blurStr,
+          blurAmountStr,
+          animateStr,
+          overlayColor,
+          overlayOpacityStr,
+          bgRgb,
+          accentRgb
+        ] = await Promise.all([
+          getSetting('ui.accent'),
+          getSetting('ui.text'),
+          getSetting('ui.textDark'),
+          getSetting('ui.bg.image'),
+          getSetting('ui.bg.blur'),
+          getSetting('ui.bg.blurAmount'),
+          getSetting('ui.bg.animate'),
+          getSetting('ui.bg.overlayColor'),
+          getSetting('ui.bg.overlayOpacity'),
+          getSetting('ui.bg.rgb'),
+          getSetting('ui.accent.rgb')
+        ]);
+
+        if (cancelled) return;
+
+        const root = document.documentElement;
+        const bgEl = document.querySelector('.bg') as HTMLElement | null;
+        const setVar = (name: string, value: string | null | undefined) => {
+          if (!value && value !== '') return; // ignore null/undefined
+          try { 
+            root.style.setProperty(name, String(value)); 
+            // Also set on .bg element for background-specific variables
+            if (bgEl && (name.startsWith('--bg-') || name === '--bg-overlay')) {
+              bgEl.style.setProperty(name, String(value));
+            }
+          } catch { /* ignore */ }
+        };
+
+        // If .bg element doesn't exist yet, wait for it and retry
+        if (!bgEl && (bgImage || blurStr || blurAmountStr || animateStr || overlayColor || overlayOpacityStr)) {
+          const retryBgVars = () => {
+            const bgElement = document.querySelector('.bg') as HTMLElement | null;
+            if (bgElement) {
+              // Apply background variables to .bg element
+              if (bgImage && bgImage.trim()) {
+                const url = bgImage.trim().replace(/"/g, '\\"');
+                bgElement.style.setProperty('--bg-image', `url("${url}")`);
+              }
+              
+              const blur = parseBool(blurStr);
+              const blurAmount = blurAmountStr != null ? Math.max(0, Math.min(200, Number(blurAmountStr))) : 200;
+              if (blur && blurAmount > 0) {
+                bgElement.style.setProperty('--bg-filter', `blur(${blurAmount}px) brightness(0.7)`);
+                bgElement.style.setProperty('--bg-size', '200%');
+                bgElement.style.setProperty('--bg-radius', '100em');
+              } else {
+                bgElement.style.setProperty('--bg-filter', 'none');
+                bgElement.style.setProperty('--bg-size', '100%');
+                bgElement.style.setProperty('--bg-radius', '0');
+              }
+
+              const animate = parseBool(animateStr);
+              bgElement.style.setProperty('--bg-animation', animate ? 'rotate 40s linear infinite' : 'none');
+
+              if (overlayColor || overlayOpacityStr) {
+                let rgba: string | null = null;
+                if (overlayColor) {
+                  const rgb = hexToRgb(overlayColor) || { r: 0, g: 0, b: 0 };
+                  let op = 0;
+                  if (overlayOpacityStr != null) {
+                    const raw = Number(overlayOpacityStr);
+                    if (!Number.isNaN(raw)) {
+                      op = raw > 1 ? clamp(raw / 100, 0, 1) : clamp(raw, 0, 1);
+                    }
+                  }
+                  rgba = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${op})`;
+                }
+                if (rgba) bgElement.style.setProperty('--bg-overlay', rgba);
+              }
+            }
+          };
+          
+          // Try immediately
+          retryBgVars();
+          
+          // Also try after a short delay in case DOM isn't ready yet
+          setTimeout(retryBgVars, 100);
+        }
+
+        // Core colors
+        if (accent) setVar('--accent', accent);
+        // Prefer stored triplet; if missing but we have hex, compute on the fly
+        if (accentRgb) {
+          setVar('--accent-rgb', accentRgb);
+        } else if (accent) {
+          const rgb = hexToRgb(accent);
+          if (rgb) setVar('--accent-rgb', `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+        }
+        if (accent) {
+          const hue = hexToHue(accent);
+          setVar('--accent-hue', String(hue));
+        }
+        if (text) setVar('--text', text);
+        if (textDark) setVar('--text-dark', textDark);
+        if (textDark) {
+          const hue = hexToHue(textDark);
+          setVar('--text-dark-hue', String(hue));
+        }
+        if (bgRgb) setVar('--bg', bgRgb); // expects "r, g, b"
+
+        // Background image
+        if (bgImage && bgImage.trim()) {
+          const url = bgImage.trim().replace(/"/g, '\\"');
+          setVar('--bg-image', `url("${url}")`);
+        }
+
+        // Blur controls size/radius/filter
+        const blur = parseBool(blurStr);
+        const blurAmount = blurAmountStr != null ? Math.max(0, Math.min(200, Number(blurAmountStr))) : 200;
+        if (blur && blurAmount > 0) {
+          setVar('--bg-filter', `blur(${blurAmount}px) brightness(0.7)`);
+          setVar('--bg-size', '200%');
+          setVar('--bg-radius', '100em');
+        } else {
+          setVar('--bg-filter', 'none');
+          setVar('--bg-size', '100%');
+          setVar('--bg-radius', '0');
+        }
+
+        // Animation
+        const animate = parseBool(animateStr);
+        setVar('--bg-animation', animate ? 'rotate 40s linear infinite' : 'none');
+
+        // Overlay color + opacity
+        if (overlayColor || overlayOpacityStr) {
+          let rgba: string | null = null;
+          if (overlayColor) {
+            const rgb = hexToRgb(overlayColor) || { r: 0, g: 0, b: 0 };
+            let op = 0;
+            if (overlayOpacityStr != null) {
+              const raw = Number(overlayOpacityStr);
+              if (!Number.isNaN(raw)) {
+                op = raw > 1 ? clamp(raw / 100, 0, 1) : clamp(raw, 0, 1);
+              }
+            }
+            rgba = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${op})`;
+          }
+          if (rgba) setVar('--bg-overlay', rgba);
+        }
+      } catch (e) {
+        console.warn('🎨 Failed to apply appearance settings early:', e);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [dbReady, getSetting]);
 
   // Minimum splash visibility (avoid flash)
   useEffect(() => {

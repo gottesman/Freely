@@ -1,42 +1,35 @@
 /* Minimal splash styles */
-html,
-body,
-#root {
-    margin: 0;
-    padding: 0;
+html {
     width: 100%;
     height: 100%;
-    background: transparent;
-    font-family: system-ui, sans-serif;
+}
+body{
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    font-family: system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    pointer-events: none;
 }
 
-.app-loading {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-}
-
-.app-loading .splash-box {
+.splash-container {
+    background: url("splash.png") no-repeat center center fixed;
     position: relative;
     width: 400px;
     height: 300px;
     display: flex;
-    align-items: center;
     justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    animation: fade-in 0.5s 
+ease-in;
+    margin: 20px;
+    box-shadow: 0 5px 30px -15px;
+    border-radius: 16px;
+    overflow: hidden;
 }
 
-.app-loading .splash-box img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    user-select: none;
-    pointer-events: none;
-}
-
-.app-loading .splash-status {
+.loading-text {
     position: absolute;
     bottom: 10px;
     left: 0;
@@ -45,5 +38,10 @@ body,
     font-size: 12px;
     letter-spacing: .5px;
     color: #cfe4ff;
-    text-shadow: 0 2px 4px rgba(0 0 0 60%);
+    text-shadow: 0 2px 4px #0000008c;
+}
+
+@keyframes fade-in {
+    from { opacity: 0;}
+    to { opacity: 1; }
 }

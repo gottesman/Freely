@@ -1,16 +1,64 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');
 
 // YouTube integration with optimized initialization
-let YtDlp = null;
-let ytdlpAvailable = false;
+let youtubeDlAvailable = false;
+let youtubeDlPath = null;
 
-try {
-  ({ YtDlp } = require('ytdlp-nodejs'));
-  ytdlpAvailable = true;
-} catch (_) {
-  console.warn('ytdlp-nodejs not installed; youtube features disabled');
+// User agent for YouTube requests
+const YOUTUBE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+/**
+ * Execute youtube-dl command and return the result
+ */
+function executeYoutubeDl(args) {
+  return new Promise((resolve, reject) => {
+    if (!youtubeDlAvailable || !youtubeDlPath) {
+      reject(new Error('youtube-dl not available'));
+      return;
+    }
+
+    // Validate binary exists and is accessible
+    if (!fs.existsSync(youtubeDlPath)) {
+      reject(new Error(`youtube-dl binary not found at: ${youtubeDlPath}`));
+      return;
+    }
+
+    console.log(`[youtube-dl] Executing: ${youtubeDlPath} with args:`, args);
+
+    const child = spawn(youtubeDlPath, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        reject(new Error(`youtube-dl exited with code ${code}: ${stderr}`));
+      }
+    });
+
+    child.on('error', (err) => {
+      console.error(`[youtube-dl] Spawn error for ${youtubeDlPath}:`, err.message);
+      console.error(`[youtube-dl] Error code:`, err.code);
+      console.error(`[youtube-dl] Error errno:`, err.errno);
+      reject(err);
+    });
+  });
 }
 
 // Cache configuration
@@ -199,108 +247,120 @@ class YtDlpCache {
 }
 
 /**
- * Optimized YtDlp patching and instance management with caching
+ * Optimized YouTube-DL manager with caching
  */
 class YtDlpManager {
   static instance = null;
   static initialized = false;
   static cache = new YtDlpCache();
 
-  static patchYtDlp() {
-    if (!YtDlp || !YtDlp.prototype) return;
-    
-    // Monkey-patch to avoid ffmpeg/ffprobe auto-download
-    const methodsToPatch = ['downloadFFmpeg', 'ensureFFmpeg', 'downloadFFprobe', 'ensureFFprobe'];
-    for (const method of methodsToPatch) {
-      if (typeof YtDlp.prototype[method] === 'function') {
-        try {
-          YtDlp.prototype[method] = async function() { return null; };
-        } catch (_) { /* ignore */ }
-      }
-    }
-  }
-
-  static findBinaryPath() {
-    if (!ytdlpAvailable) return null;
-    
-    const candidates = [];
-    const platform = process.platform;
-    const binNames = platform === 'win32' 
-      ? ['yt-dlp.exe', 'yt-dlp_x86.exe']
-      : ['yt-dlp', 'yt-dlp_macos', 'yt-dlp_linux_armv7l', 'yt-dlp_linux_aarch64'];
-
-    // Environment override
-    if (process.env.YTDLP_BINARY_PATH) {
-      candidates.push(process.env.YTDLP_BINARY_PATH);
-    }
-
-    // Local bin folders
-    const localBin = path.join(__dirname, '..', 'bin');
-    binNames.forEach(name => candidates.push(path.join(localBin, name)));
-    
-    // Parent directory fallback
-    candidates.push(path.join(__dirname, '..', '..', 'bin', 'yt-dlp'));
-    
-    // System path (last resort)
-    binNames.forEach(name => candidates.push(name));
-
-    // Find existing binary
-    for (const candidate of candidates) {
-      try {
-        if (candidate && fs.existsSync(candidate)) {
-          return candidate;
-        }
-      } catch (_) { /* ignore */ }
-    }
-    return null;
-  }
-
-  static createInstance() {
-    if (!ytdlpAvailable) return null;
-    if (this.instance && this.initialized) return this.instance;
-
-    const binaryPath = this.findBinaryPath();
-    const opts = { 
-      ffmpegPath: '', 
-      autoDownload: false, 
-      downloadFFmpeg: false 
-    };
-    
-    if (binaryPath) opts.binaryPath = binaryPath;
+  static async initialize() {
+    if (this.initialized) return;
 
     try {
-      this.instance = new YtDlp(opts);
+      const platform = process.platform;
+      const binName = platform === 'win32' ? 'youtube-dl.exe' : 'youtube-dl';
+
+      // Look for bundled binary in multiple possible locations
+      // Use the same approach as BASS DLL loading - relative paths first
+      const bundledPaths = [
+        // Relative paths (same as BASS approach)
+        binName,
+        path.join('.', binName),
+        path.join('.', 'bin', binName),
+        path.join('bin', binName),
+        // Windows AppData paths (most likely for Tauri)
+        path.join(os.homedir(), 'AppData', 'Local', 'Freely Player', 'bin', binName),
+        path.join(os.homedir(), 'AppData', 'Local', 'Freely Player', binName),
+        // Try other common app names
+        path.join(os.homedir(), 'AppData', 'Local', 'freely-player', 'bin', binName),
+        path.join(os.homedir(), 'AppData', 'Local', 'freely-player', binName),
+        // Tauri production paths
+        path.join(process.resourcesPath || '', 'bin', binName),
+        path.join(process.resourcesPath || '', binName),
+        // Development/fallback paths
+        path.join(__dirname, '..', '..', 'bin', binName),
+        path.join(__dirname, '..', '..', 'src-tauri', 'bin', binName),
+        // Relative to executable
+        path.join(path.dirname(process.execPath), 'bin', binName),
+        path.join(path.dirname(process.execPath), binName)
+      ];
+
+      console.log('[youtube-dl] Looking for binary on platform:', platform);
+      console.log('[youtube-dl] Binary name:', binName);
+      console.log('[youtube-dl] process.resourcesPath:', process.resourcesPath);
+      console.log('[youtube-dl] process.execPath:', process.execPath);
+      console.log('[youtube-dl] os.homedir():', os.homedir());
+      console.log('[youtube-dl] __dirname:', __dirname);
+
+      for (const binPath of bundledPaths) {
+        const exists = fs.existsSync(binPath);
+        console.log(`[youtube-dl] Checking path: ${binPath} - ${exists ? 'EXISTS' : 'NOT FOUND'}`);
+        
+        if (exists) {
+          // On Unix-like systems, ensure the binary is executable
+          if (platform !== 'win32') {
+            try {
+              fs.chmodSync(binPath, '755');
+              console.log('[youtube-dl] Set execute permissions for:', binPath);
+            } catch (e) {
+              console.warn('[youtube-dl] Failed to set execute permissions:', e.message);
+            }
+          }
+
+          youtubeDlPath = binPath;
+          youtubeDlAvailable = true;
+          console.log('[youtube-dl] ✅ Using bundled binary:', binPath);
+          break;
+        }
+      }
+
+      if (!youtubeDlAvailable) {
+        console.warn('[youtube-dl] Bundled binary not found in any expected location');
+        console.warn('[youtube-dl] This may cause YouTube functionality to fail');
+        console.warn('[youtube-dl] Checked paths:', bundledPaths);
+
+        // Last resort: try to find any youtube-dl binary in common locations
+        const commonLocations = [
+          '/usr/bin/youtube-dl',
+          '/usr/local/bin/youtube-dl',
+          '/opt/homebrew/bin/youtube-dl',
+          'C:\\Program Files\\youtube-dl\\youtube-dl.exe',
+          'C:\\youtube-dl\\youtube-dl.exe'
+        ];
+
+        for (const commonPath of commonLocations) {
+          if (fs.existsSync(commonPath)) {
+            console.log('[youtube-dl] Found binary in common location:', commonPath);
+            youtubeDlPath = commonPath;
+            youtubeDlAvailable = true;
+            break;
+          }
+        }
+      }
+
       this.initialized = true;
-      if (binaryPath) {
-        console.log('[youtube] using existing yt-dlp binary', binaryPath);
-      }
-      return this.instance;
+      console.log('[youtube-dl] Manager initialized successfully');
     } catch (e) {
-      console.warn('[youtube] failed to construct YtDlp instance:', e.message);
-      try {
-        this.instance = new YtDlp();
-        this.initialized = true;
-        return this.instance;
-      } catch (e2) {
-        console.error('[youtube] fallback YtDlp() failed:', e2.message);
-        return null;
-      }
+      console.error('[youtube-dl] Failed to initialize:', e.message);
     }
   }
 
   static getInstance() {
-    return this.createInstance();
+    if (!this.instance) {
+      this.instance = new YtDlpManager();
+    }
+    return this.instance;
   }
 
   static getCapabilityInfo() {
     return {
-      loaded: ytdlpAvailable,
-      patched: !!(YtDlp && typeof YtDlp.prototype.downloadFFmpeg === 'function' && 
-                 YtDlp.prototype.downloadFFmpeg.toString().includes('return null'))
+      loaded: youtubeDlAvailable,
+      binaryPath: youtubeDlPath
     };
   }
 
-  async getVideoInfo(target, formatPreference = 'bestaudio[ext=m4a]') {
+  async getVideoInfo(target, formatPreference = '140') {
     const cacheKey = YtDlpManager.cache.generateCacheKey(target, formatPreference);
     
     // Check cache first
@@ -309,10 +369,10 @@ class YtDlpManager {
       return cached;
     }
 
-    // Check for inflight request to prevent duplicate ytdlp processes
+    // Check for inflight request to prevent duplicate processes
     const inflightPromise = YtDlpManager.cache.inflightRequests.get(cacheKey);
     if (inflightPromise) {
-      console.log('[ytdlp] Deduplicating request for:', target);
+      console.log('[youtube-dl] Deduplicating request for:', target);
       return await inflightPromise;
     }
 
@@ -332,136 +392,165 @@ class YtDlpManager {
   }
 
   async _executeVideoInfoRequest(target, formatPreference, cacheKey) {
-    const ytdlp = YtDlpManager.getInstance();
-    if (!ytdlp) throw new Error('ytdlp unavailable');
+    if (!youtubeDlAvailable) {
+      throw new Error('youtube-dl not available');
+    }
 
-    console.log('[ytdlp] Executing fresh request for:', target);
+    console.log('[youtube-dl] Executing request for:', target);
 
-    const infoArgs = [
-      '--no-warnings',
-      '--no-config',
-      '--no-playlist',
-      '--skip-download',
-      '--no-call-home',
-      '--no-check-certificate',
-      '--no-mtime',
-      '--no-embed-thumbnail',
-      '--dump-single-json',
-      '--socket-timeout', '2',
-      '--retries', '0',
-      '--no-simulate',
-      '-f', formatPreference
+    // Extract video ID from URL if needed
+    let videoId = target;
+    if (target.includes('youtube.com') || target.includes('youtu.be')) {
+      const urlMatch = target.match(/[?&]v=([^?&]+)/) || target.match(/youtu\.be\/([^?&]+)/);
+      if (urlMatch) {
+        videoId = urlMatch[1];
+      }
+    }
+
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    // Convert yt-dlp style format selectors to youtube-dl format IDs
+    let youtubeDlFormat = formatPreference;
+    if (formatPreference.includes('bestaudio')) {
+      // Convert yt-dlp bestaudio selectors to youtube-dl format IDs
+      if (formatPreference.includes('ext=m4a') || formatPreference.includes('m4a')) {
+        youtubeDlFormat = '140'; // M4A audio format
+      } else if (formatPreference.includes('ext=webm') || formatPreference.includes('webm')) {
+        youtubeDlFormat = '251'; // WebM audio format
+      } else {
+        youtubeDlFormat = '140'; // Default to M4A
+      }
+    }
+
+    // First, get basic metadata using --dump-json flag
+    const jsonArgs = [
+      '--dump-json',
+      '-f', youtubeDlFormat,
+      videoUrl,
+      '--user-agent', YOUTUBE_USER_AGENT
     ];
 
     const { SERVER_CONSTANTS } = require('../config/constants');
-    const INFO_TIMEOUT = SERVER_CONSTANTS.TIMEOUTS.YTDLP_INFO;
+    const INFO_TIMEOUT = SERVER_CONSTANTS.TIMEOUTS.YTDLP_INFO || 30000;
 
     try {
-      const info = await Promise.race([
-        ytdlp.getInfoAsync(target, { args: infoArgs }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('ytdlp-info-timeout')), INFO_TIMEOUT))
+      console.log('[youtube-dl] Getting metadata for:', videoId);
+      const jsonResult = await Promise.race([
+        executeYoutubeDl(jsonArgs),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('youtube-dl-json-timeout')), INFO_TIMEOUT)
+        )
       ]);
 
-      return info;
-    } catch (e) {
-      // Fallback to basic call
-      return await Promise.race([
-        ytdlp.getInfoAsync(target),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('ytdlp-info-timeout')), INFO_TIMEOUT))
+      let metadata = {};
+      try {
+        metadata = JSON.parse(jsonResult);
+      } catch (parseErr) {
+        console.warn('[youtube-dl] Failed to parse JSON metadata:', parseErr.message);
+        // Continue with basic info
+      }
+
+      // Then get the direct URL
+      const urlArgs = [
+        '-f', youtubeDlFormat,
+        videoUrl,
+        '--user-agent', YOUTUBE_USER_AGENT,
+        '-g'  // Get URL only
+      ];
+
+      console.log('[youtube-dl] Getting direct URL for:', videoId);
+      const urlResult = await Promise.race([
+        executeYoutubeDl(urlArgs),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('youtube-dl-url-timeout')), INFO_TIMEOUT)
+        )
       ]);
+
+      const directUrl = urlResult.trim();
+      
+      // Create a more complete info object compatible with the route expectations
+      return {
+        id: videoId,
+        url: videoUrl,
+        directUrl: directUrl,
+        format: youtubeDlFormat, // Use the converted format
+        extractor: 'youtube',
+        _type: 'video',
+        // Add metadata from JSON dump
+        title: metadata.title || null,
+        duration: metadata.duration || null,
+        uploader: metadata.uploader || null,
+        uploader_id: metadata.uploader_id || null,
+        view_count: metadata.view_count || null,
+        like_count: metadata.like_count || null,
+        upload_date: metadata.upload_date || null,
+        // Create a formats array for compatibility
+        formats: [{
+          url: directUrl,
+          format_id: youtubeDlFormat, // Use the converted format
+          ext: 'm4a',
+          acodec: 'aac',
+          vcodec: 'none',
+          abr: 128,
+          filesize: metadata.filesize || null,
+          format_note: 'DASH audio',
+          quality: 128,
+          requested: true
+        }]
+      };
+
+    } catch (e) {
+      console.error('[youtube-dl] Request failed:', e.message);
+      throw new Error(`Failed to get video info: ${e.message}`);
     }
   }
 
   async searchVideos(query, limit = 5) {
-    const cacheKey = YtDlpManager.cache.generateCacheKey(`search:${query}`, limit.toString());
-    
-    // Check cache first
-    const cached = await YtDlpManager.cache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    // Check for inflight request
-    const inflightPromise = YtDlpManager.cache.inflightRequests.get(cacheKey);
-    if (inflightPromise) {
-      console.log('[ytdlp] Deduplicating search request for:', query);
-      return await inflightPromise;
-    }
-
-    // Create new search request
-    const requestPromise = this._executeSearchRequest(query, limit, cacheKey);
-    YtDlpManager.cache.inflightRequests.set(cacheKey, requestPromise);
-
-    try {
-      const result = await requestPromise;
-      // Cache the result
-      await YtDlpManager.cache.set(cacheKey, result);
-      return result;
-    } finally {
-      // Always clean up inflight request
-      YtDlpManager.cache.inflightRequests.delete(cacheKey);
-    }
+    // YouTube-DL doesn't support search functionality
+    // This would require implementing search through YouTube's web interface
+    console.warn('[youtube-dl] Search not supported with youtube-dl binary');
+    return [];
   }
 
   async _executeSearchRequest(query, limit, cacheKey) {
-    const ytdlp = YtDlpManager.getInstance();
-    if (!ytdlp) throw new Error('ytdlp unavailable');
-
-    console.log('[ytdlp] Executing fresh search for:', query);
-
-    const searchTarget = `ytmusicsearch${limit}:${query}`;
-    const { SERVER_CONSTANTS } = require('../config/constants');
-    const SEARCH_TIMEOUT = SERVER_CONSTANTS.TIMEOUTS.YTDLP_SEARCH;
-
-    try {
-      const info = await Promise.race([
-        ytdlp.getInfoAsync(searchTarget, { 
-          args: ['--no-warnings','--no-config','--dump-single-json','--no-playlist','--socket-timeout','3','--retries','0'] 
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('ytdlp-search-timeout')), SEARCH_TIMEOUT))
-      ]);
-
-      return Array.isArray(info?.entries) ? info.entries : (info ? [info] : []);
-    } catch (e) {
-      // Fallback to ytsearch
-      try {
-        const info = await Promise.race([
-          ytdlp.getInfoAsync(`ytsearch${limit}:${query}`, { 
-            args: ['--no-warnings','--no-config','--dump-single-json','--no-playlist','--socket-timeout','3','--retries','0'] 
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('ytdlp-search-timeout')), SEARCH_TIMEOUT))
-        ]);
-
-        return Array.isArray(info?.entries) ? info.entries : (info ? [info] : []);
-      } catch (e2) {
-        console.warn('[YtDlpManager] search fallbacks failed', e2?.message || e2);
-        return [];
-      }
-    }
+    // Not implemented for youtube-dl
+    return [];
   }
 
   pickAudioFormat(info) {
-    if (!info || !Array.isArray(info.formats)) return null;
-
-    // prefer requested_formats (present when -f chosen)
-    if (info.requested_formats && info.requested_formats[0] && info.requested_formats[0].url) {
-      return info.requested_formats[0];
+    // Check if we have a formats array (compatibility mode)
+    if (info && Array.isArray(info.formats)) {
+      // Find the best audio format
+      const audioFormats = info.formats.filter(f => f && f.acodec && f.acodec !== 'none');
+      
+      // Prefer formats with URLs
+      const withUrl = audioFormats.filter(f => f.url);
+      if (withUrl.length > 0) {
+        // Return the first format with a URL (they're already sorted by preference)
+        return withUrl[0];
+      }
+      
+      // Fallback to any audio format
+      if (audioFormats.length > 0) {
+        return audioFormats[0];
+      }
     }
 
-    // Candidate predicates - prefer m4a/mp4, then webm/opus, then any format with acodec != 'none'
-    const preferExts = ['m4a', 'mp4', 'webm', 'opus', 'aac', 'mp3', 'vorbis'];
-    
-    // Try preferred ext with url
-    for (const ext of preferExts) {
-      const f = info.formats.find(ff => ff.ext === ext && ff.url && ff.acodec && ff.acodec !== 'none');
-      if (f) return f;
-    }
-    
-    // fallback: any format with audio codec and URL
-    const anyAudio = info.formats.find(ff => ff.url && ff.acodec && ff.acodec !== 'none');
-    if (anyAudio) return anyAudio;
-    
-    return null;
+    // Fallback to direct URL mode (original implementation)
+    if (!info || !info.directUrl) return null;
+
+    // Return a simplified format object
+    return {
+      url: info.directUrl,
+      format_id: info.format || '140',
+      ext: 'm4a', // Format 140 is typically m4a
+      acodec: 'aac',
+      vcodec: 'none',
+      abr: 128, // Approximate bitrate for format 140
+      filesize: null,
+      format_note: 'DASH audio',
+      quality: 128
+    };
   }
 
   static getCacheStats() {
@@ -475,7 +564,9 @@ class YtDlpManager {
   }
 }
 
-// Initialize patching
-YtDlpManager.patchYtDlp();
+// Initialize the manager
+YtDlpManager.initialize().catch(e => {
+  console.error('[youtube-dl] Initialization failed:', e.message);
+});
 
 module.exports = YtDlpManager;

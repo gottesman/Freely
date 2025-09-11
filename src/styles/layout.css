@@ -1,5 +1,15 @@
 /* App Shell Layout */
-.app { border-radius: var(--app-border-radius); overflow:hidden; display:flex; flex-direction:column; background: rgba(var(--bg), var(--bg-opacity)); height:calc(100vh - (var(--app-shadow-size) * 2)); margin: var(--app-shadow-size); box-shadow: inset 0 0 1px 1px var(--app-border-color), var(--app-shadow-color) 0 2px var(--app-shadow-size) 0; }
+.app {
+    border-radius: var(--app-border-radius);
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+
+    /* background: rgba(var(--bg), var(--bg-opacity)); */
+    height:calc(100vh - (var(--app-shadow-size) * 2));
+    margin: var(--app-shadow-size);
+    box-shadow: inset 0 0 1px 1px var(--app-border-color), var(--app-shadow-color) 0 2px var(--app-shadow-size) 0;
+}
 .app::before { content:""; position:absolute; inset:0; background: var(--color-bg-solid); z-index:-1; }
 
 .maximized {
@@ -50,3 +60,193 @@
 @keyframes splash-status-pulse { 0%,100% { opacity:.9 } 50% { opacity:.55 } }
 
 .overflow-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Range Inputs (sliders) themed with design tokens */
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    background: transparent;
+    cursor: pointer;
+
+    /* Consumers can set --range-progress: 0%..100% inline to color the filled part on WebKit */
+}
+
+/* WebKit/Chromium track */
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 999px;
+    background:
+        linear-gradient(var(--accent), var(--accent)) 0 0/var(--range-progress, 0%) 100% no-repeat,
+        color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+/* WebKit/Chromium thumb */
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: calc((6px - 16px) / 2);
+    transition: transform var(--dur-med) var(--ease-standard), filter var(--dur-med) var(--ease-standard);
+}
+input[type="range"]:hover::-webkit-slider-thumb { filter: brightness(1.1); }
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(0.92); }
+
+/* Firefox track */
+input[type="range"]::-moz-range-track {
+    height: 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+/* Firefox progress (filled part) */
+input[type="range"]::-moz-range-progress {
+    height: 6px;
+    border-radius: 999px 0 0 999px;
+    background: var(--accent);
+}
+
+/* Firefox thumb */
+input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    transition: transform var(--dur-med) var(--ease-standard), filter var(--dur-med) var(--ease-standard);
+}
+input[type="range"]:hover::-moz-range-thumb { filter: brightness(1.1); }
+input[type="range"]:active::-moz-range-thumb { transform: scale(0.92); }
+
+/* Focus styles */
+input[type="range"]:focus-visible { outline: none; }
+input[type="range"]:focus-visible::-webkit-slider-runnable-track,
+input[type="range"]:focus-visible::-moz-range-track {
+    box-shadow: 0 0 0 1px var(--accent);
+    border-color: var(--accent);
+}
+
+/* Checkbox Input (custom styled) */
+input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: var(--surface-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    position: relative;
+    transition: background var(--dur-med), border-color var(--dur-med), box-shadow var(--dur-med);
+    flex-shrink: 0;
+}
+
+input[type="checkbox"]:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-soft);
+}
+
+input[type="checkbox"]:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+
+input[type="checkbox"]::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 10px;
+    height: 10px;
+    background: var(--accent);
+    border-radius: 2px;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+    transition: opacity var(--dur-med), transform var(--dur-med);
+}
+
+input[type="checkbox"]:checked::before {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+input[type="checkbox"]:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+input[type="checkbox"]:disabled:hover {
+    background: var(--surface-3);
+    border-color: var(--border-subtle);
+}
+
+/* Select Elements */
+
+/*
+select {
+    background: var(--surface-3);
+    border: 1px solid var(--border-subtle);
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+    border-radius: var(--radius-sm);
+    padding: 8px 32px 8px 12px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color var(--dur-med), background var(--dur-med), box-shadow var(--dur-med);
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 16px;
+}
+
+select:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-soft);
+}
+
+select:focus-visible {
+    border-color: var(--accent);
+    background: var(--surface-3);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+*/
+
+select option {
+    background: var(--color-bg-solid);
+    color: var(--text);
+    padding: 8px 12px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+select option:hover,
+select option:focus {
+    background: var(--accent);
+}
+
+select option:checked {
+    background: var(--text);
+    color: var(--color-bg-solid);
+}
+
+/*
+select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+select:disabled:hover {
+    background: var(--surface-3);
+    border-color: var(--border-subtle);
+}
+*/
+.dot.active {
+    outline: solid 2px;
+}

@@ -424,8 +424,16 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
   // Event handlers
   const handleSourceSelect = useCallback(async (source: any, sourceKey: string) => {
-    if (state.loadingKeys[sourceKey] || state.errors[sourceKey]) return;
+    // If source is loading, do nothing
+    if (state.loadingKeys[sourceKey]) return;
 
+    // If source is not loaded or has error, trigger loading
+    if (!state.fileLists[sourceKey] || state.errors[sourceKey]) {
+      handleSourceData(source, sourceKey);
+      return;
+    }
+
+    // Source is loaded, proceed with selection
     const isCurrentlySelected = state.selectedSourceKey === sourceKey;
     const newKey = isCurrentlySelected ? undefined : sourceKey;
 
@@ -461,7 +469,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
         // Ignore persistence errors
       }
     }
-  }, [state.loadingKeys, state.errors, state.selectedSourceKey, track?.id, setSetting]);
+  }, [state.loadingKeys, state.errors, state.selectedSourceKey, track?.id, setSetting, handleSourceData]);
 
   const handleToggleFiles = useCallback((source: any, sourceKey: string) => {
     if (state.fileLists[sourceKey]) {
@@ -596,7 +604,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                             </div>
                           )}
                           
-                          {!isLoading && (
+                          {!isLoading && !(files && source.type !== 'torrent') && (
                             <button
                               type="button"
                               className={`btn-icon ts-files ${hasError ? (hasError.includes('Error') ? 'btn-error' : 'btn-warning') : ''}`}

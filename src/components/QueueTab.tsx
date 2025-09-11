@@ -132,6 +132,7 @@ const QueueItem = React.memo<QueueItemProps>(({
       trackData,
       queueList: queueIds,
       currentIndex,
+      queueRemovable: !isActive,
       queueOptions: !isActive
     });
     

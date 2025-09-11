@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "0.10.5",
+  "version": "0.11.6",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -14,9 +14,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:server": "webpack --config webpack.server.config.js",
-    "fetch:ytdlp": "node scripts/fetch-ytdlp.js",
+    "fetch:ytdlp": "node scripts/fetch-youtubedl.js",
     "fetch:bass": "node scripts/fetch-bass.js",
-    "version:update": "node scripts/update-version.js"
+    "version:update": "node scripts/update-version.js",
+    "postinstall": "prebuild-install --verbose || echo 'Prebuilds not available, will use source'"
   },
   "dependencies": {
     "@tauri-apps/plugin-shell": "^2.3.1",
@@ -29,8 +30,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "utp-native": "^2.5.3",
-    "webtorrent": "^1.9.7",
-    "ytdlp-nodejs": "^2.3.4"
+    "webtorrent": "^1.9.7"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.0.0-beta.18",
@@ -42,6 +42,7 @@
     "@types/ws": "^8.5.10",
     "@vitejs/plugin-react": "^4.3.1",
     "npm-run-all": "^4.1.5",
+    "prebuild-install": "^7.1.1",
     "prettier": "^3.3.1",
     "stylelint": "^16.6.1",
     "stylelint-config-standard": "^36.0.0",

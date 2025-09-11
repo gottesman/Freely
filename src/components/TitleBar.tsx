@@ -5,7 +5,11 @@ import { useI18n } from '../core/i18n';
 const NAV_BUTTONS = [
   { id: 'home', icon: 'home', key: 'nav.home' },
   { id: 'settings', icon: 'settings', key: 'nav.settings' },
+] as const;
+
+const NAV_BUTTONS2 = [
   { id: 'apis', icon: 'terminal', key: 'nav.dev' },
+  { id: 'bug', icon: 'bug_report', key: 'bug.report' }
 ] as const;
 
 const WINDOW_BUTTONS = [
@@ -139,6 +143,18 @@ export default function TitleBar({
       />
     )), [t, activeTab, handleNavigate]);
 
+    const navigationButtons2 = useMemo(() => 
+    NAV_BUTTONS2.map(({ id, icon, key }) => (
+      <NavButton
+        key={id}
+        id={id}
+        icon={icon}
+        label={t(key)}
+        isActive={activeTab === id}
+        onClick={() => handleNavigate(id)}
+      />
+    )), [t, activeTab, handleNavigate]);
+
   // Memoized window control buttons
   const windowControlButtons = useMemo(() => {
     const buttons = [
@@ -170,14 +186,10 @@ export default function TitleBar({
     <div className="titlebar">
       <div className="titlebar-left">
         {icon ? (
-          <div className="titlebar-icon" style={{ backgroundImage: `url(${icon})` }} />
+          <div className="titlebar-icon" style={{ backgroundImage: `url(${icon})`, marginRight: 10 }} />
         ) : (
-          <div className="titlebar-icon placeholder" />
+          <div className="titlebar-icon placeholder" style={{marginRight: 10 }}/>
         )}
-        <div className="titlebar-title">{resolvedTitle}</div>
-      </div>
-
-      <div className="titlebar-nav">
         {navigationButtons}
         <div className={searchContainerClass}>
           <span
@@ -201,8 +213,13 @@ export default function TitleBar({
         </div>
       </div>
 
-      <div className="titlebar-right titlebar-window-buttons">
-        {windowControlButtons}
+      <div className="titlebar-nav">
+        <div className="titlebar-title">{resolvedTitle}</div>
+      </div>
+
+      <div className="titlebar-right">
+        {navigationButtons2}
+          <div className='titlebar-window-buttons'>{windowControlButtons}</div>        
       </div>
     </div>
   );

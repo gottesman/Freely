@@ -13,6 +13,7 @@ import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts';
 import { useAppReady } from './core/ready';
 import { useI18n, I18nProvider } from './core/i18n';
 import { PromptProvider } from './core/PromptContext';
+import { runTauriCommand } from './core/tauriCommands';
 import { ContextMenuProvider } from './core/ContextMenuContext';
 
 // Constants for performance optimization
@@ -256,6 +257,38 @@ function Main() {
 
   // Custom hooks
   useDebouncedSearch(searchState, setSearchState);
+
+  // Notify Tauri when app is ready
+  useEffect(() => {
+    if (ready) {
+      // Call the Tauri command when app is ready using the helper function
+      runTauriCommand('app_ready').catch(console.error);
+    }
+  }, [ready]);
+
+  // Send loading states to splashscreen
+  useEffect(() => {
+    if (ready) return; // Don't send updates once ready
+
+    let statusText = 'Initializing...';
+    
+    if (states.dbReady) {
+      statusText = 'Database ready.';
+    } if (states.fontsReady) {
+      statusText = 'Fonts loaded.';
+    } if (states.cssReady) {
+      statusText = 'Styles applied.';
+    } if (states.preloadReady) {
+      statusText = 'Environment ready.';
+    } if (states.warmupDone) {
+      statusText = 'Services warmed up.';
+    } if (states.minTimePassed) {
+      statusText = 'Finalizing setup...';
+    }
+
+    // Send status to splashscreen
+    runTauriCommand('update_loading_status', { status: statusText }).catch(console.error);
+  }, [ready, states]);
 
   // Update current track ID ref
   useEffect(() => {
@@ -681,24 +714,6 @@ function Main() {
   const closeAddModal = useCallback(() => { 
     setModalState(prev => ({ ...prev, open: false, track: null, fromBottomPlayer: false })); 
   }, []);
-
-  // If app not ready show splash
-  if (!ready) {
-    return (
-      <div className="app-loading">
-        <div className="splash-box" role="status" aria-live="polite">
-          <img src="splash.png" alt={t('app.title')} />
-          <div className="splash-status">
-            {!states.dbReady && t('loading.db')}
-            {states.dbReady && !states.fontsReady && t('loading.fonts')}
-            {states.fontsReady && !states.cssReady && t('loading.css')}
-            {states.cssReady && !states.preloadReady && t('loading.services')}
-            {states.preloadReady && !states.warmupDone && t('loading.warmup')}
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className={`${'app'}${(uiState.draggingLeft || uiState.draggingRight) ? ' is-resizing' : ''}${isMaximized ? ' maximized' : ''}`}>
