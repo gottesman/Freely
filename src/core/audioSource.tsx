@@ -22,9 +22,6 @@ const URL_PATTERNS = {
 
 const URL_TEMPLATES = {
     TORRENT: (id: string) => `http://localhost:9000/stream/${encodeURIComponent(id)}/0`,
-    YOUTUBE_URL: (url: string) => `http://localhost:9000/source/youtube?url=${encodeURIComponent(url)}&get=stream`,
-    YOUTUBE_ID: (id: string) => `http://localhost:9000/source/youtube?id=${encodeURIComponent(id)}&get=stream`,
-    YOUTUBE_FALLBACK: (url: string) => `http://localhost:9000/source/youtube?url=${encodeURIComponent(url)}&get=stream`
 } as const;
 
 // Optimized environment detection
@@ -108,18 +105,6 @@ const resolvers = {
         } catch (error) {
             console.warn('[audioSource] Failed to fetch YouTube info:', error);
         }
-        
-        // Fallback to streaming endpoint if direct URL extraction fails
-        console.log('[audioSource] Falling back to streaming endpoint for value:', trimmedValue);
-        if (URL_PATTERNS.HTTP.test(trimmedValue)) {
-            return URL_TEMPLATES.YOUTUBE_URL(trimmedValue);
-        }
-        
-        if (URL_PATTERNS.YOUTUBE_ID.test(trimmedValue)) {
-            return URL_TEMPLATES.YOUTUBE_ID(trimmedValue);
-        }
-        
-        return URL_TEMPLATES.YOUTUBE_FALLBACK(trimmedValue);
     }
 } as const;
 

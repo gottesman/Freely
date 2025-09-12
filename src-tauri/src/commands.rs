@@ -6,21 +6,19 @@ use base64::Engine;
 /// Database operations
 pub mod db {
     use super::*;
-
     #[tauri::command]
     pub async fn db_path(paths: State<'_, PathState>) -> Result<String, String> {
         Ok(paths.db_file.to_string_lossy().to_string())
     }
-
     #[tauri::command]
     pub async fn db_read(paths: State<'_, PathState>) -> Result<Option<String>, String> {
         if !paths.db_file.exists() {
             return Ok(None);
         }
-        
+
         let data = std::fs::read(&paths.db_file)
             .map_err(|e| format!("Failed to read database: {}", e))?;
-        
+
         Ok(Some(base64::engine::general_purpose::STANDARD.encode(&data)))
     }
 
@@ -196,16 +194,6 @@ pub mod youtube {
             .await
             .map_err(|e| format!("Failed to parse YouTube response: {}", e))?;
 
-        // Inject stream URL for convenience
-        if let serde_json::Value::Object(ref mut map) = response {
-            let stream_url = format!(
-                "http://localhost:{}/source/youtube?id={}&get=stream", 
-                port, 
-                urlencoding::encode(&payload.id)
-            );
-            map.insert("streamUrl".to_string(), serde_json::Value::String(stream_url));
-        }
-
         Ok(response)
     }
 
@@ -226,6 +214,8 @@ pub mod youtube {
         format!("http://localhost:{}/source/youtube?{}", port, query_string)
     }
 }
+
+// (No additional filesystem commands here)
 
 /// External API operations
 pub mod external {

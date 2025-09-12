@@ -269,12 +269,6 @@ class YtDlpManager {
         path.join('.', binName),
         path.join('.', 'bin', binName),
         path.join('bin', binName),
-        // Windows AppData paths (most likely for Tauri)
-        path.join(os.homedir(), 'AppData', 'Local', 'Freely Player', 'bin', binName),
-        path.join(os.homedir(), 'AppData', 'Local', 'Freely Player', binName),
-        // Try other common app names
-        path.join(os.homedir(), 'AppData', 'Local', 'freely-player', 'bin', binName),
-        path.join(os.homedir(), 'AppData', 'Local', 'freely-player', binName),
         // Tauri production paths
         path.join(process.resourcesPath || '', 'bin', binName),
         path.join(process.resourcesPath || '', binName),
@@ -319,24 +313,6 @@ class YtDlpManager {
         console.warn('[youtube-dl] Bundled binary not found in any expected location');
         console.warn('[youtube-dl] This may cause YouTube functionality to fail');
         console.warn('[youtube-dl] Checked paths:', bundledPaths);
-
-        // Last resort: try to find any youtube-dl binary in common locations
-        const commonLocations = [
-          '/usr/bin/youtube-dl',
-          '/usr/local/bin/youtube-dl',
-          '/opt/homebrew/bin/youtube-dl',
-          'C:\\Program Files\\youtube-dl\\youtube-dl.exe',
-          'C:\\youtube-dl\\youtube-dl.exe'
-        ];
-
-        for (const commonPath of commonLocations) {
-          if (fs.existsSync(commonPath)) {
-            console.log('[youtube-dl] Found binary in common location:', commonPath);
-            youtubeDlPath = commonPath;
-            youtubeDlAvailable = true;
-            break;
-          }
-        }
       }
 
       this.initialized = true;

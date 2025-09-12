@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { hexToRgb, hexToHue } from './appearance';
 // Import main stylesheet as URL so bundler includes and fingerprints it
 // (loaded lazily after fonts) 
 // Vite: ?url returns final asset URL
@@ -266,48 +267,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
       const s = String(v).trim().toLowerCase();
       return s === '1' || s === 'true' || s === 'yes' || s === 'on';
     };
-    const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
-      if (!hex) return null;
-      let h = hex.trim();
-      if (h.startsWith('#')) h = h.slice(1);
-      if (h.length === 3) {
-        const r = parseInt(h[0] + h[0], 16);
-        const g = parseInt(h[1] + h[1], 16);
-        const b = parseInt(h[2] + h[2], 16);
-        return { r, g, b };
-      }
-      if (h.length === 6) {
-        const r = parseInt(h.slice(0, 2), 16);
-        const g = parseInt(h.slice(2, 4), 16);
-        const b = parseInt(h.slice(4, 6), 16);
-        return { r, g, b };
-      }
-      return null;
-    };
-    const rgbToHsl = (r: number, g: number, b: number): { h: number; s: number; l: number } => {
-      r /= 255; g /= 255; b /= 255;
-      const max = Math.max(r, g, b), min = Math.min(r, g, b);
-      let h, s, l = (max + min) / 2;
-      if (max === min) {
-        h = s = 0; // achromatic
-      } else {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        switch (max) {
-          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-          case g: h = (b - r) / d + 2; break;
-          case b: h = (r - g) / d + 4; break;
-        }
-        h /= 6;
-      }
-      return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
-    };
-    const hexToHue = (hex: string): number => {
-      const rgb = hexToRgb(hex);
-      if (!rgb) return 0;
-      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-      return hsl.h;
-    };
+    // color helpers (hexToRgb, hexToHue) imported from ./appearance
 
     (async () => {
       try {
@@ -363,10 +323,10 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
                 bgElement.style.setProperty('--bg-image', `url("${url}")`);
               }
               
-              const blur = parseBool(blurStr);
+              const blur = (blurStr == null || blurStr === '') ? true : parseBool(blurStr);
               const blurAmount = blurAmountStr != null ? Math.max(0, Math.min(200, Number(blurAmountStr))) : 200;
               if (blur && blurAmount > 0) {
-                bgElement.style.setProperty('--bg-filter', `blur(${blurAmount}px) brightness(0.7)`);
+                bgElement.style.setProperty('--bg-filter', `blur(${blurAmount}px)`);
                 bgElement.style.setProperty('--bg-size', '200%');
                 bgElement.style.setProperty('--bg-radius', '100em');
               } else {
@@ -375,7 +335,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
                 bgElement.style.setProperty('--bg-radius', '0');
               }
 
-              const animate = parseBool(animateStr);
+              const animate = (animateStr == null || animateStr === '') ? true : parseBool(animateStr);
               bgElement.style.setProperty('--bg-animation', animate ? 'rotate 40s linear infinite' : 'none');
 
               if (overlayColor || overlayOpacityStr) {
@@ -431,10 +391,10 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
         }
 
         // Blur controls size/radius/filter
-        const blur = parseBool(blurStr);
+  const blur = (blurStr == null || blurStr === '') ? true : parseBool(blurStr);
         const blurAmount = blurAmountStr != null ? Math.max(0, Math.min(200, Number(blurAmountStr))) : 200;
         if (blur && blurAmount > 0) {
-          setVar('--bg-filter', `blur(${blurAmount}px) brightness(0.7)`);
+          setVar('--bg-filter', `blur(${blurAmount}px)`);
           setVar('--bg-size', '200%');
           setVar('--bg-radius', '100em');
         } else {
@@ -444,7 +404,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
         }
 
         // Animation
-        const animate = parseBool(animateStr);
+  const animate = (animateStr == null || animateStr === '') ? true : parseBool(animateStr);
         setVar('--bg-animation', animate ? 'rotate 40s linear infinite' : 'none');
 
         // Overlay color + opacity

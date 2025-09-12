@@ -21,7 +21,7 @@
 
 	/* Allow runtime control via CSS variables with sensible defaults */
 	animation: var(--bg-animation, rotate 40s linear infinite);
-	filter: var(--bg-filter, blur(200px) brightness(0.7));
+	filter: var(--bg-filter, blur(200px));
 	background-repeat: no-repeat;
 	background-size: cover;
 	background-position: center;

@@ -4,76 +4,60 @@ import { useDB } from '../core/dbIndexed'
 import { usePlaylists } from '../core/playlists'
 import { usePrompt } from '../core/PromptContext'
 import { useAlerts } from '../core/alerts'
-import { getAudioDevices, getAudioSettings, setAudioSettings, reinitializeAudio, AudioDevice, AudioSettings } from '../core/tauriCommands'
+import { getAudioDevices, getAudioSettings, setAudioSettings, reinitializeAudio, AudioDevice, AudioSettings, isTauriAvailable, runTauriCommand } from '../core/tauriCommands'
+import { APPEARANCE_DEFAULTS, hexToHue, unsplash, thumbnailUnsplash } from '../core/appearance'
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  if (!hex) return null;
-  let h = hex.trim();
-  if (h.startsWith('#')) h = h.slice(1);
-  if (h.length === 3) {
-    const r = parseInt(h[0] + h[0], 16);
-    const g = parseInt(h[1] + h[1], 16);
-    const b = parseInt(h[2] + h[2], 16);
-    return { r, g, b };
+// Resolve background entry (may be a URL, data:, or a special marker like 'unsplash:ID')
+const resolveBackground = (entry: string | null | undefined) => {
+  if (!entry) return '';
+  if (entry.startsWith('unsplash:')) {
+    const parts = entry.split(':');
+    const id = parts.slice(1).join(':');
+    return unsplash({id});
   }
-  if (h.length === 6) {
-    const r = parseInt(h.slice(0, 2), 16);
-    const g = parseInt(h.slice(2, 4), 16);
-    const b = parseInt(h.slice(4, 6), 16);
-    return { r, g, b };
-  }
-  return null;
-}
+  return entry;
+};
 
-function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s, l = (max + min) / 2;
-  if (max === min) {
-    h = s = 0; // achromatic
-  } else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-      case g: h = (b - r) / d + 2; break;
-      case b: h = (r - g) / d + 4; break;
-    }
-    h /= 6;
+const previewFor = (entry: string | null | undefined) => {
+  if (!entry) return '';
+  if (entry.startsWith('unsplash:')) {
+    const id = entry.split(':').slice(1).join(':');
+    return thumbnailUnsplash(id, 64, 60);
   }
-  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
-}
+  return entry;
+};
 
-function hexToHue(hex: string): number {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return 0;
-  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-  return hsl.h;
-}
+// Main (larger) preview for the central preview image — use a bigger Unsplash image
+const mainPreviewFor = (entry: string | null | undefined) => {
+  if (!entry) return '';
+  if (entry.startsWith('unsplash:')) {
+    const id = entry.split(':').slice(1).join(':');
+    // Request a reasonably large preview for the main area
+    return unsplash({ id, width: 750, quality: 80, cs: 'srgb' });
+  }
+  return entry;
+};
 
 export default function Settings(){
   const { exportJSON, importJSON, clearCache, clearLocalData, getSetting, setSetting } = useDB()
-  const [accent, setAccent] = useState('#6b21a8')
-  const [textColor, setTextColor] = useState('#e6eef6')
-  const [textDarkColor, setTextDarkColor] = useState('#002211')
+  const [accent, setAccent] = useState(APPEARANCE_DEFAULTS.accent)
+  const [textColor, setTextColor] = useState(APPEARANCE_DEFAULTS.textColor)
+  const [textDarkColor, setTextDarkColor] = useState(APPEARANCE_DEFAULTS.textDarkColor)
   const { lang, setLang, t } = useI18n();
   const [importFileName, setImportFileName] = useState<string>('')
   // Background appearance settings
-  const DEFAULT_BACKGROUNDS = React.useMemo(() => [
-    'https://img.freepik.com/free-vector/abstract-colorful-flow-shapes-background_23-2148233991.jpg',
-    'https://images.unsplash.com/photo-1503264116251-35a269479413?w=1600&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1520975916090-3105956dac38?w=1600&q=80&auto=format&fit=crop'
-  ], []);
-  const [bgCarouselIndex, setBgCarouselIndex] = useState(0);
-  const [bgImage, setBgImage] = useState<string>(DEFAULT_BACKGROUNDS[0]);
-  const [bgCustomUrl, setBgCustomUrl] = useState<string>('');
-  const [bgBlur, setBgBlur] = useState<boolean>(true);
-  const [bgBlurAmount, setBgBlurAmount] = useState<number>(200);
-  const [bgAnimate, setBgAnimate] = useState<boolean>(true);
-  const [bgOverlayColor, setBgOverlayColor] = useState<string>('#000000');
-  const [bgOverlayOpacity, setBgOverlayOpacity] = useState<number>(0);
+  // Use backgrounds from APPEARANCE_DEFAULTS
+  const [bgCarouselIndex, setBgCarouselIndex] = useState<number>(APPEARANCE_DEFAULTS.bgImageIndex as number);
+    // Store the resolved URL (resolve 'unsplash:ID' markers to real URLs)
+    const [bgImage, setBgImage] = useState<string>(resolveBackground(APPEARANCE_DEFAULTS.backgrounds[APPEARANCE_DEFAULTS.bgImageIndex as number]));
+  const [bgCustomUrl, setBgCustomUrl] = useState<string>(APPEARANCE_DEFAULTS.bgCustomUrl);
+  const [bgBlur, setBgBlur] = useState<boolean>(APPEARANCE_DEFAULTS.bgBlur);
+  const [bgBlurAmount, setBgBlurAmount] = useState<number>(APPEARANCE_DEFAULTS.bgBlurAmount);
+  const [bgAnimate, setBgAnimate] = useState<boolean>(APPEARANCE_DEFAULTS.bgAnimate);
+  const [bgOverlayColor, setBgOverlayColor] = useState<string>(APPEARANCE_DEFAULTS.bgOverlayColor);
+  const [bgOverlayOpacity, setBgOverlayOpacity] = useState<number>(APPEARANCE_DEFAULTS.bgOverlayOpacity);
   // Shadow (app background RGB triplet via --bg)
-  const [shadowHex, setShadowHex] = useState<string>('#0f1724');
+  const [shadowHex, setShadowHex] = useState<string>(APPEARANCE_DEFAULTS.shadowHex);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioSettings, setAudioSettingsState] = useState<AudioSettings | null>(null)
   const [isLoadingAudio, setIsLoadingAudio] = useState(false)
@@ -83,26 +67,61 @@ export default function Settings(){
 
   // Helper to apply background CSS variables to the .bg element
   const applyBackgroundVars = React.useCallback((imageUrl: string, blurAmount: number, animate: boolean, overlayColor?: string, overlayOpacity?: number) => {
-    try {
-      const bgEl = document.querySelector('.bg') as HTMLElement | null;
-      if (!bgEl) return;
-      const url = imageUrl?.trim() ? `url('${imageUrl}')` : `url('${DEFAULT_BACKGROUNDS[0]}')`;
-      bgEl.style.setProperty('--bg-image', url);
-      bgEl.style.setProperty('--bg-filter', blurAmount > 0 ? `blur(${blurAmount}px)` : 'none');
-      bgEl.style.setProperty('--bg-animation', animate ? 'rotate 40s linear infinite' : 'none');
-      bgEl.style.setProperty('--bg-size', animate ? '200%' : '100%');
-      bgEl.style.setProperty('--bg-radius', animate ? '100em' : '0');
-      if (overlayColor !== undefined && overlayOpacity !== undefined) {
-        const a = Math.max(0, Math.min(1, overlayOpacity));
-        // Convert hex to rgba
-        const hex = overlayColor.replace('#','');
-        const r = parseInt(hex.substring(0,2), 16) || 0;
-        const g = parseInt(hex.substring(2,4), 16) || 0;
-        const b = parseInt(hex.substring(4,6), 16) || 0;
-        bgEl.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
-      }
-    } catch (_) { /* ignore */ }
-  }, [DEFAULT_BACKGROUNDS]);
+    // Try to apply to the .bg element. If it's not present yet, retry a few times with a short delay.
+    const doApply = (attemptsLeft: number) => {
+      try {
+        const bgEl = document.querySelector('.bg') as HTMLElement | null;
+        // Prepare computed values and defaults so we can apply them to :root as fallback
+  const url = imageUrl?.trim() ? `url('${imageUrl}')` : `url('${resolveBackground(APPEARANCE_DEFAULTS.backgrounds[0])}')`;
+  const filter = blurAmount > 0 ? `blur(${blurAmount}px)` : 'none';
+        const animation = animate ? 'rotate 40s linear infinite' : 'none';
+        const size = animate ? '200%' : '100%';
+        const radius = animate ? '100em' : '0';
+
+        // Apply to :root as a fallback for early startup when .bg may not exist
+        try {
+          const root = document.documentElement as HTMLElement | null;
+          if (root) {
+            root.style.setProperty('--bg-image', url);
+            root.style.setProperty('--bg-filter', filter);
+            root.style.setProperty('--bg-animation', animation);
+            root.style.setProperty('--bg-size', size);
+            root.style.setProperty('--bg-radius', radius);
+            if (overlayColor !== undefined && overlayOpacity !== undefined) {
+              const a = Math.max(0, Math.min(1, overlayOpacity));
+              const hex = overlayColor.replace('#','');
+              const r = parseInt(hex.substring(0,2), 16) || 0;
+              const g = parseInt(hex.substring(2,4), 16) || 0;
+              const b = parseInt(hex.substring(4,6), 16) || 0;
+              root.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
+            }
+          }
+        } catch (_) {}
+
+        if (!bgEl) {
+          if (attemptsLeft > 0) {
+            setTimeout(() => doApply(attemptsLeft - 1), 50);
+          }
+          return;
+        }
+  bgEl.style.setProperty('--bg-image', url);
+  bgEl.style.setProperty('--bg-filter', filter);
+  bgEl.style.setProperty('--bg-animation', animation);
+  bgEl.style.setProperty('--bg-size', size);
+  bgEl.style.setProperty('--bg-radius', radius);
+        if (overlayColor !== undefined && overlayOpacity !== undefined) {
+          const a = Math.max(0, Math.min(1, overlayOpacity));
+          // Convert hex to rgba
+          const hex = overlayColor.replace('#','');
+          const r = parseInt(hex.substring(0,2), 16) || 0;
+          const g = parseInt(hex.substring(2,4), 16) || 0;
+          const b = parseInt(hex.substring(4,6), 16) || 0;
+          bgEl.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
+        }
+      } catch (_) { /* ignore */ }
+    };
+    doApply(6); // try for ~300ms total
+  }, [APPEARANCE_DEFAULTS.backgrounds]);
 
   React.useEffect(()=>{
     let mounted = true
@@ -171,15 +190,16 @@ export default function Settings(){
           getSetting('ui.bg.overlayOpacity')
         ]);
         if (!mounted) return;
-        const image = storedImage || DEFAULT_BACKGROUNDS[0];
-        setBgImage(image);
-        const idx = DEFAULT_BACKGROUNDS.indexOf(image);
+  const image = storedImage || resolveBackground(APPEARANCE_DEFAULTS.backgrounds[0]);
+  setBgImage(image);
+  const idx = APPEARANCE_DEFAULTS.backgrounds.findIndex(entry => resolveBackground(entry) === image);
         setBgCarouselIndex(idx >= 0 ? idx : 0);
         // If the image is not a default background and not a data URL, show it in the custom URL input
         if (idx < 0 && !image.startsWith('data:')) {
           setBgCustomUrl(image);
         }
-        const blur = storedBlur === null || storedBlur === undefined ? '1' : storedBlur;
+  // Treat missing or empty storedBlur as enabled by default
+  const blur = (storedBlur === null || storedBlur === undefined || storedBlur === '') ? '1' : storedBlur;
         const animate = storedAnimate === null || storedAnimate === undefined ? '1' : storedAnimate;
         const blurBool = blur === '1' || blur === 'true';
         const animateBool = animate === '1' || animate === 'true';
@@ -187,8 +207,8 @@ export default function Settings(){
         setBgAnimate(animateBool);
         const blurAmount = storedBlurAmount != null ? Math.max(0, Math.min(200, Number(storedBlurAmount))) : 200;
         setBgBlurAmount(blurAmount);
-        const overlayColor = storedOverlay || '#000000';
-        const overlayOpacity = storedOverlayOpacity != null ? Number(storedOverlayOpacity) : 0;
+  const overlayColor = storedOverlay || APPEARANCE_DEFAULTS.bgOverlayColor;
+  const overlayOpacity = storedOverlayOpacity != null ? Number(storedOverlayOpacity) : APPEARANCE_DEFAULTS.bgOverlayOpacity;
         setBgOverlayColor(overlayColor);
         setBgOverlayOpacity(overlayOpacity);
         applyBackgroundVars(image, blurBool ? blurAmount : 0, animateBool, overlayColor, overlayOpacity);
@@ -281,10 +301,11 @@ export default function Settings(){
 
   // Background setting handlers
   const onCycleBackground = (dir: -1 | 1) => {
-    const len = DEFAULT_BACKGROUNDS.length;
+  const len = APPEARANCE_DEFAULTS.backgrounds.length;
     const next = (bgCarouselIndex + dir + len) % len;
     setBgCarouselIndex(next);
-    const url = DEFAULT_BACKGROUNDS[next];
+  const entry = APPEARANCE_DEFAULTS.backgrounds[next];
+  const url = resolveBackground(entry);
     setBgImage(url);
   applyBackgroundVars(url, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
     setSetting('ui.bg.image', url).catch(() => {});
@@ -384,6 +405,115 @@ export default function Settings(){
     const a = document.createElement('a')
     a.href = url; a.download = 'freely-export.json'; a.click()
     URL.revokeObjectURL(url)
+  }
+
+  // Export only the Appearance-related settings (with optional embedded image)
+  async function onExportAppearance() {
+    // runTauriCommand is imported from '../core/tauriCommands' above
+    try {
+      // Build appearance export: DO NOT include bgImage or bgCustomUrl.
+      // Only include bgImageUrl (can be a resolved URL or a data: base64 string).
+      const appearance: any = {
+        accent,
+        textColor,
+        textDarkColor,
+        shadowHex,
+        bgBlur,
+        bgBlurAmount,
+        bgAnimate,
+        bgOverlayColor,
+        bgOverlayOpacity
+      };
+
+      // Set bgImageUrl to the currently selected image. If it's a data: URL, that stays as-is.
+      if (bgImage) {
+        appearance.bgImageUrl = bgImage;
+      }
+
+      // If bgImage is a remote URL and NOT one of the defaults, we may optionally embed a base64 copy
+      // as bgImageBase64 (best-effort). This does not add bgImage or bgCustomUrl.
+      // We intentionally do NOT embed remote images as base64 here. If the selected
+      // image is already a data: URL it will be exported via bgImageUrl. Otherwise we
+      // export only bgImageUrl (the remote URL). This keeps export sizes predictable.
+
+      const data = JSON.stringify(appearance, null, 2);
+
+      // If running inside Tauri, call the backend command to show a save dialog and write the file
+      if (isTauriAvailable() && runTauriCommand) {
+        try {
+          const result = await runTauriCommand('save_file_and_write', { default_file_name: 'freely-appearance.json', contents: data });
+          // runTauriCommand returns false if Tauri unavailable, an error object on failure, or the result
+          if (result && typeof result === 'object' && 'error' in result) {
+            throw new Error((result as any).message || 'Failed to save');
+          }
+          // Successful or cancelled (null/false) — show exported message
+          pushAlert(t('settings.appearance.exported', 'Appearance exported'), 'info');
+        } catch (err) {
+          console.warn('Tauri save_file_and_write failed, falling back to browser download', err);
+          const blob = new Blob([data], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'freely-appearance.json';
+          a.click();
+          URL.revokeObjectURL(url);
+          pushAlert(t('settings.appearance.exported', 'Appearance exported'), 'info');
+        }
+      } else {
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'freely-appearance.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        pushAlert(t('settings.appearance.exported', 'Appearance exported'), 'info');
+      }
+    } catch (e) {
+      console.error('Failed to export appearance:', e);
+      pushAlert(t('settings.appearance.exportFailed', 'Failed to export appearance'), 'error');
+    }
+  }
+
+  // Import appearance JSON (file input handler)
+  async function onImportAppearanceUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    try {
+      const f = e.target.files?.[0]; if (!f) return;
+      const s = await f.text();
+      const parsed = JSON.parse(s);
+
+      // Apply settings if present
+      if (parsed.accent) { setAccent(parsed.accent); document.documentElement.style.setProperty('--accent', parsed.accent); setSetting('ui.accent', parsed.accent).catch(()=>{}); }
+      if (parsed.textColor) { setTextColor(parsed.textColor); document.documentElement.style.setProperty('--text', parsed.textColor); setSetting('ui.text', parsed.textColor).catch(()=>{}); }
+      if (parsed.textDarkColor) { setTextDarkColor(parsed.textDarkColor); document.documentElement.style.setProperty('--text-dark', parsed.textDarkColor); setSetting('ui.textDark', parsed.textDarkColor).catch(()=>{}); }
+      if (parsed.shadowHex) { setShadowHex(parsed.shadowHex); try{ const h = parsed.shadowHex.replace('#',''); const r = parseInt(h.substring(0,2),16)||0; const g = parseInt(h.substring(2,4),16)||0; const b = parseInt(h.substring(4,6),16)||0; const triplet = `${r}, ${g}, ${b}`; document.documentElement.style.setProperty('--bg', triplet); setSetting('ui.bg.rgb', triplet).catch(()=>{}); }catch{} }
+
+      // Background image: prefer base64 if present, else use url
+      if (parsed.bgImageBase64) {
+        setBgImage(parsed.bgImageBase64);
+        applyBackgroundVars(parsed.bgImageBase64, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
+        setSetting('ui.bg.image', parsed.bgImageBase64).catch(()=>{});
+      } else if (parsed.bgImageUrl || parsed.bgImage) {
+        const img = parsed.bgImageUrl || parsed.bgImage;
+        setBgImage(img);
+        applyBackgroundVars(img, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
+        setSetting('ui.bg.image', img).catch(()=>{});
+      }
+
+      if (parsed.bgCustomUrl !== undefined) setBgCustomUrl(parsed.bgCustomUrl);
+      if (parsed.bgBlur !== undefined) { setBgBlur(Boolean(parsed.bgBlur)); setSetting('ui.bg.blur', parsed.bgBlur ? '1' : '0').catch(()=>{}); }
+      if (parsed.bgBlurAmount !== undefined) { setBgBlurAmount(Number(parsed.bgBlurAmount)); setSetting('ui.bg.blurAmount', String(parsed.bgBlurAmount)).catch(()=>{}); }
+      if (parsed.bgAnimate !== undefined) { setBgAnimate(Boolean(parsed.bgAnimate)); setSetting('ui.bg.animate', parsed.bgAnimate ? '1' : '0').catch(()=>{}); }
+      if (parsed.bgOverlayColor) { setBgOverlayColor(parsed.bgOverlayColor); setSetting('ui.bg.overlayColor', parsed.bgOverlayColor).catch(()=>{}); }
+      if (parsed.bgOverlayOpacity !== undefined) { setBgOverlayOpacity(Number(parsed.bgOverlayOpacity)); setSetting('ui.bg.overlayOpacity', String(parsed.bgOverlayOpacity)).catch(()=>{}); }
+
+      pushAlert(t('settings.appearance.imported', 'Appearance imported'), 'info');
+    } catch (err) {
+      console.error('Failed to import appearance:', err);
+      pushAlert(t('settings.appearance.importFailed', 'Failed to import appearance'), 'error');
+    } finally {
+      try { (e.target as HTMLInputElement).value = ''; } catch {}
+    }
   }
 
   async function onImportUpload(e:React.ChangeEvent<HTMLInputElement>){
@@ -558,21 +688,58 @@ export default function Settings(){
               {/* Background settings */}
               <div className="settings-field">
                 <label className="settings-field-label">{t('settings.background', 'Background')}</label>
-                <div className="bg-carousel" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 8, alignItems: 'center' }}>
-                  <button className="btn btn-subtle" onClick={() => onCycleBackground(-1)} aria-label={t('settings.background.prev', 'Previous background')}>
-                    <span className="material-symbols-rounded" aria-hidden>chevron_left</span>
-                  </button>
+                <div className="bg-carousel" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8, alignItems: 'center' }}>
                   <div className="bg-preview" style={{ position: 'relative', height: 120, borderRadius: 10, overflow: 'hidden', border: '8px solid var(--border-subtle)' }}>
-                    <img src={DEFAULT_BACKGROUNDS[bgCarouselIndex]} alt={t('settings.background.preview', 'Background preview')} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: bgBlur ? 'blur(0px)' : 'none', border: 'solid 1px var(--border-strong)'}} />
-                    <div style={{ position: 'absolute', bottom: 6, left: 6, right: 6, display: 'flex', gap: 6, justifyContent: 'center' }}>
-                      {DEFAULT_BACKGROUNDS.map((_, i) => (
-                        <span key={i} className={`dot ${i===bgCarouselIndex?'active':''}`} style={{ width: 8, height: 8, borderRadius: 999, background: i===bgCarouselIndex ? 'var(--accent)' : 'var(--glass-bg-strong2)' }} />
-                      ))}
-                    </div>
+                    <button
+                      className="btn btn-subtle"
+                      onClick={() => onCycleBackground(-1)}
+                      aria-label={t('settings.background.prev', 'Previous background')}
+                      style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', zIndex: 3 }}
+                    >
+                      <span className="material-symbols-rounded" aria-hidden>chevron_left</span>
+                    </button>
+                    <img src={mainPreviewFor(APPEARANCE_DEFAULTS.backgrounds[bgCarouselIndex])} alt={t('settings.background.preview', 'Background preview')} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: bgBlur ? 'blur(0px)' : 'none', border: 'solid 1px var(--border-strong)'}} />
+                    <button
+                      className="btn btn-subtle"
+                      onClick={() => onCycleBackground(1)}
+                      aria-label={t('settings.background.next', 'Next background')}
+                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', zIndex: 3 }}
+                    >
+                      <span className="material-symbols-rounded" aria-hidden>chevron_right</span>
+                    </button>
+                    {/* Thumbnails moved below the preview — rendered separately to improve layout */}
                   </div>
-                  <button className="btn btn-subtle" onClick={() => onCycleBackground(1)} aria-label={t('settings.background.next', 'Next background')}>
-                    <span className="material-symbols-rounded" aria-hidden>chevron_right</span>
-                  </button>
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', justifyContent: 'center' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', overflowX: 'auto', padding: '6px 4px' }}>
+                    {APPEARANCE_DEFAULTS.backgrounds.map((entry, i) => {
+                      const thumb = previewFor(entry);
+                      const resolved = resolveBackground(entry);
+                      const active = i === bgCarouselIndex;
+                      return (
+                        <img
+                          key={i}
+                          src={thumb}
+                          alt={`Background ${i + 1}`}
+                          onClick={() => {
+                            setBgCarouselIndex(i);
+                            setBgImage(resolved);
+                            applyBackgroundVars(resolved, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
+                            setSetting('ui.bg.image', resolved).catch(() => {});
+                          }}
+                          style={{
+                            width: 64,
+                            height: 64,
+                            objectFit: 'cover',
+                            borderRadius: 6,
+                            cursor: 'pointer',
+                            border: active ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
                 </div>
                 <div className="settings-field-hint">{t('settings.background.hint', 'Browse default images or set a custom one.')}</div>
               </div>
@@ -604,7 +771,7 @@ export default function Settings(){
                     type="range"
                     min={0}
                     max={200}
-                    step={5}
+                    step={1}
                     value={bgBlurAmount}
                     onChange={onBlurAmountChange}
                     aria-label={t('settings.background.blurAmount', 'Blur amount')}
@@ -641,6 +808,17 @@ export default function Settings(){
                   aria-label={t('settings.background.overlayOpacity', 'Background opacity')}
                   style={{ ["--range-progress" as any]: `${bgOverlayOpacity * 100}%` }}
                 />
+              </div>
+              {/* Appearance import/export for background and accent */}
+              <div className="settings-field" style={{ marginTop: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button className="btn" onClick={onExportAppearance}>{t('settings.appearance.export', 'Export appearance')}</button>
+                  <label className="btn btn-subtle" style={{ cursor: 'pointer' }}>
+                    {t('settings.appearance.import', 'Import appearance')}
+                    <input type="file" accept="application/json" onChange={onImportAppearanceUpload} style={{ display: 'none' }} />
+                  </label>
+                </div>
+                <div className="settings-field-hint">{t('settings.appearance.importExportHint', 'Export or import appearance settings (includes custom image as base64 or URL)')}</div>
               </div>
             </div>
           </div>

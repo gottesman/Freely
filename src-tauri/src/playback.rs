@@ -287,13 +287,15 @@ struct CacheDownloadResult {
     source_hash: String,
     cached_path: String,
     file_size: u64,
+    partial: bool,
 }
 
 async fn download_and_cache_audio(track_id: String, source_type: String, source_hash: String, url: String, tx: mpsc::UnboundedSender<CacheDownloadResult>) {
     println!("[cache] Starting download for track: {} ({}:{})", track_id, source_type, source_hash);
 
     // Download the file
-    let response = match reqwest::get(&url).await {
+    let client = reqwest::Client::new();
+    let response = match client.get(&url).send().await {
         Ok(resp) => resp,
         Err(e) => {
             println!("[cache] Download failed for {} ({}:{}): {}", track_id, source_type, source_hash, e);
@@ -306,64 +308,114 @@ async fn download_and_cache_audio(track_id: String, source_type: String, source_
         return;
     }
 
-    let bytes = match response.bytes().await {
-        Ok(b) => b,
+    // Stream the response into a cache file so we can switch to the file early and enable seeking
+    // Clone the cache directory path right away so we don't hold the global lock across awaits
+    let cache_dir = {
+        let cache_guard = CACHE.lock().unwrap();
+        if cache_guard.is_none() {
+            println!("[cache] Cache not initialized, cannot cache {} ({}:{})", track_id, source_type, source_hash);
+            return;
+        }
+        // clone the PathBuf so we can drop the lock
+        cache_guard.as_ref().unwrap().cache_dir.clone()
+    };
+
+    let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
+    let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
+    let file_name = format!("{}.m4a", safe_key);
+    let file_path = cache_dir.join(&file_name);
+
+    // Create the file and stream into it
+    let mut file = match fs::File::create(&file_path) {
+        Ok(f) => f,
         Err(e) => {
-            println!("[cache] Failed to read response body for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            println!("[cache] Failed to create cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
             return;
         }
     };
 
-    // Handle the cache operations with the downloaded data
-    let mut cache_guard = CACHE.lock().unwrap();
-    if let Some(cache) = cache_guard.as_mut() {
-        let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
+    // Minimum bytes to write before we consider switching playback to the file (256KB)
+    const MIN_BYTES_FOR_SWITCH: usize = 256 * 1024;
+    let mut bytes_written: usize = 0;
+    let mut switched_notification_sent = false;
 
-        // Generate filename based on cache key (sanitized for filesystem)
-        let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
-        let file_name = format!("{}.m4a", safe_key);
-        let file_path = cache.cache_dir.join(&file_name);
+    // Use the async byte stream from reqwest
+    let mut stream = response.bytes_stream();
+    use futures_util::TryStreamExt;
 
-        // Write to file
-        let mut file = match fs::File::create(&file_path) {
-            Ok(f) => f,
+    while let Some(item) = stream.try_next().await.transpose() {
+        match item {
+            Ok(chunk) => {
+                let bytes = chunk.as_ref();
+                if let Err(e) = file.write_all(bytes) {
+                    println!("[cache] Failed to write cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                    return;
+                }
+                bytes_written += bytes.len();
+
+                // If we've written enough bytes, notify once so the player can switch to the file
+                if !switched_notification_sent && bytes_written >= MIN_BYTES_FOR_SWITCH {
+                    let cached_path = file_path.to_string_lossy().to_string();
+                    let result = CacheDownloadResult {
+                        track_id: track_id.clone(),
+                        source_type: source_type.clone(),
+                        source_hash: source_hash.clone(),
+                        cached_path: cached_path.clone(),
+                        file_size: bytes_written as u64,
+                        partial: true,
+                    };
+                    if let Err(e) = tx.send(result) {
+                        println!("[cache] Failed to send partial cache notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                    } else {
+                        println!("[cache] Partial cache available for {} ({}:{}) -> {} ({} bytes)", track_id, source_type, source_hash, cached_path, bytes_written);
+                    }
+                    switched_notification_sent = true;
+                }
+            }
             Err(e) => {
-                println!("[cache] Failed to create cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                println!("[cache] Error while streaming download for {} ({}:{}): {}", track_id, source_type, source_hash, e);
                 return;
             }
-        };
+        }
+    }
 
-        if let Err(e) = file.write_all(&bytes) {
-            println!("[cache] Failed to write cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+    // Finalize: determine file size and update cache index
+    let file_size = match fs::metadata(&file_path) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            println!("[cache] Failed to stat cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
             return;
         }
+    };
 
-        let file_size = bytes.len() as u64;
-
-        // Add to cache index
-        if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), file_name, file_size) {
-            println!("[cache] Failed to add to cache index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-            return;
-        }
-
-        let cached_path = file_path.to_string_lossy().to_string();
-
-        // Send completion notification
-        let result = CacheDownloadResult {
-            track_id: track_id.clone(),
-            source_type: source_type.clone(),
-            source_hash: source_hash.clone(),
-            cached_path: cached_path.clone(),
-            file_size,
-        };
-
-        if let Err(e) = tx.send(result) {
-            println!("[cache] Failed to send cache completion notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+    // Reacquire cache guard to update index
+    {
+        let mut cache_guard = CACHE.lock().unwrap();
+        if let Some(cache) = cache_guard.as_mut() {
+            if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), file_name.clone(), file_size) {
+                println!("[cache] Failed to add to cache index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                return;
+            }
         } else {
-            println!("[cache] Cache download completed for {} ({}:{}) -> {}", track_id, source_type, source_hash, cached_path);
+            println!("[cache] Cache vanished while finalizing for {} ({}:{})", track_id, source_type, source_hash);
+            return;
         }
+    }
+
+    let cached_path = file_path.to_string_lossy().to_string();
+    let result = CacheDownloadResult {
+        track_id: track_id.clone(),
+        source_type: source_type.clone(),
+        source_hash: source_hash.clone(),
+        cached_path: cached_path.clone(),
+        file_size,
+        partial: false,
+    };
+
+    if let Err(e) = tx.send(result) {
+        println!("[cache] Failed to send cache completion notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
     } else {
-        println!("[cache] Cache not initialized, cannot cache {} ({}:{})", track_id, source_type, source_hash);
+        println!("[cache] Cache download completed for {} ({}:{}) -> {}", track_id, source_type, source_hash, cached_path);
     }
 }
 
@@ -757,12 +809,13 @@ pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
         }
     } else {
         // For remote URLs, use BASS_StreamCreateURL
+        // Note: avoid BASS_STREAM_BLOCK here so BASS can buffer the URL stream and support seeking
         let c_url = CString::new(actual_url.clone()).map_err(|_| "Invalid URL: contains null bytes".to_string())?;
         unsafe { 
             bass_stream_create_url(
                 c_url.as_ptr(), 
                 0, 
-                BASS_STREAM_STATUS | BASS_STREAM_AUTOFREE | BASS_STREAM_BLOCK, 
+                BASS_STREAM_STATUS | BASS_STREAM_AUTOFREE, 
                 std::ptr::null_mut(), 
                 std::ptr::null_mut()
             ) 
@@ -990,7 +1043,11 @@ pub async fn playback_start_with_cache(
                 };
 
                 if is_current_track {
-                    println!("[bass] Cache download completed, switching to cached file: {}", result.cached_path);
+                    if result.partial {
+                        println!("[bass] Partial cache available, switching to cached file early: {}", result.cached_path);
+                    } else {
+                        println!("[bass] Cache download completed, switching to cached file: {}", result.cached_path);
+                    }
 
                     // Get current position to resume from same point (without holding lock across await)
                     let current_position = {
@@ -1115,7 +1172,7 @@ async fn resolve_youtube_source(value: &str) -> Result<String, String> {
 
     // Fallback to streaming endpoint if direct URL extraction fails
     println!("[resolve] Falling back to streaming endpoint for video ID: {}", video_id);
-    Ok(format!("http://localhost:9000/source/youtube?id={}&get=stream", video_id))
+    Ok(format!("http://localhost:9000/source/youtube?id={}", video_id))
 }
 
 async fn resolve_audio_source(source_type: &str, value: &str) -> Result<String, String> {
@@ -1656,10 +1713,10 @@ pub async fn get_audio_devices() -> Result<serde_json::Value, String> {
         let is_default = bass_says_default && !found_default_device;
         if is_default {
             found_default_device = true;
-            println!("[bass] Setting device {} as the single default device", device_index);
+            //println!("[bass] Setting device {} as the single default device", device_index);
         }
         
-        println!("[bass] Found device {}: {} (driver: {}, enabled: {}, default: {}, init: {})", 
+        //println!("[bass] Found device {}: {} (driver: {}, enabled: {}, default: {}, init: {})", 
                  device_index, device_name, driver_name, is_enabled, is_default, is_initialized);
         
         // Add device to list (include all devices, but mark their status)

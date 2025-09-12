@@ -11,6 +11,32 @@ use server::{server_start, server_status, PathState};
 use window::{handle_window_resize, WindowState};
 
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
+
+#[tauri::command]
+async fn save_file_dialog(app: tauri::AppHandle) -> Option<String> {
+    // The plugin exposes an async callback-based API on the `app` via DialogExt
+    // We'll use a oneshot channel to turn the callback into an awaitable future.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+
+    // Use the plugin dialog extension to show the save dialog
+    // This runs on the main thread and invokes the callback with an Option<FilePath>
+    app.dialog().file().save_file(move |file_path| {
+        // send selected path (or None) back through channel; ignore send errors
+        let _ = tx.send(file_path);
+    });
+
+    match rx.await {
+        Ok(Some(fp)) => {
+            // FilePath may be a FilePath::Path or FilePath::Url; convert to OS string when possible
+            match fp {
+                tauri_plugin_dialog::FilePath::Path(p) => Some(p.to_string_lossy().to_string()),
+                tauri_plugin_dialog::FilePath::Url(u) => Some(u.to_string()),
+            }
+        }
+        _ => None,
+    }
+}
 
 #[tauri::command]
 async fn close_splashscreen(window: tauri::WebviewWindow) {
@@ -57,6 +83,7 @@ async fn update_loading_status(app_handle: tauri::AppHandle, status: String) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Initialize application directories
             let resource_dir = app.path().resource_dir()
@@ -117,6 +144,8 @@ fn main() {
             close_splashscreen,
             show_main_window,
             app_ready,
+            save_file_dialog,
+            save_file_and_write,
             update_loading_status,
             // Database commands
             db::db_path,
@@ -132,6 +161,7 @@ fn main() {
             search::source_search,
             // YouTube commands
             youtube::youtube_get_info,
+            // (no fs command)
             // Playback commands
             playback::playback_start,
             playback::playback_start_with_cache,
@@ -183,4 +213,61 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// Show a native save dialog and write the provided contents to the selected path.
+// Returns the saved path as a String on success or None if cancelled / failed.
+#[tauri::command]
+async fn save_file_and_write(app: tauri::AppHandle, default_file_name: Option<String>, contents: String) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+
+    // Show save dialog with optional default filename and restrict to JSON files
+    let builder = app.dialog().file();
+    let builder = if let Some(ref name) = default_file_name {
+        // clone the String so we pass an owned value into set_file_name
+        builder.set_file_name(name.clone())
+    } else {
+        builder
+    };
+    // Add a JSON filter so the dialog suggests/limits to .json
+    let mut builder = builder.add_filter("JSON", &["json"]);
+
+    // If possible, set the starting directory to the user's Downloads folder
+    if let Ok(download_dir) = app.path().download_dir() {
+        // download_dir is a PathBuf; set_directory expects a path
+        builder = builder.set_directory(download_dir);
+    }
+    builder.save_file(move |fp| {
+        let _ = tx.send(fp);
+    });
+
+    let selected = match rx.await {
+        Ok(Some(fp)) => Some(fp),
+        _ => None,
+    };
+
+    if let Some(fp) = selected {
+        // Try to convert to a PathBuf and write contents. Clone first because into_path() consumes fp.
+        let fp_clone = fp.clone();
+        match fp_clone.into_path() {
+            Ok(mut pathbuf) => {
+                // Ensure the file has a .json extension; if not, append it.
+                if pathbuf.extension().is_none() || pathbuf.extension().and_then(|s| s.to_str()) != Some("json") {
+                    pathbuf.set_extension("json");
+                }
+
+                if let Err(e) = std::fs::write(&pathbuf, contents) {
+                    eprintln!("Failed to write file: {}", e);
+                    return None;
+                }
+                return Some(pathbuf.to_string_lossy().to_string());
+            }
+            Err(_) => {
+                // Could not convert to path; return the URL/string form
+                return Some(fp.to_string());
+            }
+        }
+    }
+
+    None
 }

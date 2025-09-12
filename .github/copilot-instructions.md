@@ -69,6 +69,77 @@ This will create a distributable package for your operating system in the `build
 *   `src-tauri/src/main.rs`: The main Rust file for the Tauri application.
 *   `https://schema.tauri.app/config/2`: The schema for the Tauri configuration file.
 
+### Commit Message Conventions
+
+When making commits to the codebase, please follow these conventions for commit messages:
+*   Use the present tense ("Add feature" not "Added feature").
+*   Use the imperative mood ("Fix bug" not "Fixed bug" or "Fixes bug").
+*   Limit the first line to 50 characters or less.
+*   Make it easy to copy.
+
+Styling and desing example for the message:
+
+```
+Release v0.11.6: Enhanced YouTube Integration, BASS Audio Engine, and Performance Optimizations
+
+## 🚀 Major Features & Improvements
+
+### YouTube Streaming Integration
+- ✅ Fixed YouTube-DL spawn errors in production builds
+- ✅ Implemented robust binary path detection for Windows AppData locations
+- ✅ Added enhanced error handling and caching for YouTube video info retrieval
+- ✅ Optimized YouTube metadata extraction with format preference support
+
+### Audio Engine & Playback
+- 🎵 Integrated BASS audio library for high-performance playback
+- 🎚️ Added comprehensive audio settings UI components and controls
+- 🔊 Implemented volume control, muting, and audio preferences persistence
+- ⚡ Enhanced playback tracking with optimized polling and seek functionality
+
+### Tauri Desktop Integration
+- 🖥️ Improved Tauri configuration with proper resource bundling
+- 📦 Enhanced build process with automatic binary fetching (YouTube-DL, BASS)
+- 🔧 Fixed production build issues and resource path resolution
+- 🎯 Optimized window management and native OS integrations
+
+### Performance & Caching
+- 🚀 Implemented multi-level caching system (memory + file-based)
+- 📈 Enhanced Spotify API caching with persistent database storage
+- ⚡ Optimized database operations for playlists and track management
+- 🔄 Improved pub/sub logic for real-time UI updates
+
+### User Experience Enhancements
+- 🎨 Added context menu functionality with provider pattern
+- 📱 Improved responsive design and panel management
+- 🌍 Enhanced internationalization support with locale management
+- 🎵 Better playlist management with drag-and-drop reordering
+
+### Backend & Infrastructure
+- 🔧 Fixed server endpoint routing issues in production builds
+- 🌐 Enhanced WebTorrent integration with polyfills and file streaming
+- 📊 Added comprehensive error handling and logging throughout
+- 🛠️ Improved build scripts and development workflow
+
+## 🐛 Bug Fixes
+- Fixed "child is not defined" error in YouTube-DL execution
+- Resolved spawn EFTYPE errors in Windows production builds
+- Fixed splash screen FOUC (Flash of Unstyled Content)
+- Corrected binary path detection for bundled resources
+
+## 📦 Technical Improvements
+- Migrated from download-based to bundle-based binary management
+- Enhanced error handling with detailed spawn error reporting
+- Improved file validation and permission checking
+- Optimized memory usage with intelligent cache eviction
+
+## 🔄 Breaking Changes
+- Updated binary management approach (bundled vs downloaded)
+- Modified YouTube-DL integration to use production-ready paths
+- Enhanced Tauri configuration for better resource handling
+
+This release significantly improves the stability and performance of the P2P music streaming application, with particular focus on YouTube integration and native desktop functionality.
+```
+
 ## Coding Guidelines
 
 When contributing to the Freely codebase, please follow these guidelines:
