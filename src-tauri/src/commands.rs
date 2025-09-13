@@ -289,4 +289,205 @@ pub mod external {
             .await
             .map_err(|e| format!("Failed to parse Spotify response: {}", e))
     }
+
+    #[tauri::command]
+    pub async fn musixmatch_fetch_lyrics(
+        title: String,
+        artist: String,
+        paths: tauri::State<'_, crate::server::PathState>,
+    ) -> Result<serde_json::Value, String> {
+    use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+    use std::fs;
+
+    // Normalize a string for cache key (lowercase, collapse whitespace)
+    fn norm(s: &str) -> String {
+        s.to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    // Compute cache file path under app config dir
+    let base_dir: PathBuf = paths
+        .db_file
+        .parent()
+        .ok_or("Invalid app config path")?
+        .join("lyrics_cache");
+    let key = format!("v1|musixmatch|{}|{}", norm(&title), norm(&artist));
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    let hash_hex = format!("{:x}", hasher.finalize());
+    let file_path = base_dir.join(format!("{}.json", hash_hex));
+
+    // Try cache first
+    if let Ok(data) = fs::read_to_string(&file_path) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+            return Ok(json);
+        }
+    }
+    use reqwest::header::{HeaderMap, HeaderValue, HeaderName, USER_AGENT, ACCEPT};
+
+    // Build client with browser-like headers + cookies (as used by onetagger)
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36"));
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json, text/plain, */*"));
+    headers.insert(HeaderName::from_static("accept-language"), HeaderValue::from_static("en-US,en;q=0.9"));
+    headers.insert(HeaderName::from_static("origin"), HeaderValue::from_static("https://www.musixmatch.com"));
+    headers.insert(HeaderName::from_static("referer"), HeaderValue::from_static("https://www.musixmatch.com/"));
+    headers.insert(HeaderName::from_static("cookie"), HeaderValue::from_static("AWSELBCORS=0; AWSELB=0"));
+    headers.insert(HeaderName::from_static("x-requested-with"), HeaderValue::from_static("XMLHttpRequest"));
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+        // Simple redirect-following GET -> JSON helper (limit 5 hops)
+        async fn get_json_follow_redirects(client: &reqwest::Client, mut url: reqwest::Url) -> Result<serde_json::Value, String> {
+            let mut hops = 0usize;
+            loop {
+                let resp = client.get(url.clone()).send().await
+                    .map_err(|e| format!("request failed: {}", e))?;
+                if resp.status().is_redirection() {
+                    if hops >= 5 { return Err("too many redirects".into()); }
+                    let location = resp.headers().get(reqwest::header::LOCATION)
+                        .and_then(|v| v.to_str().ok())
+                        .ok_or_else(|| "redirect without Location".to_string())?;
+                    // Build next URL relative to previous
+                    url = url.join(location).map_err(|e| format!("redirect URL join failed: {}", e))?;
+                    hops += 1;
+                    continue;
+                }
+                if !resp.status().is_success() {
+                    return Err(format!("HTTP {}", resp.status()));
+                }
+                return resp.json::<serde_json::Value>().await
+                    .map_err(|e| format!("response parse failed: {}", e));
+            }
+        }
+
+        async fn get_token(client: &reqwest::Client) -> Result<String, String> {
+            let mut url = reqwest::Url::parse("https://apic-desktop.musixmatch.com/ws/1.1/token.get")
+                .map_err(|e| format!("URL parse error: {}", e))?;
+            let t_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "SystemTime before UNIX_EPOCH".to_string())?
+                .as_millis()
+                .to_string();
+            url.query_pairs_mut()
+                .append_pair("user_language", "en")
+                .append_pair("app_id", "web-desktop-app-v1.0")
+                .append_pair("t", &t_ms);
+            let resp = get_json_follow_redirects(client, url).await
+                .map_err(|e| format!("Musixmatch token request failed: {}", e))?;
+            let status = resp["message"]["header"]["status_code"].as_i64().unwrap_or(0);
+            if status == 401 { return Err("Unauthorized (token)".to_string()); }
+            let token = resp["message"]["body"]["user_token"].as_str().ok_or("Missing user_token")?;
+            Ok(token.to_string())
+        }
+
+        async fn macro_call(client: &reqwest::Client, token: &str, title: &str, artist: &str) -> Result<serde_json::Value, String> {
+            let mut url = reqwest::Url::parse("https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get")
+                .map_err(|e| format!("URL parse error: {}", e))?;
+            let t_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "SystemTime before UNIX_EPOCH".to_string())?
+                .as_millis()
+                .to_string();
+            url.query_pairs_mut()
+                .append_pair("format", "json")
+                .append_pair("namespace", "lyrics_richsynced")
+                .append_pair("optional_calls", "track.richsync")
+                .append_pair("subtitle_format", "lrc")
+                .append_pair("q_artist", artist)
+                .append_pair("q_track", title)
+                .append_pair("app_id", "web-desktop-app-v1.0")
+                .append_pair("usertoken", token)
+                .append_pair("t", &t_ms);
+            let resp = get_json_follow_redirects(client, url).await
+                .map_err(|e| format!("Musixmatch macro request failed: {}", e))?;
+            Ok(resp)
+        }
+
+        // Try token + macro, with one retry on 401 at macro stage
+        let mut token = get_token(&client).await?;
+        let mut macro_resp = macro_call(&client, &token, &title, &artist).await?;
+        let status = macro_resp["message"]["header"]["status_code"].as_i64().unwrap_or(0);
+        if status == 401 {
+            // refresh token once and retry macro
+            token = get_token(&client).await?;
+            macro_resp = macro_call(&client, &token, &title, &artist).await?;
+        }
+
+        // Return the inner body (macro_calls payload) if present; else the whole response
+        let body = macro_resp
+            .get("message").and_then(|m| m.get("body"))
+            .cloned()
+            .unwrap_or(macro_resp);
+        // Persist to cache (best-effort)
+        if let Err(e) = (|| -> Result<(), String> {
+            fs::create_dir_all(&base_dir)
+                .map_err(|e| format!("Failed creating lyrics cache dir: {}", e))?;
+            let serialized = serde_json::to_string(&body)
+                .map_err(|e| format!("Failed to serialize lyrics JSON: {}", e))?;
+            fs::write(&file_path, serialized)
+                .map_err(|e| format!("Failed writing lyrics cache: {}", e))?;
+            Ok(())
+        })() {
+            eprintln!("lyrics cache write failed: {}", e);
+        }
+        Ok(body)
+    }
+
+    // Lightweight file-based cache for lyrics (text/JSON) stored under app config dir
+    #[tauri::command]
+    pub async fn lyrics_cache_get(key: String, paths: tauri::State<'_, crate::server::PathState>) -> Result<Option<String>, String> {
+        use sha2::{Digest, Sha256};
+        use std::path::PathBuf;
+
+        // Compute cache directory based on app config directory (use db_file's parent)
+        let base_dir: PathBuf = paths
+            .db_file
+            .parent()
+            .ok_or("Invalid app config path")?
+            .join("lyrics_cache");
+
+        // Hash the key to a filename (avoid filesystem issues)
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        let hash_hex = format!("{:x}", hasher.finalize());
+        let file_path = base_dir.join(format!("{}.json", hash_hex));
+
+        if !file_path.exists() {
+            return Ok(None);
+        }
+        let data = std::fs::read_to_string(&file_path)
+            .map_err(|e| format!("Failed reading lyrics cache: {}", e))?;
+        Ok(Some(data))
+    }
+
+    #[tauri::command]
+    pub async fn lyrics_cache_set(key: String, content: String, paths: tauri::State<'_, crate::server::PathState>) -> Result<bool, String> {
+        use sha2::{Digest, Sha256};
+        use std::path::PathBuf;
+        use std::fs;
+
+        let base_dir: PathBuf = paths
+            .db_file
+            .parent()
+            .ok_or("Invalid app config path")?
+            .join("lyrics_cache");
+
+        // Ensure cache directory exists
+        fs::create_dir_all(&base_dir).map_err(|e| format!("Failed creating lyrics cache dir: {}", e))?;
+
+        // Hash key -> filename
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        let hash_hex = format!("{:x}", hasher.finalize());
+        let file_path = base_dir.join(format!("{}.json", hash_hex));
+
+        fs::write(&file_path, content).map_err(|e| format!("Failed writing lyrics cache: {}", e))?;
+        Ok(true)
+    }
 }

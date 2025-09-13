@@ -1,6 +1,6 @@
 [package]
 name = "freely"
-version = "0.11.8"
+version = "0.12.0"
 description = "A local music player with torrent streaming support."
 authors = ["Gottesman <gottesman@example.com>"]
 edition = "2021"

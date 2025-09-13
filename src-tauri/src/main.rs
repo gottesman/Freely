@@ -189,6 +189,9 @@ fn main() {
             // External API commands
             external::charts_get_weekly_tops,
             external::genius_search,
+            external::musixmatch_fetch_lyrics,
+            external::lyrics_cache_get,
+            external::lyrics_cache_set,
             external::spotify_search,
         ])
         .on_window_event(|window, event| {

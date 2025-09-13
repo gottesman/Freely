@@ -1,7 +1,6 @@
 const express = require('express');
 const YtDlpManager = require('../managers/YtDlpManager');
 const CacheManager = require('../managers/CacheManager');
-const YouTubeProxy = require('../utils/YouTubeProxy');
 const { SERVER_CONSTANTS } = require('../config/constants');
 
 const router = express.Router();
@@ -123,53 +122,6 @@ router.get('/youtube', async (req, res) => {
         cached: !!forceInfo
       };
       return res.json(metadata);
-    }
-
-    // Stream mode: proxy the audio URL
-    try {
-      await YouTubeProxy.proxyUrl(chosen.url, req, res, { debug });
-      return;
-    } catch (proxyErr) {
-      if (debug) {
-        console.warn('[youtube] primary CDN proxy failed', proxyErr?.message || proxyErr);
-      }
-
-      // Try fallback formats
-      if (Array.isArray(info?.formats) && info.formats.length) {
-        const tried = new Set([chosen.url]);
-        const candidates = info.formats
-          .filter(f => f && f.url && f.acodec && f.acodec !== 'none')
-          .sort((a, b) => (a.requested ? -1 : 0) - (b.requested ? -1 : 0));
-
-        for (const fmt of candidates) {
-          try {
-            if (!fmt.url || tried.has(fmt.url)) continue;
-            if (debug) {
-              console.log('[youtube] trying fallback format', fmt.ext || fmt.format || 'unknown');
-            }
-            tried.add(fmt.url);
-            await YouTubeProxy.proxyUrl(fmt.url, req, res, { debug });
-            return;
-          } catch (e2) {
-            if (debug) {
-              console.warn('[youtube] fallback format failed', e2?.message || e2);
-            }
-            // Continue to next format
-          }
-        }
-      }
-
-      // All attempts failed
-      if (!res.headersSent) {
-        return res.status(502).json({ 
-          success: false,
-          error: 'failed to proxy any CDN url', 
-          reason: proxyErr?.message || String(proxyErr) 
-        });
-      } else {
-        try { res.end(); } catch (_) {}
-        return;
-      }
     }
 
   } catch (err) {

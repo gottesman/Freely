@@ -65,6 +65,19 @@ const LIBRARIES = {
       linux: 'libbassopus.so'
     }
   },
+  basshls: {
+    name: 'BASS HLS Plugin',
+    urls: {
+      win32: `https://www.un4seen.com/files/basshls${VERSION}.zip`,
+      darwin: `https://www.un4seen.com/files/basshls${VERSION}-osx.zip`,
+      linux: `https://www.un4seen.com/files//basshls${VERSION}-linux.zip`
+    },
+    files: {
+      win32: 'basshls.dll',
+      darwin: 'libbasshls.dylib',
+      linux: 'libbasshls.so'
+    }
+  },
   bass_aac: {
     name: 'BASS AAC Plugin',
     urls: {

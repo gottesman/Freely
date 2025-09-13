@@ -33,6 +33,7 @@
   "player.play": "Play",
   "player.hideLyrics": "Hide lyrics",
   "player.showLyrics": "Show lyrics",
+  "lyrics.unavailable": "Lyrics unavailable",
   "player.hideQueue": "Hide queue",
   "player.showQueue": "Show queue",
   "player.mute": "Mute",

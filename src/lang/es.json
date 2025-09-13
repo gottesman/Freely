@@ -28,6 +28,7 @@
   "player.play": "Reproducir",
   "player.hideLyrics": "Ocultar letras",
   "player.showLyrics": "Mostrar letras",
+  "lyrics.unavailable": "Letras no disponibles",
   "player.hideQueue": "Ocultar cola",
   "player.showQueue": "Mostrar cola",
   "player.mute": "Silencio",

@@ -751,45 +751,6 @@ nav.left-nav {
   }
 }
 
-/* Now Playing Lyrics Overlay */
-.np-lyrics-scroll {
-  /* scroll container — allow the body content to scroll while the close button remains fixed */
-  max-height: 85vh;
-  width: min(900px, 94%);
-  overflow: auto;
-  position: relative; /* anchor for absolutely positioned close button */
-  -webkit-overflow-scrolling: touch;
-}
-
-.np-lyrics-body {
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-  border-radius: 12px;
-  padding: 28px 20px 20px 20px;
-  position: relative;
-}
-
-.np-lyrics-body .np-overlay-close {
-  /* Keep the close button fixed in the viewport so it doesn't move while lyrics scroll */
-  position: fixed;
-  top: 20px; /* place it near the top of the centered lyrics container */
-  right: calc((100% - min(900px, 94%)) / 2 + 12px); /* horizontally align to the right edge of the centered scroll container + 12px inset */
-  z-index: 904;
-  background: rgba(0,0,0,0.28);
-  border-radius: 8px;
-  padding: 6px;
-}
-
-@media (max-width: 640px) {
-  .np-lyrics-body .np-overlay-close {
-    /* On smaller screens, keep the button inset from the viewport edge */
-    top: 4vh;
-    right: 3%;
-  }
-}
-
-.np-lyrics-body h2 { margin-top: 0; margin-bottom: 8px; }
-.np-lyrics-body pre { white-space: pre-wrap; word-break: break-word; }
-
 /* Search Results */
 .search-results {
   display:flex;

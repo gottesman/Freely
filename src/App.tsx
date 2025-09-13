@@ -5,6 +5,7 @@ import RightPanel from './components/RightPanel';
 import BottomPlayer from './components/BottomPlayer';
 import LyricsOverlay from './components/LyricsOverlay';
 import GeniusClient from './core/musicdata';
+import MusixmatchClient, { SyncedLyrics } from './core/lyrics-musixmatch';
 import AddToPlaylistModal from './components/AddToPlaylistModal';
 import { DBProvider, useDB } from './core/dbIndexed';
 import { PlaybackProvider, usePlaybackSelector } from './core/playback';
@@ -136,7 +137,7 @@ function useWindowState() {
           if (isMounted) setMaximized(true);
         });
         unlistenFns.push(unlistenMax);
-        
+
         const unlistenUnmax = await wnd.listen('window:unmaximize', () => {
           if (isMounted) setMaximized(false);
         });
@@ -181,7 +182,7 @@ function useDebouncedSearch(searchState: SearchState, setSearchState: React.Disp
 
   useEffect(() => {
     const { query, triggeredAt } = searchState;
-    
+
     if (!query?.trim()) {
       setSearchState(prev => ({ ...prev, results: undefined, loading: false }));
       lastRef.current = { query: null, trigger: null };
@@ -200,7 +201,7 @@ function useDebouncedSearch(searchState: SearchState, setSearchState: React.Disp
     timerRef.current = setTimeout(async () => {
       lastRef.current = { query: trimmedQuery, trigger: triggeredAt };
       setSearchState(prev => ({ ...prev, loading: true }));
-      
+
       try {
         const client = await import('./core/spotify-client');
         const results = await client.search(trimmedQuery, ['track', 'artist', 'album', 'playlist'], { limit: 50 });
@@ -237,20 +238,20 @@ export default function App() {
 
 function Main() {
   const { t } = useI18n();
-  const { ready: dbReady, getSetting, setSetting, getApiCache, setApiCache } = useDB();
+  const { ready: dbReady, getSetting, setSetting } = useDB();
   const { ready, states } = useAppReady(dbReady);
   const playbackCurrent = usePlaybackSelector(s => s.currentTrack);
-  
+
   // Custom hooks for better organization
   const { isMaximized, windowControls } = useWindowState();
-  
+
   // Consolidated state management
   const [uiState, setUIState] = useState<UIState>(initialUIState);
   const [searchState, setSearchState] = useState<SearchState>(initialSearchState);
   const [tabState, setTabState] = useState<TabState>(initialTabState);
   const [lyricsState, setLyricsState] = useState<LyricsState>(initialLyricsState);
   const [modalState, setModalState] = useState<ModalState>(initialModalState);
-  
+
   // Refs for performance
   const currentTrackIdRef = useRef<string | undefined>(undefined);
   const loadedRef = useRef(false);
@@ -271,7 +272,7 @@ function Main() {
     if (ready) return; // Don't send updates once ready
 
     let statusText = 'Initializing...';
-    
+
     if (states.dbReady) {
       statusText = 'Database ready.';
     } if (states.fontsReady) {
@@ -308,7 +309,7 @@ function Main() {
           getSetting('ui.rightCollapsed'),
           getSetting('ui.rightTab'),
         ]);
-        
+
         if (!mounted) return;
 
         setUIState(prev => ({
@@ -327,11 +328,11 @@ function Main() {
             const obj = JSON.parse(raw);
             setUIState(prev => ({
               ...prev,
-              leftWidth: typeof obj.leftWidth === 'number' 
-                ? Math.min(Math.max(obj.leftWidth, UI_CONSTANTS.minPanel), UI_CONSTANTS.maxPanel) 
+              leftWidth: typeof obj.leftWidth === 'number'
+                ? Math.min(Math.max(obj.leftWidth, UI_CONSTANTS.minPanel), UI_CONSTANTS.maxPanel)
                 : prev.leftWidth,
-              rightWidth: typeof obj.rightWidth === 'number' 
-                ? Math.min(Math.max(obj.rightWidth, UI_CONSTANTS.minPanel), UI_CONSTANTS.maxPanel) 
+              rightWidth: typeof obj.rightWidth === 'number'
+                ? Math.min(Math.max(obj.rightWidth, UI_CONSTANTS.minPanel), UI_CONSTANTS.maxPanel)
                 : prev.rightWidth,
               leftCollapsed: obj.leftCollapsed === true,
               rightCollapsed: obj.rightCollapsed === true,
@@ -352,16 +353,16 @@ function Main() {
   // Persist UI state when values change
   useEffect(() => {
     if (!dbReady) return;
-    
+
     const { leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab } = uiState;
-    
+
     try {
       setSetting('ui.leftWidth', String(leftWidth));
       setSetting('ui.rightWidth', String(rightWidth));
       setSetting('ui.leftCollapsed', leftCollapsed ? '1' : '0');
       setSetting('ui.rightCollapsed', rightCollapsed ? '1' : '0');
       setSetting('ui.rightTab', rightTab);
-      
+
       // Backup to localStorage
       const payload = { leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab };
       window.localStorage?.setItem('ui.layout.v1', JSON.stringify(payload));
@@ -413,8 +414,8 @@ function Main() {
   // Selection helpers: only update id if different (avoids re-rendering SongInfo if same id)
   const handleSelectTrack = useCallback((id?: string) => {
     if (!id) return;
-    setTabState(prev => ({ 
-      ...prev, 
+    setTabState(prev => ({
+      ...prev,
       songInfoTrackId: prev.songInfoTrackId === id ? prev.songInfoTrackId : id,
       activeTab: 'song'
     }));
@@ -423,8 +424,8 @@ function Main() {
   const handleActivateSongInfo = useCallback(() => {
     const current = currentTrackIdRef.current;
     if (current) {
-      setTabState(prev => ({ 
-        ...prev, 
+      setTabState(prev => ({
+        ...prev,
         songInfoTrackId: prev.songInfoTrackId === current ? prev.songInfoTrackId : current,
         activeTab: 'song'
       }));
@@ -433,8 +434,8 @@ function Main() {
 
   const handleSelectAlbum = useCallback((id?: string) => {
     if (!id) return;
-    setTabState(prev => ({ 
-      ...prev, 
+    setTabState(prev => ({
+      ...prev,
       albumInfoAlbumId: prev.albumInfoAlbumId === id ? prev.albumInfoAlbumId : id,
       activeTab: 'album'
     }));
@@ -442,8 +443,8 @@ function Main() {
 
   const handleSelectPlaylist = useCallback((id?: string) => {
     if (!id) return;
-    setTabState(prev => ({ 
-      ...prev, 
+    setTabState(prev => ({
+      ...prev,
       playlistInfoPlaylistId: prev.playlistInfoPlaylistId === id ? prev.playlistInfoPlaylistId : id,
       activeTab: 'playlist'
     }));
@@ -451,8 +452,8 @@ function Main() {
 
   const handleSelectArtist = useCallback((id?: string) => {
     if (!id) return;
-    setTabState(prev => ({ 
-      ...prev, 
+    setTabState(prev => ({
+      ...prev,
       artistInfoArtistId: prev.artistInfoArtistId === id ? prev.artistInfoArtistId : id,
       activeTab: 'artist'
     }));
@@ -507,7 +508,7 @@ function Main() {
     const startWidth = uiState.leftWidth;
     let rafId = 0;
     setUIState(prev => ({ ...prev, draggingLeft: true }));
-    
+
     const move = (ev: MouseEvent) => {
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
@@ -515,14 +516,14 @@ function Main() {
         let candidate = startWidth + delta;
         if (candidate > UI_CONSTANTS.maxPanel) candidate = UI_CONSTANTS.maxPanel;
         if (candidate < UI_CONSTANTS.minPanel) candidate = UI_CONSTANTS.minPanel;
-        setUIState(prev => ({ 
-          ...prev, 
+        setUIState(prev => ({
+          ...prev,
           leftWidth: candidate,
           collapseIntentLeft: startWidth + delta < UI_CONSTANTS.collapseIntentThreshold
         }));
       });
     };
-    
+
     const up = (ev: MouseEvent) => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', move);
@@ -530,7 +531,7 @@ function Main() {
       window.removeEventListener('mouseleave', up);
       const delta = ev.clientX - startX;
       const finalRaw = startWidth + delta;
-      
+
       setUIState(prev => ({
         ...prev,
         leftCollapsed: finalRaw < UI_CONSTANTS.collapseThreshold ? true : prev.leftCollapsed,
@@ -539,7 +540,7 @@ function Main() {
         collapseIntentLeft: false
       }));
     };
-    
+
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     window.addEventListener('mouseleave', up);
@@ -552,7 +553,7 @@ function Main() {
     const startWidth = uiState.rightWidth;
     let rafId = 0;
     setUIState(prev => ({ ...prev, draggingRight: true }));
-    
+
     const move = (ev: MouseEvent) => {
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
@@ -560,14 +561,14 @@ function Main() {
         let candidate = startWidth + delta;
         if (candidate > UI_CONSTANTS.maxPanel) candidate = UI_CONSTANTS.maxPanel;
         if (candidate < UI_CONSTANTS.minPanel) candidate = UI_CONSTANTS.minPanel;
-        setUIState(prev => ({ 
-          ...prev, 
+        setUIState(prev => ({
+          ...prev,
           rightWidth: candidate,
           collapseIntentRight: startWidth + delta < UI_CONSTANTS.collapseIntentThreshold
         }));
       });
     };
-    
+
     const up = (ev: MouseEvent) => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', move);
@@ -575,7 +576,7 @@ function Main() {
       window.removeEventListener('mouseleave', up);
       const delta = startX - ev.clientX;
       const finalRaw = startWidth + delta;
-      
+
       setUIState(prev => ({
         ...prev,
         rightCollapsed: finalRaw < UI_CONSTANTS.collapseThreshold ? true : prev.rightCollapsed,
@@ -584,7 +585,7 @@ function Main() {
         collapseIntentRight: false
       }));
     };
-    
+
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     window.addEventListener('mouseleave', up);
@@ -620,10 +621,14 @@ function Main() {
 
   // Additional lyrics state that wasn't consolidated
   const [lyricsText, setLyricsText] = useState<string | undefined>(undefined);
+  const [lyricsSynced, setLyricsSynced] = useState<SyncedLyrics | undefined>(undefined);
   const [lyricsTitle, setLyricsTitle] = useState<string | undefined>(undefined);
+  const [lyricsSource, setLyricsSource] = useState<string | undefined>(undefined);
 
   // Fetch lyrics when overlay opens for the current playing track
   const playbackCurrentTrack = usePlaybackSelector(s => s.currentTrack);
+
+  // Frontend lyrics caching removed; rely on backend (Tauri) caching inside musixmatch command
   useEffect(() => {
     let cancelled = false;
     if (!lyricsState.open) return undefined;
@@ -631,74 +636,62 @@ function Main() {
       if (!playbackCurrentTrack) return;
       setLyricsState(prev => ({ ...prev, loading: true }));
       setLyricsText(undefined);
+      setLyricsSynced(undefined);
       setLyricsTitle(undefined);
+      setLyricsSource(undefined);
+
+      // Try Musixmatch first (backend handles caching)
+      const trackName = playbackCurrentTrack?.name || '';
+      const artistNames = (playbackCurrentTrack?.artists || []).map((a: any) => a.name).join(', ');
+      try {
+        const mm = new MusixmatchClient();
+        const mmRes = await mm.fetchLyrics(trackName, artistNames);
+        if (!cancelled && mmRes?.html) {
+          if (mmRes.synced) {
+            setLyricsSynced(mmRes.synced); // mmRes.synced is now guaranteed to have the correct shape
+          }
+          setLyricsText(mmRes.html);
+          setLyricsSource(mmRes.synced ? 'Musixmatch (synced)' : 'Musixmatch');
+          setLyricsTitle(`${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a: any) => a.name).join(', ')}`);
+          setLyricsState(prev => ({ ...prev, loading: false }));
+          return; // success
+        }
+      } catch (_) { /* ignore musixmatch errors */ }
+
+      // Fallback: Genius (no frontend caching)
       try {
         const gc = new GeniusClient();
-        // Attempt to find a Genius song via search using track + primary artist
         const q = `${playbackCurrentTrack.name} ${playbackCurrentTrack.artists?.[0]?.name || ''}`.trim();
         const res = await gc.search(q);
         const hit = res.hits && res.hits.length ? res.hits[0] : undefined;
-
-        // Check DB cache first (best-effort). Keys:
-        // - LYRICS:GENIUS:<songId>
-        // - LYRICS:URL:<trackUrl>
-        let cachedLyrics: any = null;
-        try {
-          if (hit && hit.id) cachedLyrics = await getApiCache(`LYRICS:GENIUS:${hit.id}`);
-        } catch (_) { cachedLyrics = null; }
-        try {
-          if (!cachedLyrics && playbackCurrentTrack?.url) cachedLyrics = await getApiCache(`LYRICS:URL:${playbackCurrentTrack.url}`);
-        } catch (_) { /* ignore */ }
-
-        if (cachedLyrics && cachedLyrics.lyrics) {
-          if (!cancelled) {
-            setLyricsText(cachedLyrics.lyrics);
-            setLyricsTitle(cachedLyrics.title || `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}`);
-          }
-        } else {
-          let lyricsRes: any = null;
-          if (hit && hit.id) {
-            lyricsRes = await gc.getLyricsForSong(hit.id);
-          }
-          
+        if (hit && hit.id) {
+          const lyricsRes = await gc.getLyricsForSong(hit.id);
           const finalLyrics = lyricsRes?.lyrics || undefined;
-          if (!cancelled) {
+          if (!cancelled && finalLyrics) {
             setLyricsText(finalLyrics);
-            setLyricsTitle(finalLyrics ? `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}` : undefined);
+            setLyricsTitle(`${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a: any) => a.name).join(', ')}`);
+            setLyricsSource('Genius');
           }
-
-          // Persist into DB for future use (best-effort)
-          try {
-            if (lyricsRes && lyricsRes.lyrics && hit && hit.id) {
-              await setApiCache(`LYRICS:GENIUS:${hit.id}`, { lyrics: lyricsRes.lyrics, title: `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}` });
-            }
-            if (finalLyrics && playbackCurrentTrack?.url) {
-              await setApiCache(`LYRICS:URL:${playbackCurrentTrack.url}`, { lyrics: finalLyrics, title: `${playbackCurrentTrack.name} — ${playbackCurrentTrack.artists?.map((a:any)=>a.name).join(', ')}` });
-            }
-          } catch (e) { /* ignore persistence errors */ }
         }
-      } catch (e) {
-        // ignore errors; lyricsText stays undefined
-      } finally {
-        if (!cancelled) setLyricsState(prev => ({ ...prev, loading: false }));
-      }
+      } catch (_) { /* ignore genius errors */ }
+      if (!cancelled) setLyricsState(prev => ({ ...prev, loading: false }));
     })();
     return () => { cancelled = true; };
-  }, [lyricsState.open, playbackCurrentTrack, getApiCache, setApiCache]);
+  }, [lyricsState.open, playbackCurrentTrack]);
 
   const toggleQueueTab = useCallback(() => {
-    setUIState(prev => ({ 
-      ...prev, 
-      rightTab: prev.rightTab === 'queue' ? 'artist' : 'queue' 
+    setUIState(prev => ({
+      ...prev,
+      rightTab: prev.rightTab === 'queue' ? 'artist' : 'queue'
     }));
   }, []);
 
   // Direct event-driven AddToPlaylist modal host (replaces former Provider/Context)
   useEffect(() => {
-    function onOpen(ev: Event){
+    function onOpen(ev: Event) {
       const d = (ev as CustomEvent).detail || {};
       const track = d.track || d.tracks?.[0] || d.trackData || (Array.isArray(d.trackIds) && d.trackIds.length ? { id: d.trackIds[0] } : null);
-      if(track){
+      if (track) {
         setModalState(prev => ({
           ...prev,
           open: true,
@@ -710,9 +703,9 @@ function Main() {
     window.addEventListener('freely:openAddToPlaylistModal', onOpen as any);
     return () => window.removeEventListener('freely:openAddToPlaylistModal', onOpen as any);
   }, []);
-  
-  const closeAddModal = useCallback(() => { 
-    setModalState(prev => ({ ...prev, open: false, track: null, fromBottomPlayer: false })); 
+
+  const closeAddModal = useCallback(() => {
+    setModalState(prev => ({ ...prev, open: false, track: null, fromBottomPlayer: false }));
   }, []);
 
   return (
@@ -756,6 +749,7 @@ function Main() {
                 onClose={() => setLyricsState(prev => ({ ...prev, open: false }))}
                 lyrics={lyricsState.loading ? t('np.loading') : lyricsText}
                 title={lyricsTitle}
+                synced={lyricsSynced}
               />
             </div>
 

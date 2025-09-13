@@ -269,6 +269,7 @@ class YtDlpManager {
         path.join('.', binName),
         path.join('.', 'bin', binName),
         path.join('bin', binName),
+        path.join('..','bin', binName),
         // Tauri production paths
         path.join(process.resourcesPath || '', 'bin', binName),
         path.join(process.resourcesPath || '', binName),
@@ -425,24 +426,10 @@ class YtDlpManager {
         console.warn('[youtube-dl] Failed to parse JSON metadata:', parseErr.message);
         // Continue with basic info
       }
-
-      // Then get the direct URL
-      const urlArgs = [
-        '-f', youtubeDlFormat,
-        videoUrl,
-        '--user-agent', YOUTUBE_USER_AGENT,
-        '-g'  // Get URL only
-      ];
-
-      console.log('[youtube-dl] Getting direct URL for:', videoId);
-      const urlResult = await Promise.race([
-        executeYoutubeDl(urlArgs),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('youtube-dl-url-timeout')), INFO_TIMEOUT)
-        )
-      ]);
-
-      const directUrl = urlResult.trim();
+      if (!metadata || !metadata.url) {
+        throw new Error('No URL found in metadata');
+      }
+      const directUrl = metadata.url;
       
       // Create a more complete info object compatible with the route expectations
       return {

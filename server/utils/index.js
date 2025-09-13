@@ -8,7 +8,6 @@ const stringUtils = require('./stringUtils');
 const scoring = require('./scoring');
 const helpers = require('./helpers');
 const searchCache = require('./searchCache');
-const YouTubeProxy = require('./YouTubeProxy');
 
 // Re-export everything for backward compatibility
 module.exports = {
@@ -22,8 +21,5 @@ module.exports = {
   ...helpers,
   
   // Search cache utilities
-  ...searchCache,
-  
-  // YouTube proxy
-  YouTubeProxy
+  ...searchCache
 };
