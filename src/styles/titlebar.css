@@ -63,3 +63,20 @@
     display: flex;
     align-items: flex-start;
 }
+
+.np-hero-cover {
+    width: calc(var(--np-hero-height) - 32px);
+    aspect-ratio: 1;
+    margin: 16px;
+    margin-right: 0;
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 20px -8px #000;
+    background: var(--glass-bg) var(--hero-image) no-repeat center / cover;
+    flex-shrink: 0;
+}
+
+@media (max-width: 1400px) {
+    .np-hero-cover {
+        display: none;
+    }
+}

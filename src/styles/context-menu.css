@@ -137,3 +137,27 @@
     opacity: 0.5;
     font-size: 18px;
 }
+
+/* Inline items container */
+.cm-inline {
+    display: flex;
+    align-items: center;
+    padding: 0 calc(var(--this-margins) + 6px);
+    gap: 2px;
+}
+
+.cm-inline .cm-item { 
+    margin: 0;
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
+}
+
+.cm-inline .cm-item[style*="width"] {
+    flex: none;
+}
+
+.cm-inline .cm-item .cm-label {
+    justify-content: center;
+    gap: 4px;
+}

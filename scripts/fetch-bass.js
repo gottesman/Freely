@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const AdmZip = require('adm-zip');
+const { url } = require('inspector');
 
 const PLATFORM = process.platform; // 'win32' | 'darwin' | 'linux'
 const ARCH = process.arch; // e.g. x64, arm64
@@ -25,71 +26,78 @@ const FORCE = process.env.FREELY_FORCE_BASS === '1';
 const VERSION = '24'; // corresponds to 2.4
 
 // Define all libraries to download: main BASS + plugins
+const platforms = {
+  win32: {
+    urlSuffix: '',
+    filePreffix: '',
+    fileSuffix: '.dll'
+  },
+  darwin: {
+    urlSuffix: '-osx',
+    filePreffix: 'lib',
+    fileSuffix: '.dylib'
+  },
+  linux: {
+    urlSuffix: '-linux',
+    filePreffix: 'lib',
+    fileSuffix: '.so'
+  },
+  android: {
+    urlSuffix: '-android',
+    filePreffix: 'lib',
+    fileSuffix: '.so'
+  },
+  ios: {
+    urlSuffix: '-ios',
+    filePreffix: '',
+    fileSuffix: ''
+  }
+};
 const LIBRARIES = {
   bass: {
     name: 'BASS Core',
-    urls: {
-      win32: `https://www.un4seen.com/files/bass${VERSION}.zip`,
-      darwin: `https://www.un4seen.com/files/bass${VERSION}-osx.zip`,
-      linux: `https://www.un4seen.com/files/bass${VERSION}-linux.zip`
-    },
-    files: {
-      win32: 'bass.dll',
-      darwin: 'libbass.dylib', 
-      linux: 'libbass.so'
-    }
+    url: `https://www.un4seen.com/files/bass`,
+    file: 'bass'
   },
   bassflac: {
     name: 'BASS FLAC Plugin',
-    urls: {
-      win32: `https://www.un4seen.com/files/bassflac${VERSION}.zip`,
-      darwin: `https://www.un4seen.com/files/bassflac${VERSION}-osx.zip`,
-      linux: `https://www.un4seen.com/files/bassflac${VERSION}-linux.zip`
-    },
-    files: {
-      win32: 'bassflac.dll',
-      darwin: 'libbassflac.dylib',
-      linux: 'libbassflac.so'
-    }
+    url: `https://www.un4seen.com/files/bassflac`,
+    file: 'bassflac'
   },
   bassopus: {
     name: 'BASS Opus Plugin',
-    urls: {
-      win32: `https://www.un4seen.com/files/bassopus${VERSION}.zip`,
-      darwin: `https://www.un4seen.com/files/bassopus${VERSION}-osx.zip`, 
-      linux: `https://www.un4seen.com/files/bassopus${VERSION}-linux.zip`
-    },
-    files: {
-      win32: 'bassopus.dll',
-      darwin: 'libbassopus.dylib',
-      linux: 'libbassopus.so'
-    }
+    url: `https://www.un4seen.com/files/bassopus`,
+    file: 'bassopus'
   },
   basshls: {
     name: 'BASS HLS Plugin',
-    urls: {
-      win32: `https://www.un4seen.com/files/basshls${VERSION}.zip`,
-      darwin: `https://www.un4seen.com/files/basshls${VERSION}-osx.zip`,
-      linux: `https://www.un4seen.com/files//basshls${VERSION}-linux.zip`
-    },
-    files: {
-      win32: 'basshls.dll',
-      darwin: 'libbasshls.dylib',
-      linux: 'libbasshls.so'
-    }
+    url: `https://www.un4seen.com/files/basshls`,
+    file: 'basshls'
   },
   bass_aac: {
     name: 'BASS AAC Plugin',
-    urls: {
-      win32: `https://www.un4seen.com/files/z/2/bass_aac${VERSION}.zip`,
-      darwin: `https://www.un4seen.com/files/z/2/bass_aac${VERSION}-osx.zip`,
-      linux: `https://www.un4seen.com/files/z/2/bass_aac${VERSION}-linux.zip`
-    },
-    files: {
-      win32: 'bass_aac.dll',
-      darwin: 'libbass_aac.dylib',
-      linux: 'libbass_aac.so'
-    }
+    url: `https://www.un4seen.com/files/z/2/bass_aac`,
+    file: 'bass_aac'
+  },
+  bassdsd:{
+    name: 'BASS DSD Plugin',
+    url: `https://www.un4seen.com/files/bassdsd`,
+    file: 'bassdsd'
+  },
+  basswebm:{
+    name: 'BASS WebM Plugin',
+    url: `https://www.un4seen.com/files/basswebm`,
+    file: 'basswebm'
+  },
+  bassalac:{
+    name: 'BASS ALAC Plugin',
+    url: `https://www.un4seen.com/files/bassalac`,
+    file: 'bassalac'
+  },
+  basswv:{
+    name: 'BASS WavPack Plugin',
+    url: `https://www.un4seen.com/files/basswv`,
+    file: 'basswv'
   }
 };
 
@@ -98,7 +106,7 @@ let needsDownload = FORCE;
 if (!needsDownload) {
   console.log('[bass] Checking existing files...');
   for (const [key, lib] of Object.entries(LIBRARIES)) {
-    const targetFile = lib.files[PLATFORM];
+    const targetFile = `${platforms[PLATFORM]?.filePreffix || ''}${lib.file}${platforms[PLATFORM]?.fileSuffix || ''}`;
     const targetPath = path.join(BIN_DIR, targetFile);
     const exists = fs.existsSync(targetPath);
     console.log(`[bass] ${targetFile}: ${exists ? 'EXISTS' : 'MISSING'}`);
@@ -131,8 +139,8 @@ function download(url) {
 }
 
 async function downloadLibrary(key, lib) {
-  const url = lib.urls[PLATFORM];
-  const targetFile = lib.files[PLATFORM];
+  const url = ` ${lib.url}${platforms[PLATFORM]?.urlSuffix || ''}${VERSION}.zip`;
+  const targetFile = `${platforms[PLATFORM]?.filePreffix || ''}${lib.file}${platforms[PLATFORM]?.fileSuffix || ''}`;
   const targetPath = path.join(BIN_DIR, targetFile);
 
   if (!url) {

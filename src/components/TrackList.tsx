@@ -12,6 +12,7 @@ export interface TrackListProps {
   playingTrackId?: string; // currently playing track
   showPlayButton?: boolean;
   onDeleteTrack?: boolean; // if true, show "remove from playlist" option
+  playlistRemove?: (trackId: string) => void; // function to remove track from playlist
   className?: string;
 }
 
@@ -168,6 +169,8 @@ const TrackItem = React.memo(({
       <div className="tl-actions">
         <span className="duration">{fmtMs(track.durationMs)}</span>
         
+        {
+        /*
         <TrackActionButton
           className="queue-track-btn"
           ariaLabel={t('player.addToQueue', 'Add to queue')}
@@ -176,6 +179,8 @@ const TrackItem = React.memo(({
           icon="queue"
           iconStyle={BUTTON_ICON_STYLE}
         />
+        */
+        }
 
         <TrackActionButton
           className="track-more-btn"
@@ -185,17 +190,6 @@ const TrackItem = React.memo(({
           icon="more_horiz"
           iconStyle={BUTTON_ICON_STYLE}
         />
-
-        {onDeleteTrack && (
-          <TrackActionButton
-            className="delete-track-btn"
-            ariaLabel={t('player.removeFromPlaylist', 'Remove from playlist')}
-            title={t('player.removeFromPlaylist', 'Remove from playlist')}
-            onClick={handleDeleteClick}
-            icon="delete"
-            iconStyle={BUTTON_ICON_STYLE}
-          />
-        )}
       </div>
     </li>
   );
@@ -209,6 +203,7 @@ export default function TrackList({
   playingTrackId, 
   showPlayButton = false, 
   onDeleteTrack, 
+  playlistRemove,
   className 
 }: TrackListProps) {
   const { t } = useI18n();
@@ -258,11 +253,11 @@ export default function TrackList({
       trackData: track,
       queueList: queueIds,
       currentIndex,
-      queueRemovable: onDeleteTrack,
-      queueOptions: track.id !== playingTrackId
+      queueOptions: true,
+      playlistRemove
     });
     await openMenu({ e: e.currentTarget as any, items });
-  }, [t, queueIds, currentIndex, onDeleteTrack, playingTrackId, openMenu]);
+  }, [t, queueIds, currentIndex, onDeleteTrack, playingTrackId, playlistRemove, openMenu]);
 
   const handleDeleteClick = useCallback((trackId: string) => {
     playbackEvents.removeTrack(trackId);

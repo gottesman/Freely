@@ -15,12 +15,12 @@ type InfoHeaderProps = {
 };
 
 // Constants for performance and maintainability
-const DEFAULT_INITIAL_HEIGHT = 320;
+const DEFAULT_INITIAL_HEIGHT = 200;
 const DEFAULT_MIN_HEIGHT = 64;
 const MAX_TITLE_SIZE = 56;
 const MIN_TITLE_SIZE = 18;
 const MAIN_PADDING = 28;
-const MIN_PADDING = 6;
+const MIN_PADDING = 10;
 const SHRINK_THRESHOLD = 0.5;
 
 export default function InfoHeader({ 
@@ -174,6 +174,7 @@ export default function InfoHeader({
         pointerEvents: 'none' // Make header transparent to pointer events
       }}
     >
+      {!initialShrink && <div className="np-hero-cover" aria-hidden="true" />}
       <div className="np-hero-inner">
         <div className="np-hero-top">
           <h1 id={id} className="np-title">{title}</h1>

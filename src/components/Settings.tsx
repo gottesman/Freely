@@ -488,24 +488,55 @@ export default function Settings(){
       if (parsed.textDarkColor) { setTextDarkColor(parsed.textDarkColor); document.documentElement.style.setProperty('--text-dark', parsed.textDarkColor); setSetting('ui.textDark', parsed.textDarkColor).catch(()=>{}); }
       if (parsed.shadowHex) { setShadowHex(parsed.shadowHex); try{ const h = parsed.shadowHex.replace('#',''); const r = parseInt(h.substring(0,2),16)||0; const g = parseInt(h.substring(2,4),16)||0; const b = parseInt(h.substring(4,6),16)||0; const triplet = `${r}, ${g}, ${b}`; document.documentElement.style.setProperty('--bg', triplet); setSetting('ui.bg.rgb', triplet).catch(()=>{}); }catch{} }
 
+      // Collect the new values for background application
+      let newBgImage = bgImage;
+      let newBgBlur = bgBlur;
+      let newBgBlurAmount = bgBlurAmount;
+      let newBgAnimate = bgAnimate;
+      let newOverlayColor = bgOverlayColor;
+      let newOverlayOpacity = bgOverlayOpacity;
+
       // Background image: prefer base64 if present, else use url
       if (parsed.bgImageBase64) {
+        newBgImage = parsed.bgImageBase64;
         setBgImage(parsed.bgImageBase64);
-        applyBackgroundVars(parsed.bgImageBase64, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
         setSetting('ui.bg.image', parsed.bgImageBase64).catch(()=>{});
       } else if (parsed.bgImageUrl || parsed.bgImage) {
         const img = parsed.bgImageUrl || parsed.bgImage;
+        newBgImage = img;
         setBgImage(img);
-        applyBackgroundVars(img, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
         setSetting('ui.bg.image', img).catch(()=>{});
       }
 
       if (parsed.bgCustomUrl !== undefined) setBgCustomUrl(parsed.bgCustomUrl);
-      if (parsed.bgBlur !== undefined) { setBgBlur(Boolean(parsed.bgBlur)); setSetting('ui.bg.blur', parsed.bgBlur ? '1' : '0').catch(()=>{}); }
-      if (parsed.bgBlurAmount !== undefined) { setBgBlurAmount(Number(parsed.bgBlurAmount)); setSetting('ui.bg.blurAmount', String(parsed.bgBlurAmount)).catch(()=>{}); }
-      if (parsed.bgAnimate !== undefined) { setBgAnimate(Boolean(parsed.bgAnimate)); setSetting('ui.bg.animate', parsed.bgAnimate ? '1' : '0').catch(()=>{}); }
-      if (parsed.bgOverlayColor) { setBgOverlayColor(parsed.bgOverlayColor); setSetting('ui.bg.overlayColor', parsed.bgOverlayColor).catch(()=>{}); }
-      if (parsed.bgOverlayOpacity !== undefined) { setBgOverlayOpacity(Number(parsed.bgOverlayOpacity)); setSetting('ui.bg.overlayOpacity', String(parsed.bgOverlayOpacity)).catch(()=>{}); }
+      if (parsed.bgBlur !== undefined) { 
+        newBgBlur = Boolean(parsed.bgBlur); 
+        setBgBlur(Boolean(parsed.bgBlur)); 
+        setSetting('ui.bg.blur', parsed.bgBlur ? '1' : '0').catch(()=>{}); 
+      }
+      if (parsed.bgBlurAmount !== undefined) { 
+        newBgBlurAmount = Number(parsed.bgBlurAmount); 
+        setBgBlurAmount(Number(parsed.bgBlurAmount)); 
+        setSetting('ui.bg.blurAmount', String(parsed.bgBlurAmount)).catch(()=>{}); 
+      }
+      if (parsed.bgAnimate !== undefined) { 
+        newBgAnimate = Boolean(parsed.bgAnimate); 
+        setBgAnimate(Boolean(parsed.bgAnimate)); 
+        setSetting('ui.bg.animate', parsed.bgAnimate ? '1' : '0').catch(()=>{}); 
+      }
+      if (parsed.bgOverlayColor) { 
+        newOverlayColor = parsed.bgOverlayColor; 
+        setBgOverlayColor(parsed.bgOverlayColor); 
+        setSetting('ui.bg.overlayColor', parsed.bgOverlayColor).catch(()=>{}); 
+      }
+      if (parsed.bgOverlayOpacity !== undefined) { 
+        newOverlayOpacity = Number(parsed.bgOverlayOpacity); 
+        setBgOverlayOpacity(Number(parsed.bgOverlayOpacity)); 
+        setSetting('ui.bg.overlayOpacity', String(parsed.bgOverlayOpacity)).catch(()=>{}); 
+      }
+
+      // Apply all background variables with the updated settings
+      applyBackgroundVars(newBgImage, newBgBlur ? newBgBlurAmount : 0, newBgAnimate, newOverlayColor, newOverlayOpacity);
 
       pushAlert(t('settings.appearance.imported', 'Appearance imported'), 'info');
     } catch (err) {

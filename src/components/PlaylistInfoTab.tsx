@@ -329,7 +329,7 @@ const PlaylistInfoTab = React.memo(({ playlistId }: { playlistId?: string }) => 
           aria-label={t('player.addPlaylist')} 
           onClick={() => playlistOps.clonePlaylist(state.playlist!, state.tracks!)}
         >
-          <span className="material-symbols-rounded">add_circle</span>
+          <span className="material-symbols-rounded">playlist_add</span>
         </button>
       );
     }
@@ -486,6 +486,7 @@ const PlaylistInfoTab = React.memo(({ playlistId }: { playlistId?: string }) => 
             playingTrackId={(queueIds || [])[currentIndex || 0]} 
             showPlayButton
             onDeleteTrack={playlistInfo.isLocal}
+            playlistRemove={handleDeleteTrack}
           />
         )}
       </div>

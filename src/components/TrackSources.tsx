@@ -19,8 +19,31 @@ const AUDIO_EXTENSIONS = /\.(mp3|m4a|flac|wav|ogg|aac|opus|webm)$/i;
 // Icons for different source types
 const SOURCE_ICONS = {
   youtube: 'https://upload.wikimedia.org/wikipedia/commons/0/09/YouTube_full-color_icon_%282017%29.svg',
-  torrent: 'https://free-icon-rainbow.com/i/icon_10753/icon_10753_svg_s1.svg'
+  torrent: 'https://free-icon-rainbow.com/i/icon_10753/icon_10753_svg_s1.svg',
+  http: 'https://cdn-icons-png.flaticon.com/512/25/25284.png',
+  local: 'https://cdn-icons-png.flaticon.com/512/3767/3767084.png'
 } as const;
+
+// Helper function to get source type info
+const getSourceTypeInfo = (source: any) => {
+  if (source?.type === 'youtube') {
+    return { type: 'YouTube', icon: SOURCE_ICONS.youtube };
+  }
+  
+  if (source?.infoHash || source?.magnetURI) {
+    return { type: 'Torrent', icon: SOURCE_ICONS.torrent };
+  }
+  
+  if (source?.url?.startsWith('http')) {
+    return { type: 'HTTP', icon: SOURCE_ICONS.http };
+  }
+  
+  if (source?.path || source?.file) {
+    return { type: 'Local File', icon: SOURCE_ICONS.local };
+  }
+  
+  return { type: 'Unknown', icon: null };
+};
 
 // Module-level caches with better cleanup
 class CacheManager {
@@ -76,6 +99,7 @@ interface SourceState {
   selectedSourceKey: string | undefined;
   lastQuery: string | undefined;
   loadError: string | undefined;
+  isCollapsed: boolean;
 }
 
 const initialState: SourceState = {
@@ -86,7 +110,8 @@ const initialState: SourceState = {
   visibleOutputs: {},
   selectedSourceKey: undefined,
   lastQuery: undefined,
-  loadError: undefined
+  loadError: undefined,
+  isCollapsed: true
 };
 
 export default function TrackSources({ track, album, primaryArtist }: { 
@@ -516,12 +541,49 @@ export default function TrackSources({ track, album, primaryArtist }: {
     });
   }, [state.sources]);
 
+  // Memoized selected source info
+  const selectedSourceInfo = useMemo(() => {
+    if (!state.selectedSourceKey || !state.sources) return null;
+    
+    const selectedIndex = validSources.findIndex((source: any, index: number) => 
+      generateSourceKey(source, index) === state.selectedSourceKey
+    );
+    
+    if (selectedIndex === -1) return null;
+    
+    const selectedSource = validSources[selectedIndex];
+    return getSourceTypeInfo(selectedSource);
+  }, [state.selectedSourceKey, state.sources, validSources]);
+
   return (
-    <div className="np-section np-audio-sources" aria-label={t('np.audioSources', 'Audio sources')}>
+    <div className={`np-section np-audio-sources ${state.isCollapsed ? 'collapsed' : ''}`} aria-label={t('np.audioSources', 'Audio sources')}>
       <h4 className="np-sec-title">
         {t('np.audioSources', 'Audio sources')}
+        <div className='np-sec-right'>
         <div className="np-hint">
-          {t('np.audioSourcesHint', 'Choose a source to stream this track')}
+          {selectedSourceInfo ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              Source selected:&nbsp;
+              {selectedSourceInfo.icon && (
+                <img
+                  src={selectedSourceInfo.icon}
+                  alt={selectedSourceInfo.type}
+                  style={{ width: 16, height: 16, objectFit: 'contain' }}
+                />
+              )}
+              {selectedSourceInfo.type}
+            </div>
+          ) : (
+            t('np.audioSourcesHint', 'Choose a source to stream this track')
+          )}
+        </div>
+        <button className={`btn-icon btn-${state.isCollapsed ? 'show' : 'hide'}`} type="button" onClick={() => {
+          setState(prev => ({ ...prev, isCollapsed: !prev.isCollapsed }));
+        }} aria-label={t('np.collapseExpand', 'Collapse/Expand section')}>
+          <span className="material-symbols-rounded">
+            {state.isCollapsed ? 'expand_more' : 'expand_less'}
+          </span>
+        </button>
         </div>
       </h4>
 

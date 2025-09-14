@@ -1,6 +1,7 @@
 import React, { useEffect, useCallback, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import { useI18n } from '../core/i18n';
 import { usePlaybackSelector } from '../core/playback';
+import { useContextMenu, ContextMenuItem } from '../core/ContextMenuContext';
 
 // --- START: Types for Musixmatch Rich-Sync Lyrics ---
 
@@ -84,16 +85,21 @@ interface SyncedLyricsBodyProps {
   precomputedLinesData: PrecomputedLineData[];
   focusIndex: number;
   activeLineRef: React.RefObject<HTMLDivElement>;
+  effectivePosition: number;
+  style?: React.CSSProperties;
 }
 
-const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputedLinesData, focusIndex, activeLineRef }) => (
-  <div className="lyrics-body" style={{ margin: 0 }}>
+const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputedLinesData, focusIndex, activeLineRef, effectivePosition, style }) => (
+  <div className="lyrics-body" style={{ margin: 0, ...style }}>
     {lines.map((ln, i) => {
       const data = precomputedLinesData[i];
       if (!data) return null;
 
       const { isFocus, isActive, wasActive, isPlayed, isLast, peakIdx, wordData } = data;
 
+      const shouldBlur = !isFocus && !isActive && !isLast && !isPlayed;
+      const blurAmount = Math.abs(i-1 - focusIndex) * 1; // 1px per index distance
+      const opacity = Math.max(0, 1 - Math.abs(i - focusIndex) * 0.4);
       let letterPosInLine = 0;
       return (
         <div
@@ -104,9 +110,10 @@ const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputed
             (isActive ? ' active' : '') +
             (isPlayed ? ' played' : '') +
             (wasActive ? ' wasactive' : '') +
-            (isLast ? ' last' : '') + // Use the new explicit state for .last
+            (isLast ? ' last' : '') + 
             (ln.isArtificial ? ' artificial' : '')
           }
+          style={shouldBlur ? { filter: `blur(${blurAmount}px)`, opacity: opacity } : undefined}
           data-index={i}
           aria-current={isFocus ? 'true' : undefined}
         >
@@ -114,6 +121,9 @@ const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputed
             ln.parts.map((p, j) => {
               const wordStartPos = letterPosInLine;
               const isWordActive = wordData?.[j]?.isActive ?? false;
+              const nextPart = ln.parts[j + 1];
+              const partEnd = nextPart?.start ?? ln.end;
+              const partDuration = partEnd - p.start;
               const result = (
                 <span key={j} className={`lyric-word${p.text.trim() === '' ? ' space' : ''}${isWordActive ? ' active' : ''}`}>
                   <span className="word-text">
@@ -124,8 +134,9 @@ const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputed
                       const distance = Math.abs(currentLetterPos - peakIdx);
                       const t = Math.max(0, 1 - distance / 4);
                       const waveY = t * t * (3 - 2 * t) * 5;
-                      const hasPeaked = peakIdx >= currentLetterPos;
-                      const shouldHighlight = isPlayed || (isActive && hasPeaked);
+                      const letterStart = p.start + (idx / Math.max(1, p.text.length)) * partDuration;
+                      const hasPeaked = effectivePosition >= letterStart;
+                      const shouldHighlight = isPlayed || hasPeaked;
 
                       return (
                         <span key={idx} className={`letter${shouldHighlight ? ' sung':''}`} style={{ transform: `translateY(${-waveY}px)`}}>
@@ -166,9 +177,16 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
   const { t } = useI18n();
   const position = usePlaybackSelector(s => s.position);
   const playing = usePlaybackSelector(s => s.playing);
+  const { openMenu } = useContextMenu();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const activeLineRef = useRef<HTMLDivElement | null>(null);
   const [syncOffsetMs, setSyncOffsetMs] = useState<number>(0);
+  const [lyricsSource, setLyricsSource] = useState<'genius' | 'musixmatch'>('genius');
+  const [richSyncEnabled, setRichSyncEnabled] = useState<boolean>(true);
+  const [fontSize, setFontSize] = useState<number>(50); // Multiplier percentage (e.g., 50 means 50%)
+  const [menuUpdateTrigger, setMenuUpdateTrigger] = useState<number>(0);
+  const [previousFocusIndex, setPreviousFocusIndex] = useState<number>(-1);
+  const [lastLineIndex, setLastLineIndex] = useState<number>(-1);
 
   // High-precision local position interpolation
   const [derivedPosition, setDerivedPosition] = useState<number>(position ?? 0);
@@ -201,6 +219,126 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
   }, [open, playing, tick]);
 
   useEffect(() => { if (open) setSyncOffsetMs(0); }, [open, title]);
+
+  // Memoized menu items function that depends on state
+  const menuItems = useCallback((): ContextMenuItem[] => [
+    {
+      id: 'title',
+      label: 'title',
+      type: 'custom',
+      hideNoImage: true,
+      meta: {
+        title: t('common.LyricsOptions')
+      }
+    },
+    {
+      id: 'offset',
+      label: 'Offset',
+      type: 'inline',
+      items: [
+        {
+          id: 'offset-decrease',
+          label: '-',
+          type: 'action',
+          width: 40,
+          updateOnClick: true,
+          onClick: () => setSyncOffsetMs(v => v - 100)
+        },
+        {
+          id: 'offset-current',
+          label: `${syncOffsetMs}ms`,
+          type: 'action',
+          disabled: true
+        },
+        {
+          id: 'offset-increase',
+          label: '+',
+          type: 'action',
+          width: 40,
+          updateOnClick: true,
+          onClick: () => setSyncOffsetMs(v => v + 100)
+        }
+      ]
+    },
+    {
+      id: 'lyrics-source',
+      label: 'Lyrics Source',
+      type: 'group',
+      title: 'Lyrics Source',
+      items: [
+        {
+          id: 'source-genius',
+          label: 'Genius',
+          type: 'action',
+          icon: lyricsSource === 'genius' ? 'radio_button_checked' : 'radio_button_unchecked',
+          iconPosition: 'left',
+          updateOnClick: true,
+          onClick: () => setLyricsSource('genius')
+        },
+        {
+          id: 'source-musixmatch',
+          label: 'Musixmatch',
+          type: 'action',
+          icon: lyricsSource === 'musixmatch' ? 'radio_button_checked' : 'radio_button_unchecked',
+          iconPosition: 'left',
+          updateOnClick: true,
+          onClick: () => setLyricsSource('musixmatch')
+        }
+      ]
+    },
+    {
+      id: 'richsync',
+      label: 'Rich Sync',
+      type: 'action',
+      icon: richSyncEnabled ? 'check_box' : 'check_box_outline_blank',
+      updateOnClick: true,
+      onClick: () => setRichSyncEnabled(!richSyncEnabled)
+    },
+    {
+      id: 'font-size',
+      label: 'Font Size',
+      type: 'inline',
+      items: [
+        {
+          id: 'font-decrease',
+          label: '-',
+          type: 'action',
+          width: 40,
+          updateOnClick: true,
+          onClick: () => setFontSize(v => Math.max(1, v - 1))
+        },
+        {
+          id: 'font-current',
+          label: `${fontSize}%`,
+          type: 'action',
+          disabled: true
+        },
+        {
+          id: 'font-increase',
+          label: '+',
+          type: 'action',
+          width: 40,
+          updateOnClick: true,
+          onClick: () => setFontSize(v => Math.min(100, v + 1))
+        }
+      ]
+    }
+  ], [syncOffsetMs, lyricsSource, richSyncEnabled, fontSize]);
+
+  // Ref to current menuItems
+  const menuItemsRef = useRef(menuItems);
+  menuItemsRef.current = menuItems;
+
+  const handleSettingsClick = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    await openMenu({ 
+      e, 
+      items: () => menuItemsRef.current(),
+      preventCloseOnClick: true,
+      onUpdate: () => setMenuUpdateTrigger(prev => prev + 1)
+    });
+  }, [openMenu, menuUpdateTrigger]);
 
   const normalizedLyrics = useMemo((): SyncedLyrics | undefined => {
     if (!synced) return undefined;
@@ -302,6 +440,11 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
     return { focusIndex: primaryIndex, activeIndices: activeCandidates };
   }, [hasSynced, lines, effectivePosition]);
 
+  useEffect(() => {
+    setLastLineIndex(previousFocusIndex);
+    setPreviousFocusIndex(focusIndex);
+  }, [focusIndex]);
+
   const precomputedLinesData = useMemo((): PrecomputedLineData[] => {
     if (!hasSynced) return [];
 
@@ -332,7 +475,7 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
 
     return lines.map((ln, i) => {
       const isFocus = i === focusIndex;
-      const isActive = activeIndices.includes(i);
+      const isActive = activeIndices.includes(i) || i === focusIndex;
       const wasActive = isActive && !isFocus;
 
       let isLast = false;
@@ -340,8 +483,8 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
         // If song is over, only the very last line gets the .last class.
         isLast = i === lines.length - 1;
       } else {
-        // Otherwise, the line before the focus is the .last line.
-        isLast = i === focusIndex - 1;
+        // Otherwise, the line that was previously focus but is no longer active is the .last line.
+        isLast = i === lastLineIndex && !isActive;
       }
 
       const isPlayed = effectivePosition >= ln.end && !isFocus && !isLast;
@@ -384,7 +527,7 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
 
       return { isFocus, isActive, wasActive, isPlayed, isLast, peakIdx, wordData };
     });
-  }, [hasSynced, lines, focusIndex, activeIndices, effectivePosition]);
+  }, [hasSynced, lines, focusIndex, activeIndices, effectivePosition, lastLineIndex]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape' && open) {
@@ -411,7 +554,7 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
     const activeLine = activeLineRef.current;
     if (!open || !hasSynced || !scrollContainer || !activeLine) return;
     const observer = new ResizeObserver(() => {
-      activeLine.scrollIntoView({ block: 'center', behavior: 'auto' });
+      activeLine.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
     observer.observe(scrollContainer);
     return () => observer.disconnect();
@@ -433,20 +576,35 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
     <div className={`np-lyrics-overlay ${open ? 'active' : ''}`} aria-hidden={!open} aria-label={t('lyrics.overlay')} role="dialog" onClick={handleBackdropClick}>
       <div className="np-lyrics-scroll" onClick={handleContentClick} ref={scrollRef}>
         <div className="np-lyrics-body">
-          <button type="button" className="player-icons np-overlay-close" aria-label={t('lyrics.close')} onClick={onClose}>
+          <button type="button" className="player-icons lyrics-btn lyrics-close-btn" aria-label={t('lyrics.close')} onClick={onClose}>
             <span className="material-symbols-rounded filled">close</span>
           </button>
           {hasSynced && (
-            <div className="lyrics-sync-ctl" role="group" aria-label="Lyrics timing offset">
-              <button className="btn btn-icon" onClick={() => setSyncOffsetMs(v => v - 100)} title="Decrease offset by 100ms" type="button">−</button>
-              <span className="offset-readout">{syncOffsetMs}ms</span>
-              <button className="btn btn-icon" onClick={() => setSyncOffsetMs(v => v + 100)} title="Increase offset by 100ms" type="button">+</button>
-            </div>
+            <button 
+              type="button" 
+              className="player-icons   lyrics-btn lyrics-settings-btn" 
+              aria-label="Lyrics settings" 
+              onClick={handleSettingsClick}
+              title="Lyrics settings"
+            >
+              <span className="material-symbols-rounded">settings</span>
+            </button>
           )}
           {hasSynced ? (
-            <SyncedLyricsBody lines={lines} precomputedLinesData={precomputedLinesData} focusIndex={focusIndex} activeLineRef={activeLineRef} />
+            <SyncedLyricsBody 
+              lines={lines} 
+              precomputedLinesData={precomputedLinesData} 
+              focusIndex={focusIndex} 
+              activeLineRef={activeLineRef} 
+              effectivePosition={effectivePosition}
+              style={{ '--lyrics-font-multiplier': fontSize / 50 } as React.CSSProperties}
+            />
           ) : (
-            <div className="lyrics-body" style={{ margin: 0 }} dangerouslySetInnerHTML={{ __html: processedLyrics }} />
+            <div 
+              className="lyrics-body" 
+              style={{ margin: 0, '--lyrics-font-multiplier': fontSize / 50 } as React.CSSProperties} 
+              dangerouslySetInnerHTML={{ __html: processedLyrics }} 
+            />
           )}
         </div>
       </div>

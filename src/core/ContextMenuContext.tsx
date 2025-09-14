@@ -6,8 +6,9 @@ import '../styles/context-menu.css';
 export type ContextMenuItem = {
   id: string;
   label: string;
-  type?: 'action' | 'link' | 'submenu' | 'group' | 'separator' | 'custom';
+  type?: 'action' | 'link' | 'submenu' | 'group' | 'separator' | 'custom' | 'inline';
   image?: string;
+  hideNoImage?: boolean; // Whether to hide the image if not available
   href?: string;
   disabled?: boolean;
   hide?: boolean;
@@ -18,14 +19,20 @@ export type ContextMenuItem = {
   iconFilled?: boolean;
   meta?: any;
   onClick?: (item: ContextMenuItem) => void | Promise<void>;
+  width?: number; // Optional forced width in pixels for this item
+  iconPosition?: 'left' | 'right'; // Icon position for this specific item
+  updateOnClick?: boolean; // Whether to update the menu after this item is clicked
 };
 
 export type ContextMenuOptions = {
   x?: number;
   y?: number;
   e?: HTMLElement | MouseEvent | { clientX: number; clientY: number };
-  items: ContextMenuItem[];
+  items: ContextMenuItem[] | (() => ContextMenuItem[]);
   width?: number;
+  preventCloseOnClick?: boolean;
+  onUpdate?: () => void; // Callback to update the menu options
+  updateKey?: number; // Key to force re-render
 };
 
 type OpenFn = (opts: ContextMenuOptions) => Promise<string | null>;
@@ -146,9 +153,20 @@ export const ContextMenuProvider = React.memo<{ children: React.ReactNode }>(({ 
       resolveRef.current = null;
     }
 
+    // Wrap onUpdate to allow updating options
+    const wrappedOptions = {
+      ...options,
+      updateKey: 0,
+      onUpdate: options.onUpdate ? () => {
+        // Call the original onUpdate, then update opts with incremented updateKey to force re-render
+        options.onUpdate?.();
+        setOpts(prev => ({ ...prev, updateKey: (prev.updateKey || 0) + 1 }));
+      } : undefined
+    };
+
     // Compute position and prepare final options
-    const position = computePosition(options);
-    const finalOpts = { ...options, ...position };
+    const position = computePosition(wrappedOptions);
+    const finalOpts = { ...wrappedOptions, ...position };
     
     setOpts(finalOpts);
     setOpen(true);

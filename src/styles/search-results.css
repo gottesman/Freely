@@ -17,7 +17,7 @@
 .sr-meta .sr-name, .sr-meta .sr-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sr-main { display:flex; align-items:center; gap:12px; flex:1; min-width:0; }
 .sr-controls { display:flex; align-items:center; gap:8px; flex:0 0 auto; margin-left: 8px; }
-.sr-time { color: var(--muted, #8a8f98); white-space: nowrap; font-size: 0.9em; }
+.sr-time { color: var(--muted, #8a8f98); white-space: nowrap; font-size: 0.9em; padding: 10px; }
 .add-to-playlist { opacity: 0; transition: opacity .12s ease, transform .12s ease; transform: translateY(2px); }
 .sr-controls .material-symbols-rounded { --size: 18px; }
 .sr-controls .player-icons { width: 18px; }

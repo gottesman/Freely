@@ -9,6 +9,7 @@
   "common.goToArtist": "Go to artist",
   "common.goToAlbum": "Go to album",
   "common.goToSong": "Go to song",
+  "common.LyricsOptions": "Lyrics Options",
   "queue.empty": "Queue is empty",
   "queue.title": "Queue",
   "queue.play": "Play {track}",

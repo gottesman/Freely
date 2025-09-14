@@ -1,18 +1,27 @@
 use anyhow::Result;
 use once_cell::sync::Lazy;
-use std::{sync::Mutex, time::{Instant, Duration}, ffi::{CString, CStr, c_void}};
+use std::{sync::Mutex, time::{Instant, Duration}, ffi::{CString, CStr, c_void}, collections::HashSet};
 use std::os::raw::{c_int, c_char, c_uint, c_ulong};
 use libloading::{Library, Symbol};
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::io::Write;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use reqwest;
+use crate::cache::{download_and_cache_audio, CacheDownloadResult, get_cached_file_path};
+use crate::bass::{ensure_bass_loaded, bass_err, probe_duration_bass, load_bass_plugins};
+use crate::bass::{
+    BassInit, BassFree, BassSetConfig, BassStreamCreateFile, BassStreamCreateUrl, BassStreamFree,
+    BassChannelPlay, BassChannelPause, BassChannelStop, BassChannelIsActive, BassChannelGetLength,
+    BassChannelGetPosition, BassChannelBytes2Seconds, BassChannelSeconds2Bytes, BassChannelSetPosition,
+    BassErrorGetCode, BassChannelSetAttribute, BassGetVolume, BassSetVolume, BassGetDeviceInfo,
+    BassGetInfo, BassGetDevice, BassDeviceInfo, BassInfo,
+    BASS_DEVICE_DEFAULT, BASS_CONFIG_NET_TIMEOUT, BASS_CONFIG_NET_AGENT, BASS_CONFIG_NET_BUFFER, BASS_STREAM_BLOCK,
+    BASS_STREAM_STATUS, BASS_STREAM_AUTOFREE, BASS_STREAM_PRESCAN, BASS_STREAM_RESTRATE, BASS_POS_BYTE, BASS_ACTIVE_STOPPED,
+    BASS_ACTIVE_PLAYING, BASS_ACTIVE_STALLED, BASS_ACTIVE_PAUSED, BASS_ATTRIB_VOL,
+    BASS_DEVICE_ENABLED, BASS_DEVICE_DEFAULT_FLAG, BASS_DEVICE_INIT,
+};
+use crate::utils::{resolve_audio_source};
 
-struct PlaybackState {
+pub struct PlaybackState {
     url: Option<String>,
     stream: Option<u32>,
     playing: bool,
@@ -23,7 +32,7 @@ struct PlaybackState {
     seek_offset: f64,
     ended: bool,
     last_error: Option<String>,
-    bass_lib: Option<Library>,
+    pub bass_lib: Option<Library>,
     bass_initialized: bool,
     // Volume control
     volume: f32,
@@ -34,6 +43,7 @@ struct PlaybackState {
     current_source_type: Option<String>,
     current_source_hash: Option<String>,
     cache_download_tx: Option<mpsc::UnboundedSender<CacheDownloadResult>>,
+    ongoing_cache_downloads: std::collections::HashSet<String>,
 }
 
 impl PlaybackState { 
@@ -60,557 +70,18 @@ impl PlaybackState {
             current_source_type: None,
             current_source_hash: None,
             cache_download_tx: None,
+            ongoing_cache_downloads: HashSet::new(),
         } 
     } 
 }
 
 static STATE: Lazy<Mutex<PlaybackState>> = Lazy::new(|| Mutex::new(PlaybackState::new()));
 
-// Cache configuration constants
-const CACHE_DIR_NAME: &str = "audio_cache";
-const CACHE_INDEX_FILE: &str = "cache_index.json";
-const MAX_CACHE_SIZE_MB: u64 = 500; // 500MB max cache size
-const MAX_CACHE_AGE_DAYS: u64 = 30; // 30 days max age
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    pub track_id: String,
-    pub source_type: String, // "youtube", "torrent", "http", "local"
-    pub source_hash: String, // YouTube ID, torrent infoHash, URL hash, etc.
-    pub file_path: String,
-    pub file_size: u64,
-    pub cached_at: u64, // Unix timestamp
-    pub last_accessed: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheIndex {
-    pub entries: HashMap<String, CacheEntry>,
-    pub total_size: u64,
-}
-
-impl CacheIndex {
-    pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            total_size: 0,
-        }
-    }
-}
-
-pub struct AudioCache {
-    cache_dir: PathBuf,
-    index_file: PathBuf,
-    index: CacheIndex,
-}
-
-impl AudioCache {
-    pub fn new(app_config_dir: &Path) -> Result<Self, String> {
-        let cache_dir = app_config_dir.join(CACHE_DIR_NAME);
-        let index_file = cache_dir.join(CACHE_INDEX_FILE);
-
-        // Create cache directory if it doesn't exist
-        if !cache_dir.exists() {
-            fs::create_dir_all(&cache_dir)
-                .map_err(|e| format!("Failed to create cache directory: {}", e))?;
-        }
-
-        // Load existing index or create new one
-        let index = if index_file.exists() {
-            Self::load_index(&index_file)?
-        } else {
-            CacheIndex::new()
-        };
-
-        Ok(Self {
-            cache_dir,
-            index_file,
-            index,
-        })
-    }
-
-    fn generate_cache_key(track_id: &str, source_type: &str, source_hash: &str) -> String {
-        format!("{}:{}:{}", track_id, source_type, source_hash)
-    }
-
-    fn load_index(index_file: &Path) -> Result<CacheIndex, String> {
-        let content = fs::read_to_string(index_file)
-            .map_err(|e| format!("Failed to read cache index: {}", e))?;
-
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse cache index: {}", e))
-    }
-
-    fn save_index(&self) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(&self.index)
-            .map_err(|e| format!("Failed to serialize cache index: {}", e))?;
-
-        fs::write(&self.index_file, content)
-            .map_err(|e| format!("Failed to write cache index: {}", e))
-    }
-
-    pub fn get_cached_file(&mut self, track_id: &str, source_type: &str, source_hash: &str) -> Option<PathBuf> {
-        let cache_key = Self::generate_cache_key(track_id, source_type, source_hash);
-
-        if let Some(entry) = self.index.entries.get_mut(&cache_key) {
-            let file_path = self.cache_dir.join(&entry.file_path);
-
-            // Check if file actually exists
-            if file_path.exists() {
-                // Update last accessed time
-                entry.last_accessed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-
-                println!("[cache] Cache hit for track: {} ({}:{})", track_id, source_type, source_hash);
-                return Some(file_path);
-            } else {
-                // File doesn't exist, remove from index
-                println!("[cache] Cached file missing, removing from index: {} ({}:{})", track_id, source_type, source_hash);
-                self.index.total_size = self.index.total_size.saturating_sub(entry.file_size);
-                self.index.entries.remove(&cache_key);
-                let _ = self.save_index();
-            }
-        }
-
-        println!("[cache] Cache miss for track: {} ({}:{})", track_id, source_type, source_hash);
-        None
-    }
-
-    pub fn add_cached_file(&mut self, track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64) -> Result<(), String> {
-        let cache_key = Self::generate_cache_key(&track_id, &source_type, &source_hash);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // Add to cache index
-        let entry = CacheEntry {
-            track_id: track_id.clone(),
-            source_type: source_type.clone(),
-            source_hash: source_hash.clone(),
-            file_path: file_path.clone(),
-            file_size,
-            cached_at: now,
-            last_accessed: now,
-        };
-
-        self.index.entries.insert(cache_key, entry);
-        self.index.total_size += file_size;
-
-        // Clean up old entries if cache is too large
-        self.cleanup_cache()?;
-
-        // Save index
-        self.save_index()?;
-
-        println!("[cache] Successfully cached track: {} ({}:{}) - {} bytes", track_id, source_type, source_hash, file_size);
-        Ok(())
-    }
-
-    fn cleanup_cache(&mut self) -> Result<(), String> {
-        let max_size_bytes = MAX_CACHE_SIZE_MB * 1024 * 1024;
-        let max_age_seconds = MAX_CACHE_AGE_DAYS * 24 * 60 * 60;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let mut entries_to_remove = Vec::new();
-
-        // Remove entries that are too old
-        for (cache_key, entry) in &self.index.entries {
-            if now.saturating_sub(entry.cached_at) > max_age_seconds {
-                entries_to_remove.push(cache_key.clone());
-            }
-        }
-
-        // Remove old entries
-        for cache_key in &entries_to_remove {
-            if let Some(entry) = self.index.entries.remove(cache_key) {
-                let file_path = self.cache_dir.join(&entry.file_path);
-                if file_path.exists() {
-                    let _ = fs::remove_file(file_path);
-                }
-                self.index.total_size = self.index.total_size.saturating_sub(entry.file_size);
-                println!("[cache] Removed old cached file: {} ({}:{})", entry.track_id, entry.source_type, entry.source_hash);
-            }
-        }
-
-        // If still over size limit, remove least recently accessed files
-        if self.index.total_size > max_size_bytes {
-            let mut entries_by_access: Vec<_> = self.index.entries.iter().collect();
-            entries_by_access.sort_by(|a, b| a.1.last_accessed.cmp(&b.1.last_accessed));
-
-            // Collect keys to remove
-            let mut keys_to_remove = Vec::new();
-            for (cache_key, _) in entries_by_access {
-                if self.index.total_size <= max_size_bytes {
-                    break;
-                }
-                keys_to_remove.push(cache_key.clone());
-            }
-
-            // Now remove the entries
-            for cache_key in keys_to_remove {
-                if let Some(entry) = self.index.entries.remove(&cache_key) {
-                    let file_path = self.cache_dir.join(&entry.file_path);
-                    if file_path.exists() {
-                        let _ = fs::remove_file(file_path);
-                    }
-                    self.index.total_size = self.index.total_size.saturating_sub(entry.file_size);
-                    println!("[cache] Removed LRU cached file: {} ({}:{})", entry.track_id, entry.source_type, entry.source_hash);
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// Global cache state
-static CACHE: Lazy<Mutex<Option<AudioCache>>> = Lazy::new(|| Mutex::new(None));
-
-// Initialize cache with app config directory
-pub fn init_cache(app_config_dir: &Path) -> Result<(), String> {
-    let mut cache = CACHE.lock().unwrap();
-    *cache = Some(AudioCache::new(app_config_dir)?);
-    println!("[cache] Audio cache initialized");
-    Ok(())
-}
-
-#[derive(Debug)]
-struct CacheDownloadResult {
-    track_id: String,
-    source_type: String,
-    source_hash: String,
-    cached_path: String,
-    file_size: u64,
-}
-
-async fn download_and_cache_audio(track_id: String, source_type: String, source_hash: String, url: String, tx: mpsc::UnboundedSender<CacheDownloadResult>) {
-    println!("[cache] Starting download for track: {} ({}:{})", track_id, source_type, source_hash);
-
-    // Download the file
-    let response = match reqwest::get(&url).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            println!("[cache] Download failed for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-            return;
-        }
-    };
-
-    if !response.status().is_success() {
-        println!("[cache] Download failed with status {} for {} ({}:{})", response.status(), track_id, source_type, source_hash);
-        return;
-    }
-
-    let bytes = match response.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            println!("[cache] Failed to read response body for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-            return;
-        }
-    };
-
-    // Handle the cache operations with the downloaded data
-    let mut cache_guard = CACHE.lock().unwrap();
-    if let Some(cache) = cache_guard.as_mut() {
-        let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
-
-        // Generate filename based on cache key (sanitized for filesystem)
-        let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
-        let file_name = format!("{}.m4a", safe_key);
-        let file_path = cache.cache_dir.join(&file_name);
-
-        // Write to file
-        let mut file = match fs::File::create(&file_path) {
-            Ok(f) => f,
-            Err(e) => {
-                println!("[cache] Failed to create cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-                return;
-            }
-        };
-
-        if let Err(e) = file.write_all(&bytes) {
-            println!("[cache] Failed to write cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-            return;
-        }
-
-        let file_size = bytes.len() as u64;
-
-        // Add to cache index
-        if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), file_name, file_size) {
-            println!("[cache] Failed to add to cache index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-            return;
-        }
-
-        let cached_path = file_path.to_string_lossy().to_string();
-
-        // Send completion notification
-        let result = CacheDownloadResult {
-            track_id: track_id.clone(),
-            source_type: source_type.clone(),
-            source_hash: source_hash.clone(),
-            cached_path: cached_path.clone(),
-            file_size,
-        };
-
-        if let Err(e) = tx.send(result) {
-            println!("[cache] Failed to send cache completion notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-        } else {
-            println!("[cache] Cache download completed for {} ({}:{}) -> {}", track_id, source_type, source_hash, cached_path);
-        }
-    } else {
-        println!("[cache] Cache not initialized, cannot cache {} ({}:{})", track_id, source_type, source_hash);
-    }
-}
 
 // SAFETY: We mark PlaybackState as Send because we guard all access behind a Mutex and only manipulate
 // BASS objects on the threads invoking the tauri commands. This is a simplification; for production
 // consider a single dedicated audio thread and message passing instead of unsafe impls.
 unsafe impl Send for PlaybackState {}
-
-// BASS function type definitions
-type BassInit = unsafe extern "system" fn(device: c_int, freq: c_uint, flags: c_uint, win: *mut c_void, dsguid: *mut c_void) -> c_int;
-type BassFree = unsafe extern "system" fn() -> c_int;
-type BassSetConfig = unsafe extern "system" fn(option: c_uint, value: c_uint) -> c_uint;
-type BassPluginLoad = unsafe extern "system" fn(file: *const c_char, flags: c_uint) -> u32;
-type BassStreamCreateFile = unsafe extern "system" fn(mem: c_int, file: *const c_void, offset: c_ulong, length: c_ulong, flags: c_uint) -> u32;
-type BassStreamCreateUrl = unsafe extern "system" fn(url: *const c_char, offset: c_ulong, flags: c_uint, proc_: *mut c_void, user: *mut c_void) -> u32;
-type BassStreamFree = unsafe extern "system" fn(handle: u32) -> c_int;
-type BassChannelPlay = unsafe extern "system" fn(handle: u32, restart: c_int) -> c_int;
-type BassChannelPause = unsafe extern "system" fn(handle: u32) -> c_int;
-type BassChannelStop = unsafe extern "system" fn(handle: u32) -> c_int;
-type BassChannelIsActive = unsafe extern "system" fn(handle: u32) -> c_uint;
-type BassChannelGetLength = unsafe extern "system" fn(handle: u32, mode: c_uint) -> c_ulong;
-type BassChannelGetPosition = unsafe extern "system" fn(handle: u32, mode: c_uint) -> c_ulong;
-type BassChannelBytes2Seconds = unsafe extern "system" fn(handle: u32, pos: c_ulong) -> f64;
-type BassChannelSeconds2Bytes = unsafe extern "system" fn(handle: u32, sec: f64) -> c_ulong;
-type BassChannelSetPosition = unsafe extern "system" fn(handle: u32, pos: c_ulong, mode: c_uint) -> c_int;
-type BassErrorGetCode = unsafe extern "system" fn() -> c_int;
-type BassChannelGetAttribute = unsafe extern "system" fn(handle: u32, attrib: c_uint, value: *mut f32) -> c_int;
-type BassChannelSetAttribute = unsafe extern "system" fn(handle: u32, attrib: c_uint, value: f32) -> c_int;
-type BassGetVolume = unsafe extern "system" fn() -> f32;
-type BassSetVolume = unsafe extern "system" fn(volume: f32) -> c_int;
-type BassGetDeviceInfo = unsafe extern "system" fn(device: c_uint, info: *mut BassDeviceInfo) -> c_int;
-type BassGetInfo = unsafe extern "system" fn(info: *mut BassInfo) -> c_int;
-type BassGetDevice = unsafe extern "system" fn() -> c_uint;
-
-// BASS constants
-#[allow(dead_code)]
-const BASS_OK: c_int = 0;
-#[allow(dead_code)]
-const BASS_ERROR_INIT: c_int = 2;
-#[allow(dead_code)]
-const BASS_ERROR_NOTAVAIL: c_int = 37;
-#[allow(dead_code)]
-const BASS_ERROR_CREATE: c_int = 5;
-#[allow(dead_code)]
-const BASS_ERROR_FILEOPEN: c_int = 2;
-
-const BASS_DEVICE_DEFAULT: c_int = -1;
-#[allow(dead_code)]
-const BASS_CONFIG_NET_TIMEOUT: c_uint = 11;
-#[allow(dead_code)]
-const BASS_CONFIG_NET_AGENT: c_uint = 16;
-
-#[allow(dead_code)]
-const BASS_STREAM_BLOCK: c_uint = 0x100000;
-const BASS_STREAM_STATUS: c_uint = 0x800000;
-const BASS_STREAM_AUTOFREE: c_uint = 0x40000;
-
-const BASS_POS_BYTE: c_uint = 0;
-const BASS_ACTIVE_STOPPED: c_uint = 0;
-#[allow(dead_code)]
-const BASS_ACTIVE_PLAYING: c_uint = 1;
-#[allow(dead_code)]
-const BASS_ACTIVE_STALLED: c_uint = 2;
-#[allow(dead_code)]
-const BASS_ACTIVE_PAUSED: c_uint = 3;
-
-// Volume attributes
-const BASS_ATTRIB_VOL: c_uint = 2;
-
-// Device flags
-const BASS_DEVICE_ENABLED: c_uint = 1;
-const BASS_DEVICE_DEFAULT_FLAG: c_uint = 2;
-const BASS_DEVICE_INIT: c_uint = 4;
-
-// BASS device info structure
-#[repr(C)]
-#[derive(Debug)]
-struct BassDeviceInfo {
-    name: *const c_char,
-    driver: *const c_char, 
-    flags: c_uint,
-}
-
-// BASS info structure for current audio settings
-#[repr(C)]
-#[derive(Debug)]
-struct BassInfo {
-    flags: c_uint,          // device capabilities (DSCAPS_xxx flags)
-    hwsize: c_uint,         // size of total device hardware buffer
-    hwfree: c_uint,         // size of free device hardware buffer
-    freesam: c_uint,        // number of free sample slots in the hardware
-    free3d: c_uint,         // number of free 3D sample slots in the hardware
-    minrate: c_uint,        // min sample rate supported by the hardware
-    maxrate: c_uint,        // max sample rate supported by the hardware
-    eax: c_int,             // device supports EAX? (always FALSE if BASS_DEVICE_3D was not used)
-    minbuf: c_uint,         // recommended minimum buffer length in ms
-    dsver: c_uint,          // DirectSound version
-    latency: c_uint,        // delay (in ms) before start of playback
-    initflags: c_uint,      // BASS_Init "flags" parameter
-    speakers: c_uint,       // number of speakers available
-    freq: c_uint,           // current output sample rate
-}
-
-// Dynamic loading helper functions
-fn load_bass_library() -> Result<Library, String> {
-    // Try to load BASS DLL from different locations
-    let possible_paths = [
-        "bass.dll",
-        "./bass.dll", 
-        "./bin/bass.dll",
-        "bin/bass.dll",
-    ];
-    
-    for path in &possible_paths {
-        if let Ok(lib) = unsafe { Library::new(path) } {
-            return Ok(lib);
-        }
-    }
-    
-    Err("Could not load bass.dll. Make sure the BASS library is available.".to_string())
-}
-
-fn ensure_bass_loaded(state: &mut PlaybackState) -> Result<(), String> {
-    if state.bass_lib.is_none() {
-        let lib = load_bass_library()?;
-        
-        // Test that we can load a basic function to verify the library is valid
-        unsafe {
-            let _: Symbol<BassErrorGetCode> = lib.get(b"BASS_ErrorGetCode")
-                .map_err(|_| "Invalid BASS library: missing BASS_ErrorGetCode function")?;
-        }
-        
-        state.bass_lib = Some(lib);
-        
-        // Load plugins after BASS is initialized
-        load_bass_plugins(state)?;
-    }
-    Ok(())
-}
-
-fn load_bass_plugins(state: &mut PlaybackState) -> Result<(), String> {
-    let lib = state.bass_lib.as_ref().unwrap();
-    
-    // Load BASS_PluginLoad function
-    let bass_plugin_load: Symbol<BassPluginLoad> = unsafe {
-        match lib.get(b"BASS_PluginLoad") {
-            Ok(func) => func,
-            Err(_) => {
-                println!("[bass] Warning: BASS_PluginLoad not available, plugins won't be loaded");
-                return Ok(());
-            }
-        }
-    };
-    
-    // List of plugins to try loading with their paths
-    let plugin_configs = [
-        ("bass_aac.dll", vec!["bass_aac.dll", "./bin/bass_aac.dll", "bin/bass_aac.dll"]),
-        ("bassflac.dll", vec!["bassflac.dll", "./bin/bassflac.dll", "bin/bassflac.dll"]),
-        ("bassopus.dll", vec!["bassopus.dll", "./bin/bassopus.dll", "bin/bassopus.dll"]),
-    ];
-    
-    for (plugin_name, paths) in &plugin_configs {
-        for path in paths {
-            let c_path = match CString::new(*path) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            
-            let result = unsafe { bass_plugin_load(c_path.as_ptr(), 0) };
-            if result != 0 {
-                println!("[bass] Loaded plugin: {} (handle: {})", plugin_name, result);
-                break;
-            }
-        }
-    }
-    
-    Ok(())
-}
-
-fn bass_err(lib: &Library) -> String { 
-    let get_error_code = unsafe {
-        match lib.get::<BassErrorGetCode>(b"BASS_ErrorGetCode") {
-            Ok(func) => func,
-            Err(_) => return "Could not get BASS_ErrorGetCode function".to_string(),
-        }
-    };
-    
-    let code = unsafe { get_error_code() };
-    match code {
-        1 => "BASS_ERROR_MEM: Memory error".to_string(),
-        2 => "BASS_ERROR_FILEOPEN: Can't open the file".to_string(),
-        3 => "BASS_ERROR_DRIVER: Can't find a free/valid driver".to_string(),
-        4 => "BASS_ERROR_BUFLOST: The sample buffer was lost".to_string(),
-        5 => "BASS_ERROR_HANDLE: Invalid handle".to_string(),
-        6 => "BASS_ERROR_FORMAT: Unsupported sample format".to_string(),
-        7 => "BASS_ERROR_POSITION: Invalid position".to_string(),
-        8 => "BASS_ERROR_INIT: BASS_Init has not been successfully called".to_string(),
-        9 => "BASS_ERROR_START: BASS_Start has not been successfully called".to_string(),
-        14 => "BASS_ERROR_ALREADY: Already initialized/paused/whatever".to_string(),
-        18 => "BASS_ERROR_NOCHAN: Can't get a free channel".to_string(),
-        19 => "BASS_ERROR_ILLTYPE: An illegal type was specified".to_string(),
-        20 => "BASS_ERROR_ILLPARAM: An illegal parameter was specified".to_string(),
-        21 => "BASS_ERROR_NO3D: No 3D support".to_string(),
-        22 => "BASS_ERROR_NOEAX: No EAX support".to_string(),
-        23 => "BASS_ERROR_DEVICE: Illegal device number".to_string(),
-        24 => "BASS_ERROR_NOPLAY: Not playing".to_string(),
-        25 => "BASS_ERROR_FREQ: Illegal sample rate".to_string(),
-        27 => "BASS_ERROR_NOTFILE: The stream is not a file stream".to_string(),
-        29 => "BASS_ERROR_NOHW: No hardware voices available".to_string(),
-        31 => "BASS_ERROR_EMPTY: The MOD music has no sequence data".to_string(),
-        32 => "BASS_ERROR_NONET: No internet connection could be opened".to_string(),
-        33 => "BASS_ERROR_CREATE: Couldn't create the file".to_string(),
-        34 => "BASS_ERROR_NOFX: Effects are not available".to_string(),
-        37 => "BASS_ERROR_NOTAVAIL: Requested data is not available".to_string(),
-        38 => "BASS_ERROR_DECODE: The channel is/isn't a 'decoding channel'".to_string(),
-        39 => "BASS_ERROR_DX: A sufficient DirectX version is not installed".to_string(),
-        40 => "BASS_ERROR_TIMEOUT: Connection timedout".to_string(),
-        41 => "BASS_ERROR_FILEFORM: Unsupported file format".to_string(),
-        42 => "BASS_ERROR_SPEAKER: Unavailable speaker".to_string(),
-        43 => "BASS_ERROR_VERSION: Invalid BASS version (used by add-ons)".to_string(),
-        44 => "BASS_ERROR_CODEC: Codec is not available/supported".to_string(),
-        45 => "BASS_ERROR_ENDED: The channel/file has ended".to_string(),
-        46 => "BASS_ERROR_BUSY: The device is busy".to_string(),
-        47 => "BASS_ERROR_UNSTREAMABLE: Unstreamable file".to_string(),
-        48 => "BASS_ERROR_WASAPI: WASAPI is not available".to_string(),
-        _ => format!("BASS unknown error {}", code),
-    }
-}
-
-fn probe_duration_bass(lib: &Library, handle: u32) -> Option<f64> {
-    unsafe {
-        let get_length: Symbol<BassChannelGetLength> = lib.get(b"BASS_ChannelGetLength").ok()?;
-        let bytes_to_seconds: Symbol<BassChannelBytes2Seconds> = lib.get(b"BASS_ChannelBytes2Seconds").ok()?;
-        
-        let len_bytes = get_length(handle, BASS_POS_BYTE);
-        // BASS returns -1 (0xFFFFFFFF as c_ulong) on error
-        if len_bytes == 0xFFFFFFFF || len_bytes == 0 { 
-            return None; 
-        }
-        let secs = bytes_to_seconds(handle, len_bytes);
-        if secs.is_finite() && secs > 0.1 { 
-            Some(secs) 
-        } else { 
-            None 
-        }
-    }
-}
 
 #[tauri::command]
 pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
@@ -630,11 +101,16 @@ pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
     
     // Ensure BASS library is loaded
     println!("[bass] Ensuring BASS library is loaded...");
-    match ensure_bass_loaded(&mut st) {
-        Ok(_) => println!("[bass] BASS library loaded successfully"),
-        Err(e) => {
-            println!("[bass] Failed to load BASS library: {}", e);
-            return Err(e);
+    if st.bass_lib.is_none() {
+        match ensure_bass_loaded() {
+            Ok(lib) => {
+                st.bass_lib = Some(lib);
+                println!("[bass] BASS library loaded successfully");
+            }
+            Err(e) => {
+                println!("[bass] Failed to load BASS library: {}", e);
+                return Err(e);
+            }
         }
     }
     
@@ -714,6 +190,8 @@ pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
         // Set network timeout to 15 seconds for YouTube streaming
         unsafe { 
             bass_set_config(BASS_CONFIG_NET_TIMEOUT, 15000); 
+            // Increase network buffer to 15 seconds to enable better seeking
+            bass_set_config(BASS_CONFIG_NET_BUFFER, 15000);
         }
         
         println!("[bass] BASS initialization complete");
@@ -758,14 +236,14 @@ pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
     } else {
         // For remote URLs, use BASS_StreamCreateURL
         let c_url = CString::new(actual_url.clone()).map_err(|_| "Invalid URL: contains null bytes".to_string())?;
-        unsafe { 
+        unsafe {
             bass_stream_create_url(
-                c_url.as_ptr(), 
-                0, 
-                BASS_STREAM_STATUS | BASS_STREAM_AUTOFREE | BASS_STREAM_BLOCK, // TODDO: consider BASS_STREAM_DECODE for caching and remove BASS_STREAM_BLOCK for seeking
-                std::ptr::null_mut(), 
+                c_url.as_ptr(),
+                0,
+                BASS_STREAM_STATUS | BASS_STREAM_AUTOFREE | BASS_STREAM_BLOCK | BASS_STREAM_RESTRATE, // BLOCK for format detection + RESTRATE for seeking
+                std::ptr::null_mut(),
                 std::ptr::null_mut()
-            ) 
+            )
         }
     };
     
@@ -929,14 +407,7 @@ pub async fn playback_start_with_cache(
         state_guard.current_source_hash = Some(final_source_hash.clone());
     }    // Try to get cached file first if preferred
     let use_cached = if prefer_cache {
-        let cache_result = {
-            let mut cache_guard = CACHE.lock().unwrap();
-            if let Some(cache) = cache_guard.as_mut() {
-                cache.get_cached_file(&track_id, &final_source_type, &final_source_hash)
-            } else {
-                None
-            }
-        };
+        let cache_result = get_cached_file_path(&track_id, &final_source_type, &final_source_hash);
 
         if let Some(cached_path) = cache_result {
             println!("[bass] Using cached file: {}", cached_path.display());
@@ -953,7 +424,25 @@ pub async fn playback_start_with_cache(
 
     // If streaming works and we want to cache, start background download with channel for completion
     if result.is_ok() && use_cached {
-        println!("[bass] Starting background cache download");
+        // Create a unique key for this download to prevent duplicates
+        let download_key = format!("{}:{}:{}", track_id, final_source_type, final_source_hash);
+        
+        // Check if this download is already in progress
+        {
+            let state_guard = STATE.lock().unwrap();
+            if state_guard.ongoing_cache_downloads.contains(&download_key) {
+                println!("[bass] Cache download already in progress for {}, skipping duplicate", download_key);
+                return result;
+            }
+        }
+        
+        println!("[bass] Starting background cache download for {}", download_key);
+
+        // Mark this download as in progress
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            state_guard.ongoing_cache_downloads.insert(download_key.clone());
+        }
 
         // Create a channel for cache download completion
         let (tx, mut rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
@@ -969,9 +458,14 @@ pub async fn playback_start_with_cache(
         let source_type_clone = final_source_type.clone();
         let source_hash_clone = final_source_hash.clone();
         let url_clone = url.clone();
+        let download_key_clone = download_key.clone();
 
         tokio::spawn(async move {
             download_and_cache_audio(track_id_clone, source_type_clone, source_hash_clone, url_clone, tx).await;
+            
+            // Remove this download from the ongoing downloads set
+            let mut state_guard = STATE.lock().unwrap();
+            state_guard.ongoing_cache_downloads.remove(&download_key_clone);
         });
 
         // Spawn a task to listen for cache completion and switch playback
@@ -1016,127 +510,6 @@ pub async fn playback_start_with_cache(
         });
     }
 
-    result
-}
-
-// URL resolution functions for different source types
-async fn resolve_local_source(value: &str) -> Result<String, String> {
-    // For local files, return file:// URL
-    if value.starts_with("file://") {
-        Ok(value.to_string())
-    } else {
-        Ok(format!("file://{}", value))
-    }
-}
-
-async fn resolve_http_source(value: &str) -> Result<String, String> {
-    // For HTTP URLs, return as-is
-    Ok(value.to_string())
-}
-
-async fn resolve_torrent_source(value: &str) -> Result<String, String> {
-    // Extract infoHash from magnetURI if needed
-    if value.starts_with("magnet:") {
-        if let Some(start) = value.find("xt=urn:btih:") {
-            let hash_start = start + 12;
-            if let Some(end) = value[hash_start..].find('&') {
-                let info_hash = &value[hash_start..hash_start + end];
-                return Ok(format!("http://localhost:9000/stream/{}/0", info_hash.to_lowercase()));
-            } else {
-                let info_hash = &value[hash_start..];
-                return Ok(format!("http://localhost:9000/stream/{}/0", info_hash.to_lowercase()));
-            }
-        }
-        return Err("Invalid magnet URI format".to_string());
-    }
-    // Assume it's already an infoHash
-    Ok(format!("http://localhost:9000/stream/{}/0", value.to_lowercase()))
-}
-
-async fn resolve_youtube_source(value: &str) -> Result<String, String> {
-    // If it's already a localhost streaming URL, return as-is
-    if value.starts_with("http://localhost:9000/source/youtube") {
-        return Ok(value.to_string());
-    }
-
-    // For YouTube sources, get the direct CDN URL from the info endpoint
-    let video_id = if value.len() == 11 && value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-        // It's already a video ID
-        value.to_string()
-    } else {
-        // Try to extract video ID from URL
-        if let Some(start) = value.find("v=") {
-            if let Some(end) = value[start + 2..].find('&') {
-                value[start + 2..start + 2 + end].to_string()
-            } else {
-                value[start + 2..].to_string()
-            }
-        } else if let Some(start) = value.find("youtu.be/") {
-            if let Some(end) = value[start + 9..].find('?') {
-                value[start + 9..start + 9 + end].to_string()
-            } else {
-                value[start + 9..].to_string()
-            }
-        } else {
-            return Err("Unable to extract YouTube video ID".to_string());
-        }
-    };
-
-    // Get the info to extract the direct YouTube CDN URL
-    let info_url = format!("http://localhost:9000/source/youtube?id={}&get=info", video_id);
-    println!("[resolve] Fetching YouTube info for direct URL: {}", info_url);
-
-    let client = reqwest::Client::new();
-    let response = client.get(&info_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch YouTube info: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("YouTube info request failed with status: {}", response.status()));
-    }
-
-    let data: serde_json::Value = response.json()
-        .await
-        .map_err(|e| format!("Failed to parse YouTube info response: {}", e))?;
-
-    println!("[resolve] YouTube info response: {:?}", data);
-
-    if let Some(success) = data.get("success").and_then(|s| s.as_bool()) {
-        if success {
-            if let Some(format_data) = data.get("data").and_then(|d| d.get("format")) {
-                if let Some(url) = format_data.get("url").and_then(|u| u.as_str()) {
-                    println!("[resolve] Successfully extracted direct YouTube CDN URL: {}", url);
-                    return Ok(url.to_string());
-                }
-            }
-        }
-    }
-
-    // Fallback to streaming endpoint if direct URL extraction fails
-    println!("[resolve] Falling back to streaming endpoint for video ID: {}", video_id);
-    Ok(format!("http://localhost:9000/source/youtube?id={}&get=stream", video_id))
-}
-
-async fn resolve_audio_source(source_type: &str, value: &str) -> Result<String, String> {
-    println!("[bass] resolve_audio_source called with type: '{}', value: '{}'", source_type, value);
-    
-    let result = match source_type {
-        "local" => resolve_local_source(value).await,
-        "http" => resolve_http_source(value).await,
-        "torrent" => resolve_torrent_source(value).await,
-        "youtube" => resolve_youtube_source(value).await,
-        _ => {
-            println!("[bass] Unsupported source type: {}", source_type);
-            Err(format!("Unsupported source type: {}", source_type))
-        },
-    };
-    
-    match &result {
-        Ok(url) => println!("[bass] Source resolution successful: {}", url),
-        Err(error) => println!("[bass] Source resolution failed: {}", error),
-    }
-    
     result
 }
 
@@ -1199,27 +572,12 @@ pub async fn playback_start_with_source(spec: PlaybackSourceSpec) -> Result<serd
     if spec.prefer_cache.unwrap_or(true) {
         println!("[bass] Checking cache before URL resolution...");
         
-        // Use the existing cache_get_file command to check for cached files
-        match cache_get_file(spec.track_id.clone(), spec.source_type.clone(), source_hash.clone()).await {
-            Ok(cache_result) => {
-                if let Some(exists) = cache_result.get("exists").and_then(|v| v.as_bool()) {
-                    if exists {
-                        println!("[bass] Cache hit! Playing from cached file directly");
-                        
-                        // Use existing playback_start_with_cache but force it to use cache
-                        return playback_start_with_cache(
-                            spec.track_id,
-                            "".to_string(), // Empty URL since we're using cache
-                            true, // prefer_cache = true
-                            Some(spec.source_type),
-                            Some(source_hash)
-                        ).await;
-                    }
-                }
-            }
-            Err(e) => {
-                println!("[bass] Cache check failed: {}, proceeding with URL resolution", e);
-            }
+        // Check for cached files directly
+        if let Some(cached_path) = get_cached_file_path(&spec.track_id, &spec.source_type, &source_hash) {
+            println!("[bass] Cache hit! Playing from cached file directly: {}", cached_path.display());
+            
+            // Start playback directly from cached file
+            return playback_start(format!("file://{}", cached_path.display())).await;
         }
         
         println!("[bass] Cache miss, proceeding with URL resolution...");
@@ -1566,19 +924,24 @@ pub async fn get_audio_devices() -> Result<serde_json::Value, String> {
     let mut state = STATE.lock().unwrap();
     
     // Ensure BASS library is loaded
-    if let Err(e) = ensure_bass_loaded(&mut state) {
-        println!("[bass] Warning: Could not load BASS library for device enumeration: {}", e);
-        // Return fallback devices if BASS is not available
-        return Ok(serde_json::json!({
-            "success": true,
-            "devices": [{
-                "id": -1,
-                "name": "System Default",
-                "driver": "Default",
-                "is_default": true,
-                "is_enabled": true
-            }]
-        }));
+    if state.bass_lib.is_none() {
+        match ensure_bass_loaded() {
+            Ok(lib) => state.bass_lib = Some(lib),
+            Err(e) => {
+                println!("[bass] Warning: Could not load BASS library for device enumeration: {}", e);
+                // Return fallback devices if BASS is not available
+                return Ok(serde_json::json!({
+                    "success": true,
+                    "devices": [{
+                        "id": -1,
+                        "name": "System Default",
+                        "driver": "Default",
+                        "is_default": true,
+                        "is_enabled": true
+                    }]
+                }));
+            }
+        }
     }
     
     let lib = state.bass_lib.as_ref().unwrap();
@@ -1695,12 +1058,7 @@ pub async fn get_audio_devices() -> Result<serde_json::Value, String> {
     }
     
     println!("[bass] Device enumeration complete, found {} devices", devices.len());
-    
-    // Debug log all devices for troubleshooting
-    for (index, device) in devices.iter().enumerate() {
-        println!("[bass] Device {}: {:?}", index, device);
-    }
-    
+        
     Ok(serde_json::json!({
         "success": true,
         "devices": devices
@@ -1885,8 +1243,10 @@ pub async fn get_audio_settings() -> Result<serde_json::Value, String> {
         }
     };
     
+    /*
     println!("[bass] Current audio settings - device: {}, sample_rate: {}Hz, bit_depth: {}bit, volume: {:.2}, output_channels: {}", 
              actual_device, actual_sample_rate, actual_bit_depth, state.volume, actual_output_channels);
+    */
     
     Ok(serde_json::json!({
         "success": true,
@@ -1996,6 +1356,7 @@ pub async fn set_audio_settings(settings: serde_json::Value) -> Result<serde_jso
             unsafe { 
                 bass_set_config(BASS_CONFIG_BUFFER, buffer_size); 
                 bass_set_config(BASS_CONFIG_NET_TIMEOUT, 15000);
+                bass_set_config(BASS_CONFIG_NET_BUFFER, 15000);
             }
             println!("[bass] Set buffer size to {} and network timeout", buffer_size);
             
@@ -2064,6 +1425,7 @@ pub async fn reinitialize_audio(device_id: i32, sample_rate: u32, buffer_size: u
         unsafe { 
             bass_set_config(BASS_CONFIG_BUFFER, buffer_size); 
             bass_set_config(BASS_CONFIG_NET_TIMEOUT, 15000);
+            bass_set_config(BASS_CONFIG_NET_BUFFER, 15000);
         }
         
         let ok = unsafe { bass_init(device_id, sample_rate, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
@@ -2084,7 +1446,6 @@ pub async fn reinitialize_audio(device_id: i32, sample_rate: u32, buffer_size: u
 
 // BASS constants for configuration
 const BASS_CONFIG_BUFFER: c_uint = 0;
-const BASS_CONFIG_NET_BUFFER: c_uint = 12;
 
 // Additional utility functions for proper BASS management
 #[tauri::command]
@@ -2120,71 +1481,6 @@ pub async fn playback_cleanup() -> Result<bool, String> {
 // Implementation note: The BASS DLL should be placed in the bin/ directory
 // and will be automatically included in the Tauri bundle via the resources configuration.
 // On Windows, the library is loaded dynamically at runtime, so no import library (.lib) is needed.
-
-// Cache management commands (integrated into playback module)
-#[tauri::command]
-pub async fn cache_get_file(track_id: String, source_type: String, source_hash: String) -> Result<serde_json::Value, String> {
-    let mut cache_guard = CACHE.lock().unwrap();
-    if let Some(cache) = cache_guard.as_mut() {
-        if let Some(file_path) = cache.get_cached_file(&track_id, &source_type, &source_hash) {
-            println!("[cache] Found cached file for {}:{}:{} -> {}", track_id, source_type, source_hash, file_path.display());
-            return Ok(serde_json::json!({
-                "cached_path": file_path.to_string_lossy().to_string(),
-                "exists": true
-            }));
-        }
-    }
-    println!("[cache] No cached file found for {}:{}:{}", track_id, source_type, source_hash);
-    Ok(serde_json::json!({
-        "cached_path": null,
-        "exists": false
-    }))
-}
-
-#[tauri::command]
-pub async fn cache_download_and_store(track_id: String, source_type: String, source_hash: String, url: String) -> Result<String, String> {
-    let (tx, _rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
-    download_and_cache_audio(track_id, source_type, source_hash, url, tx).await;
-
-    // For compatibility, return a dummy path since the actual result is handled asynchronously
-    Ok("Download started".to_string())
-}
-
-#[tauri::command]
-pub async fn cache_get_stats() -> Result<serde_json::Value, String> {
-    let cache_guard = CACHE.lock().unwrap();
-    if let Some(cache) = cache_guard.as_ref() {
-        let (total_size, entry_count) = (cache.index.total_size, cache.index.entries.len());
-        return Ok(serde_json::json!({
-            "total_size_mb": total_size as f64 / (1024.0 * 1024.0),
-            "entry_count": entry_count,
-            "max_size_mb": MAX_CACHE_SIZE_MB
-        }));
-    }
-    Err("Cache not initialized".to_string())
-}
-
-#[tauri::command]
-pub async fn cache_clear() -> Result<(), String> {
-    let mut cache_guard = CACHE.lock().unwrap();
-    if let Some(cache) = cache_guard.as_mut() {
-        // Remove all cached files
-        for entry in cache.index.entries.values() {
-            let file_path = cache.cache_dir.join(&entry.file_path);
-            if file_path.exists() {
-                let _ = fs::remove_file(file_path);
-            }
-        }
-
-        // Reset index
-        cache.index = CacheIndex::new();
-        cache.save_index()?;
-
-        println!("[cache] Cache cleared");
-        return Ok(());
-    }
-    Err("Cache not initialized".to_string())
-}
 
 // Volume control commands
 

@@ -1,7 +1,10 @@
 import React, { useState, useMemo, useCallback, MouseEvent } from 'react';
 import '../styles/search-results.css';
 import { useI18n } from '../core/i18n';
+import { usePlaybackSelector } from '../core/playback';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../core/spotify-helpers';
+import { buildTrackContextMenuItems } from './ContextMenu';
+import { useContextMenu } from '../core/ContextMenuContext';
 import InfoHeader from './InfoHeader';
 
 // Types for better organization
@@ -88,15 +91,15 @@ const playbackEvents = {
 };
 
 const navigationEvents = {
-  selectTrack: (trackId: string, source = 'search') => 
+  selectTrack: (trackId: string, source = 'search') =>
     dispatchCustomEvent('freely:selectTrack', { trackId, source }),
-  selectArtist: (artistId: string | number, source = 'search') => 
+  selectArtist: (artistId: string | number, source = 'search') =>
     dispatchCustomEvent('freely:selectArtist', { artistId, source }),
-  selectAlbum: (albumId: string | number, source = 'search') => 
+  selectAlbum: (albumId: string | number, source = 'search') =>
     dispatchCustomEvent('freely:selectAlbum', { albumId, source }),
-  selectPlaylist: (playlistId: string, source = 'search') => 
+  selectPlaylist: (playlistId: string, source = 'search') =>
     dispatchCustomEvent('freely:selectPlaylist', { playlistId, source }),
-  openAddToPlaylist: (track: Song) => 
+  openAddToPlaylist: (track: Song) =>
     dispatchCustomEvent('freely:openAddToPlaylistModal', { track })
 };
 
@@ -121,11 +124,11 @@ const HighlightedText = React.memo<{ text: string; query?: string }>(({ text, qu
 const MediaCover = React.memo<{ type: CollectionKind | 'track'; images?: Image[] }>(({ type, images }) => {
   const iconMap = {
     track: 'music_note',
-    album: 'album', 
+    album: 'album',
     artist: 'person',
     playlist: 'queue_music'
   } as const;
-  
+
   const icon = iconMap[type];
   const imageUrl = useMemo(() => getImageUrl(images), [images]);
 
@@ -170,10 +173,10 @@ const CollectionPlayButton = React.memo<CollectionPlayButtonProps>(({ kind, id, 
   }, [kind, id, onPlay, fetchers]);
 
   return (
-    <div 
-      className='media-play-overlay' 
-      role="button" 
-      aria-label={t('player.play','Play')} 
+    <div
+      className='media-play-overlay'
+      role="button"
+      aria-label={t('player.play', 'Play')}
       onClick={loadAndPlay}
     >
       <span className="material-symbols-rounded filled">play_arrow</span>
@@ -203,8 +206,8 @@ const ArtistCard = React.memo<{ artist: Artist } & BaseCardProps>(({ artist, que
 ));
 
 const AlbumCard = React.memo<{ album: Album } & BaseCardProps>(({ album, query, onSelect, onPlay, layout }) => {
-  const artistName = useMemo(() => 
-    (album.artists?.map(a => a.name).join(', ')) || album.artist || '', 
+  const artistName = useMemo(() =>
+    (album.artists?.map(a => a.name).join(', ')) || album.artist || '',
     [album.artists, album.artist]
   );
 
@@ -224,9 +227,9 @@ const AlbumCard = React.memo<{ album: Album } & BaseCardProps>(({ album, query, 
 
 const PlaylistCard = React.memo<{ playlist: Playlist } & BaseCardProps>(({ playlist, query, onSelect, onPlay, layout }) => {
   const { t } = useI18n();
-  
-  const trackCountText = useMemo(() => 
-    `${playlist.totalTracks || 0} ${t('pl.tracks','tracks')}`, 
+
+  const trackCountText = useMemo(() =>
+    `${playlist.totalTracks || 0} ${t('pl.tracks', 'tracks')}`,
     [playlist.totalTracks, t]
   );
 
@@ -236,7 +239,7 @@ const PlaylistCard = React.memo<{ playlist: Playlist } & BaseCardProps>(({ playl
         <MediaCover type="playlist" images={playlist.images} />
         <CollectionPlayButton kind="playlist" id={playlist.id} onPlay={onPlay} />
       </div>
-      <h3 className="media-title">
+      <h3 className="media-title overflow-ellipsis">
         <HighlightedText text={playlist.name} query={query} />
       </h3>
       <div className="media-meta">{trackCountText}</div>
@@ -245,25 +248,30 @@ const PlaylistCard = React.memo<{ playlist: Playlist } & BaseCardProps>(({ playl
 });
 
 // Optimized song components
-interface SongListItemProps { 
-  song: Song; 
-  query?: string; 
-  onSelect: () => void; 
-  onPlay: () => void; 
-  onAddToPlaylist: () => void; 
-  onMore: () => void; 
+interface SongListItemProps {
+  song: Song;
+  query?: string;
+  onSelect: () => void;
+  onPlay: () => void;
+  onAddToPlaylist: () => void;
+  onMore: (e: MouseEvent, song: Song) => void;
 }
 
 const SongListItem = React.memo<SongListItemProps>(({ song, query, onSelect, onPlay, onAddToPlaylist, onMore }) => {
   const { t } = useI18n();
-  
-  const handleAction = useCallback((e: MouseEvent, action: () => void) => { 
-    e.stopPropagation(); 
-    action(); 
+
+  const handleAction = useCallback((e: MouseEvent, action: () => void) => {
+    e.stopPropagation();
+    action();
   }, []);
 
-  const artistNames = useMemo(() => 
-    song.artists?.map(a => a.name).join(', ') || '', 
+  const handleMoreAction = useCallback((e: MouseEvent) => {
+    e.stopPropagation();
+    onMore(e, song);
+  }, [onMore, song]);
+
+  const artistNames = useMemo(() =>
+    song.artists?.map(a => a.name).join(', ') || '',
     [song.artists]
   );
 
@@ -285,22 +293,19 @@ const SongListItem = React.memo<SongListItemProps>(({ song, query, onSelect, onP
           <div className="sr-sub overflow-ellipsis">{artistNames}</div>
         </div>
         <div className="sr-controls">
-          <button 
-            type="button" 
-            className="player-icons" 
-            title={t('playlist.add')} 
-            onClick={(e) => handleAction(e, onAddToPlaylist)}
-          >
-            <span className="material-symbols-rounded">add_circle</span>
-          </button>
           <div className="sr-time">{duration}</div>
-          <button 
-            type="button" 
-            className="player-icons sr-more" 
-            title={t('common.more')} 
-            onClick={(e) => handleAction(e, onMore)}
+          <button
+            type="button"
+            className={`sr-more-btn`}
+            aria-label='More'
+            title='More'
+            onClick={(e) => { e.stopPropagation(); onMore(e, song) }}
+            onKeyDown={(e) => { e.stopPropagation(); }}
           >
-            <span className="material-symbols-rounded bold">more_horiz</span>
+            <span
+              className={`material-symbols-rounded`}
+            >more_horiz
+            </span>
           </button>
         </div>
       </div>
@@ -308,18 +313,19 @@ const SongListItem = React.memo<SongListItemProps>(({ song, query, onSelect, onP
   );
 });
 
-interface SongTableRowProps { 
-  song: Song; 
-  query?: string; 
-  onSelect: () => void; 
+interface SongTableRowProps {
+  song: Song;
+  query?: string;
+  onSelect: () => void;
+  onMore: (e: MouseEvent, song: Song) => void;
 }
 
-const SongTableRow = React.memo<SongTableRowProps>(({ song, query, onSelect }) => {
-  const artistNames = useMemo(() => 
-    song.artists?.map(a => a.name).join(', ') || '', 
+const SongTableRow = React.memo<SongTableRowProps>(({ song, query, onSelect, onMore }) => {
+  const artistNames = useMemo(() =>
+    song.artists?.map(a => a.name).join(', ') || '',
     [song.artists]
   );
-  
+
   const duration = useMemo(() => formatDuration(song.durationMs), [song.durationMs]);
 
   return (
@@ -338,36 +344,67 @@ const SongTableRow = React.memo<SongTableRowProps>(({ song, query, onSelect }) =
         </div>
       </td>
       <td className="sr-table-album overflow-ellipsis">{song.album?.name || ''}</td>
-      <td className="sr-td-right">{duration}</td>
+      <td className="sr-td-right">
+        <span className="sr-time">
+          {duration}
+        </span>
+        <button
+          type="button"
+          className={`sr-more-btn`}
+          aria-label='More'
+          title='More'
+          onClick={(e) => { e.stopPropagation(); onMore(e, song) }}
+          onKeyDown={(e) => { e.stopPropagation(); }}
+        >
+          <span
+            className={`material-symbols-rounded`}
+          >more_horiz
+          </span>
+        </button>
+      </td>
     </tr>
   );
 });
 
 // Custom hook for search event handlers
 const useSearchHandlers = (onMoreClick?: (id: string) => void) => {
+  const { t } = useI18n();
+  const queueIds = usePlaybackSelector(s => s.queueIds) as string[] | undefined;
+  const currentIndex = usePlaybackSelector(s => s.currentIndex) as number | undefined;
+  const { openMenu } = useContextMenu();
+
   return useMemo(() => ({
     handlePlayNow: (ids: string | string[]) => playbackEvents.playNow(ids),
-    
+
     handleSelectTrack: (id?: string | number) => {
       if (id !== undefined) navigationEvents.selectTrack(String(id));
     },
-    
+
     handleSelectArtist: (id?: string | number) => {
       if (id !== undefined) navigationEvents.selectArtist(id);
     },
-    
+
     handleSelectAlbum: (id?: string | number) => {
       if (id !== undefined) navigationEvents.selectAlbum(id);
     },
-    
+
     handleSelectPlaylist: (id?: string | number) => {
       if (id !== undefined) navigationEvents.selectPlaylist(String(id));
     },
-    
-    handleMore: (id: string) => onMoreClick?.(id),
-    
+
+    handleMore: async (e: MouseEvent, song: Song) => {
+      const items = buildTrackContextMenuItems({
+        t,
+        trackData: song,
+        queueList: queueIds,
+        currentIndex,
+        queueOptions: true
+      });
+      await openMenu({ e: e.currentTarget as any, items });
+    },
+
     handleAddToPlaylist: (song: Song) => navigationEvents.openAddToPlaylist(song)
-  }), [onMoreClick]);
+  }), [onMoreClick, t, queueIds, currentIndex, openMenu]);
 };
 
 // Custom hook for tab management
@@ -383,16 +420,16 @@ const useTabManager = () => {
     { key: 'playlists', label: t('search.playlists', 'Playlists') }
   ] as const, [t]);
 
-  const tabActions = useMemo(() => 
+  const tabActions = useMemo(() =>
     tabButtons.map(({ key, label }) => (
-      <button 
+      <button
         key={key}
-        className={`sr-tab ${tab === key ? 'active' : ''}`} 
+        className={`sr-tab ${tab === key ? 'active' : ''}`}
         onClick={() => setTab(key as TabType)}
       >
         {label}
       </button>
-    )), 
+    )),
     [tabButtons, tab]
   );
 
@@ -415,11 +452,11 @@ export default function SearchResults({ query, results, onMoreClick }: SearchRes
     const artists = results?.artists || [];
     const albums = results?.albums || [];
     const playlists = results?.playlists || [];
-    
+
     const hasAny = !!query && (
-      uniqueSongs.length > 0 || 
-      artists.length > 0 || 
-      albums.length > 0 || 
+      uniqueSongs.length > 0 ||
+      artists.length > 0 ||
+      albums.length > 0 ||
       playlists.length > 0
     );
 
@@ -438,7 +475,7 @@ export default function SearchResults({ query, results, onMoreClick }: SearchRes
         onPlay={handlers.handlePlayNow}
       />
     ),
-    
+
     albumCard: (album: Album, layout: 'compact' | 'full') => (
       <AlbumCard
         key={String(album.id)}
@@ -449,7 +486,7 @@ export default function SearchResults({ query, results, onMoreClick }: SearchRes
         onPlay={handlers.handlePlayNow}
       />
     ),
-    
+
     playlistCard: (playlist: Playlist, layout: 'compact' | 'full') => (
       <PlaylistCard
         key={String(playlist.id)}
@@ -460,7 +497,7 @@ export default function SearchResults({ query, results, onMoreClick }: SearchRes
         onPlay={handlers.handlePlayNow}
       />
     ),
-    
+
     songListItem: (song: Song) => (
       <SongListItem
         key={String(song.id)}
@@ -469,16 +506,17 @@ export default function SearchResults({ query, results, onMoreClick }: SearchRes
         onSelect={() => handlers.handleSelectTrack(song.id)}
         onPlay={() => handlers.handlePlayNow(String(song.id))}
         onAddToPlaylist={() => handlers.handleAddToPlaylist(song)}
-        onMore={() => handlers.handleMore(String(song.id))}
+        onMore={(e, songData) => handlers.handleMore(e, songData)}
       />
     ),
-    
+
     songTableRow: (song: Song) => (
       <SongTableRow
         key={String(song.id)}
         song={song}
         query={query}
         onSelect={() => handlers.handleSelectTrack(song.id)}
+        onMore={(e, songData) => handlers.handleMore(e, songData)}
       />
     )
   }), [query, handlers]);
@@ -560,16 +598,16 @@ export default function SearchResults({ query, results, onMoreClick }: SearchRes
               <table className="sr-table sr-table-compact">
                 <thead>
                   <tr>
-                    <th>{t('search.title','Title')}</th>
-                    <th>{t('search.album','Album')}</th>
-                    <th>{t('search.length','Length')}</th>
+                    <th>{t('search.title', 'Title')}</th>
+                    <th>{t('search.album', 'Album')}</th>
+                    <th>{t('search.length', 'Length')}</th>
                   </tr>
                 </thead>
                 <tbody>{renderedContent.fullContent.songTable}</tbody>
               </table>
             )}
             {tab === 'artists' && (
-              <div className="sr-grid-vertical">{renderedContent.fullContent.artistGrid}</div>
+              <div className="sr-grid-vertical sr-artists">{renderedContent.fullContent.artistGrid}</div>
             )}
             {tab === 'albums' && (
               <div className="sr-grid-vertical">{renderedContent.fullContent.albumGrid}</div>

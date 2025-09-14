@@ -168,7 +168,7 @@ function useMenuPositioning(
       };
 
       const result = calculateMenuPosition(options, menuDimensions, appRect);
-      
+
       setPosition({
         left: result.left,
         top: result.top,
@@ -212,7 +212,7 @@ const SubMenu = React.memo<{
       };
 
       const position = calculateSubMenuPosition(parentRect, menuDimensions, appRect);
-      
+
       setStyle({
         position: 'fixed',
         left: position.left,
@@ -232,7 +232,7 @@ const SubMenu = React.memo<{
     onClose(item.id);
   }, [onClose]);
 
-  const menuItems = useMemo(() => 
+  const menuItems = useMemo(() =>
     items.map(item => (
       <div
         key={item.id}
@@ -241,8 +241,8 @@ const SubMenu = React.memo<{
       >
         <div className="cm-label">
           {item.icon && (
-            <span 
-              className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} 
+            <span
+              className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`}
               aria-hidden
             >
               {item.icon}
@@ -251,7 +251,7 @@ const SubMenu = React.memo<{
           {item.label}
         </div>
       </div>
-    )), 
+    )),
     [items, handleAction]
   );
 
@@ -302,8 +302,8 @@ const MenuItem = React.memo<{
   const iconElement = useMemo(() => {
     if (!item.icon) return null;
     return (
-      <span 
-        className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} 
+      <span
+        className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`}
         aria-hidden
       >
         {item.icon}
@@ -318,10 +318,12 @@ const MenuItem = React.memo<{
         className={`cm-item cm-submenu ${item.disabled ? 'disabled' : ''}${item.hide ? ' hidden' : ''}`}
         ref={itemRef}
         onMouseEnter={handleMouseEnterItem}
+        style={item.width ? { width: `${item.width}px` } : undefined}
       >
         <div className={`cm-label ${item.disabled ? 'disabled' : ''}`}>
-          {iconElement}
+          {(item.iconPosition === 'left' || !item.iconPosition) && iconElement}
           {item.label}
+          {item.iconPosition === 'right' && iconElement}
           <span className="material-symbols-rounded cm-icon" aria-hidden>
             chevron_right
           </span>
@@ -347,7 +349,7 @@ const MenuItem = React.memo<{
 
   // Group
   if (item.type === 'group') {
-    const groupItems = useMemo(() => 
+    const groupItems = useMemo(() =>
       (item.items || []).map(groupItem => (
         <MenuItem
           key={groupItem.id}
@@ -360,7 +362,7 @@ const MenuItem = React.memo<{
           onMouseEnter={onMouseEnter}
           onMouseLeave={onMouseLeave}
         />
-      )), 
+      )),
       [item.items, appRect, activeSubMenu, onSetActiveSubMenu, onAction, onClose, onMouseEnter, onMouseLeave]
     );
 
@@ -379,26 +381,28 @@ const MenuItem = React.memo<{
     const customImage = useMemo(() => {
       if (item.image) {
         return (
-          <div 
+          <div
             className="cm-custom-image"
             style={{ backgroundImage: `url(${item.image})` }}
           />
         );
       }
-      return (
-        <div className="cm-custom-image no-image">
-          <span 
-            className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`} 
-            aria-hidden
-          >
-            {item.icon || 'hide_image'}
-          </span>
-        </div>
-      );
+      if (!item.hideNoImage || item.icon) {
+        return (
+          <div className="cm-custom-image no-image">
+            <span
+              className={`cm-icon material-symbols-rounded ${item.iconFilled ? 'filled' : ''}`}
+              aria-hidden
+            >
+              {item.icon || 'hide_image'}
+            </span>
+          </div>
+        );
+      }
     }, [item.image, item.icon, item.iconFilled]);
 
     return (
-      <div className={`cm-item custom-item disabled${item.hide ? ' hidden' : ''}`}>
+      <div className={`cm-item custom-item disabled${item.hide ? ' hidden' : ''}`} style={item.width ? { width: `${item.width}px` } : undefined}>
         <div className="cm-label">
           {customImage}
           <div className="cm-custom-meta">
@@ -412,27 +416,55 @@ const MenuItem = React.memo<{
     );
   }
 
+  // Inline items
+  if (item.type === 'inline' && item.items) {
+    const inlineItems = useMemo(() =>
+      item.items.map(inlineItem => (
+        <MenuItem
+          key={inlineItem.id}
+          item={inlineItem}
+          appRect={appRect}
+          activeSubMenu={activeSubMenu}
+          onSetActiveSubMenu={onSetActiveSubMenu}
+          onAction={onAction}
+          onClose={onClose}
+          onMouseEnter={onMouseEnter}
+          onMouseLeave={onMouseLeave}
+        />
+      )),
+      [item.items, appRect, activeSubMenu, onSetActiveSubMenu, onAction, onClose, onMouseEnter, onMouseLeave]
+    );
+
+    return (
+      <div className={`cm-inline${item.hide ? ' hidden' : ''}`}>
+        {inlineItems}
+      </div>
+    );
+  }
+
   // Regular item
   return (
     <div
       className={`cm-item ${item.disabled ? 'disabled' : ''}${item.hide ? ' hidden' : ''}`}
       onClick={handleItemClick}
       onMouseEnter={handleMouseEnterItem}
+      style={item.width ? { width: `${item.width}px` } : undefined}
     >
       <div className="cm-label">
-        {iconElement}
+        {(item.iconPosition === 'left' || !item.iconPosition) && iconElement}
         {item.label}
+        {item.iconPosition === 'right' && iconElement}
       </div>
     </div>
   );
 });
 
 // Main optimized ContextMenu Component
-export default function ContextMenu({ 
-  options, 
-  onClose 
-}: { 
-  options: ContextMenuOptions; 
+export default function ContextMenu({
+  options,
+  onClose
+}: {
+  options: ContextMenuOptions;
   onClose: (v: string | null) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -440,18 +472,23 @@ export default function ContextMenu({
   const [menuState, menuActions] = useMenuState();
   const { clearTimer, setTimer } = useSubmenuTimer();
 
+  // Memoized items (handle function or array)
+  const items = useMemo(() => {
+    return typeof options.items === 'function' ? options.items() : options.items;
+  }, [options.items, options.updateKey]);
+
   // Memoized positioning
   const { position: rootStyle, cardStyle } = useMenuPositioning(
     cardRef,
     { x: options.x, y: options.y },
     menuState.appRect,
-    [options.items?.length]
+    [items?.length]
   );
 
   // Initialize app rect and click outside handler
   useEffect(() => {
-    const appEl = document.getElementById('app') || 
-      document.querySelector('.app') || 
+    const appEl = document.getElementById('app') ||
+      document.querySelector('.app') ||
       document.documentElement;
     menuActions.setAppRect((appEl as Element).getBoundingClientRect());
 
@@ -477,29 +514,42 @@ export default function ContextMenu({
   // Action handler
   const handleAction = useCallback((item: ContextMenuItem) => {
     if (item.disabled || item.type === 'submenu') return;
-    
+
     if (item.type === 'link' && item.href) {
       window.open(item.href, '_blank');
     }
-    
+
     if (item.type === 'action' && typeof item.onClick === 'function') {
       try {
         const result = item.onClick(item);
         if (result && typeof (result as Promise<any>).then === 'function') {
-          (result as Promise<any>).finally(() => onClose(item.id));
+          (result as Promise<any>).finally(() => {
+            if (item.updateOnClick && options.onUpdate) {
+              options.onUpdate();
+            }
+            if (!options.preventCloseOnClick) {
+              onClose(item.id);
+            }
+          });
           return;
+        } else {
+          if (item.updateOnClick && options.onUpdate) {
+            options.onUpdate();
+          }
         }
       } catch (e) {
         console.error('ContextMenu action error', e);
       }
     }
-    
-    onClose(item.id);
-  }, [onClose]);
+
+    if (!options.preventCloseOnClick) {
+      onClose(item.id);
+    }
+  }, [onClose, options.preventCloseOnClick, options.onUpdate]);
 
   // Memoized menu items
   const menuItems = useMemo(() =>
-    options.items.map(item => (
+    items.map(item => (
       <MenuItem
         key={item.id}
         item={item}
@@ -513,13 +563,13 @@ export default function ContextMenu({
       />
     )),
     [
-      options.items, 
-      menuState.appRect, 
-      menuState.activeSubMenu, 
-      menuActions.setActiveSubMenu, 
-      handleAction, 
-      onClose, 
-      handleMouseEnter, 
+      items,
+      menuState.appRect,
+      menuState.activeSubMenu,
+      menuActions.setActiveSubMenu,
+      handleAction,
+      onClose,
+      handleMouseEnter,
       handleMouseLeave
     ]
   );
@@ -548,9 +598,10 @@ export interface BuildTrackMenuOptions {
   currentIndex?: number;
   queueRemovable?: boolean; // if true, show "remove from playlist" option
   queueOptions?: boolean; // whether to show queue manipulation group
+  playlistRemove?: (trackId: string) => void; // if provided, show "remove from playlist" option
 }
 
-export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): ContextMenuItem[] {
+export function buildQueueContextMenuItems(opts: BuildTrackMenuOptions): ContextMenuItem[] {
   if (!opts || typeof opts !== 'object') return [];
   const {
     t,
@@ -566,8 +617,12 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
   const firstArtist = trackData?.artists?.[0];
   const items: ContextMenuItem[] = [
     {
-      id: 'title', label: 'title', type: 'custom',
-      image: (window as any).imageRes?.(trackData?.album?.images, 3) || undefined, icon: 'person', iconFilled: true,
+      id: 'title',
+      label: 'title',
+      type: 'custom',
+      image: (window as any).imageRes?.(trackData?.album?.images, 3) || undefined,
+      icon: 'person',
+      iconFilled: true,
       meta: { title: trackTitle, subtitle: trackData?.artists?.map((a: any) => a.name).join(', ') || '' }
     },
     {
@@ -628,6 +683,103 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
         ]
       }
     ] : []) as any,
+    ...(firstArtist?.id ? [
+      {
+        id: 'artist', label: t('common.goToArtist', 'Go to artist'), type: 'action' as const, icon: 'person', iconFilled: true,
+        onClick: () => {
+          if (firstArtist.id) window.dispatchEvent(new CustomEvent('freely:selectArtist', { detail: { artistId: firstArtist.id, source: 'track-list-menu' } }));
+        }
+      }
+    ] : []),
+    ...(trackData?.id ? [
+      {
+        id: 'info', label: t('common.goToSong', 'Go to song'), type: 'action' as const, icon: 'music_note',
+        onClick: () => {
+          window.dispatchEvent(new CustomEvent('freely:selectTrack', { detail: { trackId: trackData.id, source: 'track-list-menu' } }));
+        }
+      }
+    ] : [])
+  ];
+  return items;
+}
+export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): ContextMenuItem[] {
+  if (!opts || typeof opts !== 'object') return [];
+  const {
+    t,
+    trackData,
+    queueList,
+    currentIndex,
+    queueOptions = true,
+    playlistRemove
+  } = opts;
+  const trackTitle = trackData?.name || trackData?.id || 'track';
+  const firstArtist = trackData?.artists?.[0];
+  const items: ContextMenuItem[] = [
+    {
+      id: 'title',
+      label: 'title',
+      type: 'custom',
+      image: (window as any).imageRes?.(trackData?.album?.images, 3) || undefined,
+      icon: 'person',
+      iconFilled: true,
+      meta: { title: trackTitle, subtitle: trackData?.artists?.map((a: any) => a.name).join(', ') || '' }
+    },    
+    ...(typeof playlistRemove === 'function' ? [
+      {
+        id: 'remove', label: t('common.removeFromPlaylist', 'Remove'), type: 'action', icon: 'delete',
+        onClick: () => {
+          if (trackData?.id) {
+            playlistRemove(trackData.id);
+          }
+        }
+      }
+    ] : []) as any,
+    {
+      id: 'playlist', label: t('common.addToPlaylist', 'Add to playlist'), type: 'action', icon: 'playlist_add',
+      onClick: () => {
+        playbackEvents.openAddToPlaylistModal(trackData);
+      }
+    },
+    ...(queueOptions ? [
+      {
+        id: 'grp-track', label: trackTitle, type: 'group', items: [
+          {
+            id: 'act-play-next', label: t('common.playNext', 'Play next'), type: 'action', icon: 'playlist_play',
+            onClick: () => {
+              if (!trackData?.id) return;
+              const id = trackData.id;
+              const q = Array.isArray(queueList) ? [...queueList] : [];
+              // If queue empty just enqueue (don't force immediate play)
+              if (!q.length) {
+                playbackEvents.enqueue([id]);
+                return;
+              }
+              const curIdx = (typeof currentIndex === 'number' && currentIndex >= 0) ? currentIndex : 0;
+              const desiredPos = Math.min(curIdx + 1, q.length); // position right after current track
+              const existingIdx = q.indexOf(id);
+              if (existingIdx === desiredPos) return; // already next
+              if (existingIdx !== -1) {
+                // Remove from old position
+                q.splice(existingIdx, 1);
+              }
+              // Insert at desired position (could be end)
+              q.splice(desiredPos, 0, id);
+              // Reorder queue without changing the currently playing track
+              playbackEvents.reorderQueue(q);
+            }
+          },
+          {
+            id: 'act-enqueue', label: t('common.addToQueue', 'Add to queue'), type: 'action', icon: 'queue_music',
+            onClick: () => {
+              if (trackData?.id) {
+                playbackEvents.enqueue([trackData.id]);
+              }
+            }
+          }
+        ]
+      }
+    ] : []) as any,
+
     ...(firstArtist?.id ? [
       {
         id: 'artist', label: t('common.goToArtist', 'Go to artist'), type: 'action' as const, icon: 'person', iconFilled: true,

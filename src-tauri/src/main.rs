@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bass;
+mod cache;
 mod commands;
 mod playback;
 mod server;
@@ -9,6 +11,7 @@ mod window;
 use commands::{db, external, search, torrent, youtube};
 use server::{server_start, server_status, PathState};
 use window::{handle_window_resize, WindowState};
+use cache::{cache_get_file, cache_download_and_store, cache_get_stats, cache_clear};
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -112,7 +115,7 @@ fn main() {
             app.manage(paths);
 
             // Initialize audio cache
-            playback::init_cache(&app_config_dir)
+            cache::init_cache(&app_config_dir)
                 .map_err(|e| format!("Failed to initialize audio cache: {}", e))?;
 
             // Initialize window state
@@ -181,11 +184,11 @@ fn main() {
             playback::get_audio_settings,
             playback::set_audio_settings,
             playback::reinitialize_audio,
-            // Cache commands (now integrated into playback)
-            playback::cache_get_file,
-            playback::cache_download_and_store,
-            playback::cache_get_stats,
-            playback::cache_clear,
+            // Cache commands
+            cache::cache_get_file,
+            cache::cache_download_and_store,
+            cache::cache_get_stats,
+            cache::cache_clear,
             // External API commands
             external::charts_get_weekly_tops,
             external::genius_search,

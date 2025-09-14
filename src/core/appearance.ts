@@ -1,5 +1,5 @@
 export const APPEARANCE_DEFAULTS = {
-  accent: '#6b21a8',
+  accent: '#07b6d5',
   textColor: '#e6eef6',
   textDarkColor: '#002211',
   shadowHex: '#0f1724',

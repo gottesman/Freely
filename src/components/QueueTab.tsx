@@ -1,7 +1,7 @@
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { usePlaybackSelector } from '../core/playback';
 import { useI18n } from '../core/i18n';
-import { buildTrackContextMenuItems } from './ContextMenu';
+import { buildQueueContextMenuItems } from './ContextMenu';
 import { useContextMenu } from '../core/ContextMenuContext';
 
 // Types for better organization
@@ -127,7 +127,7 @@ const QueueItem = React.memo<QueueItemProps>(({
     e.preventDefault();
     (e.nativeEvent as any)?.stopImmediatePropagation?.();
 
-    const items = buildTrackContextMenuItems({
+    const items = buildQueueContextMenuItems({
       t,
       trackData,
       queueList: queueIds,

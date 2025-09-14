@@ -220,7 +220,7 @@ export default function AlbumInfoTab({ albumId }: { albumId?: string }) {
       aria-label={t('player.addPlaylist')} 
       disabled
     >
-      <span className="material-symbols-rounded">add_circle</span>
+      <span className="material-symbols-rounded">playlist_add</span>
     </button>,
     <button
       key="play"

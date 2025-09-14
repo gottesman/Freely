@@ -2,34 +2,14 @@
 /* Now Playing Lyrics Overlay */
 .np-lyrics-scroll {
   height: 100%;
-  width: 94%;
   position: relative; /* anchor for absolutely positioned close button */
   overflow: hidden;
 }
 
 .np-lyrics-body {
-  border-radius: 12px;
-  padding: 28px 20px 20px 20px;
+  border-radius: var(--app-border-radius)   ;
+  padding: 40px;
   position: relative;
-}
-
-.np-lyrics-body .np-overlay-close {
-  /* Keep the close button fixed in the viewport so it doesn't move while lyrics scroll */
-  position: fixed;
-  top: 20px; /* place it near the top of the centered lyrics container */
-  right: calc((100% - 94%) / 2 + 12px); /* horizontally align to the right edge of the centered scroll container + 12px inset */
-  z-index: 904;
-  background: rgba(0,0,0,0.28);
-  border-radius: 8px;
-  padding: 6px;
-}
-
-@media (max-width: 640px) {
-  .np-lyrics-body .np-overlay-close {
-    /* On smaller screens, keep the button inset from the viewport edge */
-    top: 4vh;
-    right: 3%;
-  }
 }
 
 .np-lyrics-body h2 { margin-top: 0; margin-bottom: 8px; }
@@ -51,8 +31,7 @@
     opacity:0;
     display:flex;
     justify-content:center;
-    background: rgba(var(--bg),0.6);
-    backdrop-filter: blur(60px) saturate(120%);
+    background: rgba(var(--bg),1);
     transition: opacity .35s;
     border-radius:inherit;
     box-shadow:0 0 0 1px var(--text) inset;
@@ -94,12 +73,20 @@
 .np-lyrics-snippet { margin:0; opacity:.75; }
 
 /* Synced lyrics styling */
-.lyrics-body { display:flex; flex-direction:column; gap:6px; padding: calc(50vh - var(--footer-height) - var(--footer-gap) - var(--app-shadow-size) * 2) 0; }
+.lyrics-body { 
+    --lyrics-font-multiplier: 1;
+    
+    display:flex; 
+    flex-direction:column; 
+    gap:calc(max(2vw, 2vh) * 2);
+    padding: calc(50vh - var(--footer-height) - var(--footer-gap) - var(--app-shadow-size) * 2) 0;
+    font-size: calc(var(--lyrics-font-size, 16px) * var(--lyrics-font-multiplier));
+}
 .lyrics-body .lyric-line {
     --lyrics-font-size: min(max(2vw, 2vh),80px);
     --lyrics-active-font-size: 1.0;
     --lyrics-timing: .2s;
-    font-size: var(--lyrics-font-size);
+    font-size: calc(var(--lyrics-font-size) * var(--lyrics-font-multiplier));
     padding: 6px 10px;
     margin: 1px 0;  
     opacity: .5;
@@ -116,17 +103,22 @@
 
 .lyrics-body .lyric-line.active {
     opacity: 1;
+    font-weight: 500;
 }
-.lyrics-body .lyric-line.last, .lyrics-body .lyric-line.last .lyric-word .word-text { opacity: 1 !important; }
+.lyrics-body .lyric-line.last, .lyrics-body .lyric-line.last .lyric-word .word-text { opacity: 0.7 !important; }
+
+/*
 .lyrics-body .lyric-line.last .lyric-word .word-text {
     color: var(--muted);
-    -webkit-text-fill-color: var(--muted); }
+    -webkit-text-fill-color: var(--muted);
+}
+*/
 
 /* Word-level highlight for richsync */
 .lyrics-body .lyric-word {
     position: relative;
     display: inline-block;
-    transition: color .2s ease, text-shadow .2s ease, transform .15s ease;
+    transition: color .2s ease, text-shadow .2s ease, transform .4s ease;
     will-change: transform, color;
 }
 .lyrics-body .lyric-word .word-text {
@@ -159,14 +151,14 @@
 }
 .lyrics-body .lyric-word.space { /* keep spaces neutral */ opacity: 1; margin: 0 2px; }
 .lyrics-body .lyric-word.active {
-    text-shadow: 0 0 0 transparent, 0 0 15px color-mix(in srgb, var(--accent) 40%, #ffffff60 60%);
-    background: linear-gradient(
-      90deg,
-      var(--accent) var(--word-progress),
-      #00000000 100%
-    );
+    --word-progress: 100%;
+    text-shadow: 0 0 3px var(--color-bg-solid), 0 0 3px var(--color-bg-solid), 0 0 5px var(--color-bg-solid), 0 0 15px 
+ color-mix(in srgb, var(--accent) 40%, #ffffff60 60%);
+    background: linear-gradient(90deg, var(--accent) var(--word-progress), #00000000 100%);
     -webkit-background-clip: text;
-    background-clip: text;    
+    background-clip: text;
+    transform: scale(1.1) translateY(-2px);
+    animation: lyric-word-fade 2s ease infinite alternate;
 }
 
 /* Gradient ink effect for active words (inspired by advanced lyric renderers) */
@@ -190,14 +182,13 @@
 }
 
 @keyframes lyric-word-fade {
-    0%   { transform: scale(1);}
-    60%  { transform: scale(1.1);}
-    100% { transform: scale(1); }
+    0%   { transform: scale(1.05);}
+    100%  { transform: scale(1.1);}
 }
 
 .lyric-line.played { opacity: 0; }
-.lyric-line.played .letter{
-    color: var(--text);
+.lyric-line.last .letter{
+    color: var(--accent);
 }
 .lyrics-body .lyric-line.active .lyric-word.played .word-text {
     opacity: 0.75;
@@ -237,23 +228,67 @@
     background: var(--glass-bg-strong);
     border: 1px solid var(--border-subtle);
     border-radius: 10px;
-    padding: 6px 10px;
+    padding: 0;
     box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.5);
     opacity: 1;
     z-index: 1;
+    backdrop-filter: blur(20px) saturate(120%);
+    overflow: hidden;
 }
 .lyrics-sync-ctl .btn.btn-icon {
-    width: 28px;
-    height: 28px;
+    width: auto;
+    aspect-ratio: 1 / 1;
+    height: 30px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     background: var(--surface-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    border: none;
+    border-radius: 0;
     color: var(--text);
     transition: background .15s ease, border-color .15s ease, transform .1s ease;
 }
 
 .lyrics-sync-ctl .btn.btn-icon:active { transform: translateY(1px); }
-.lyrics-sync-ctl .offset-readout { font-variant-numeric: tabular-nums; min-width: 60px; text-align: center; opacity:.9; }
+.lyrics-sync-ctl .offset-readout {
+    font-variant-numeric: tabular-nums;
+    min-width: 52px;
+    text-align: center;
+    opacity:.9;
+    font-size: 13px;
+}
+
+/* Lyrics settings button */
+.lyrics-btn {
+    position: fixed;    
+    width: 40px;
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    color: var(--text);
+    box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(20px) saturate(120%);
+    transition: background .15s ease, border-color .15s ease, transform .1s ease;
+    z-index: 1;
+}
+.lyrics-settings-btn {
+    bottom: 16px;
+    right: 16px;
+}
+.lyrics-close-btn {
+    top: 16px;
+    right: 16px;
+}
+
+.lyrics-btn:hover {
+    background: var(--glass-bg-hover);
+    border-color: var(--border-hover);
+}
+
+.lyrics-btn:active {
+    transform: translateY(1px);
+}

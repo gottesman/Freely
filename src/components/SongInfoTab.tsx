@@ -266,7 +266,7 @@ export default function SongInfoTab({ trackId }: Props) {
 
   const headerActions = useMemo(() => [
     <button key="add-playlist" className="np-icon" aria-label={t('player.addPlaylist')} disabled={!state.track?.id} onClick={onAddToPlaylist}>
-      <span className="material-symbols-rounded">add_circle</span>
+      <span className="material-symbols-rounded">playlist_add</span>
     </button>,
     <button key="play" className="np-icon" aria-label={t('player.playTrack')} disabled={!state.track?.id} onClick={handlePlayTrack}>
       <span className="material-symbols-rounded filled">play_arrow</span>

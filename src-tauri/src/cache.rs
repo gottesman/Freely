@@ -6,6 +6,17 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use tokio::sync::mpsc;
+use reqwest;
+
+#[derive(Debug)]
+pub struct CacheDownloadResult {
+    pub track_id: String,
+    pub source_type: String,
+    pub source_hash: String,
+    pub cached_path: String,
+    pub file_size: u64,
+}
 
 // Cache configuration constants
 const CACHE_DIR_NAME: &str = "audio_cache";
@@ -119,6 +130,36 @@ impl AudioCache {
         None
     }
 
+    pub fn add_cached_file(&mut self, track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64) -> Result<(), String> {
+        let cache_key = Self::generate_cache_key(&track_id, &source_type, &source_hash);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Add to cache index
+        let entry = CacheEntry {
+            track_id,
+            source_type,
+            source_hash,
+            file_path,
+            file_size,
+            cached_at: now,
+            last_accessed: now,
+        };
+
+        self.index.entries.insert(cache_key, entry);
+        self.index.total_size += file_size;
+
+        // Clean up old entries if cache is too large
+        self.cleanup_cache()?;
+
+        // Save index
+        self.save_index()?;
+
+        Ok(())
+    }
+
     fn cleanup_cache(&mut self) -> Result<(), String> {
         let max_size_bytes = MAX_CACHE_SIZE_MB * 1024 * 1024;
         let max_age_seconds = MAX_CACHE_AGE_DAYS * 24 * 60 * 60;
@@ -211,6 +252,16 @@ pub fn init_cache(app_config_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Get a cached file path if it exists
+pub fn get_cached_file_path(track_id: &str, source_type: &str, source_hash: &str) -> Option<PathBuf> {
+    let mut cache_guard = CACHE.lock().unwrap();
+    if let Some(cache) = cache_guard.as_mut() {
+        cache.get_cached_file(track_id, source_type, source_hash)
+    } else {
+        None
+    }
+}
+
 // Tauri commands
 #[tauri::command]
 pub async fn cache_get_file(track_id: String, source_type: String, source_hash: String) -> Result<serde_json::Value, String> {
@@ -233,66 +284,88 @@ pub async fn cache_get_file(track_id: String, source_type: String, source_hash: 
 
 #[tauri::command]
 pub async fn cache_download_and_store(track_id: String, source_type: String, source_hash: String, url: String) -> Result<String, String> {
-    // Download the file first without holding the mutex
+    let (tx, _rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
+    download_and_cache_audio(track_id, source_type, source_hash, url, tx).await;
+
+    // For compatibility, return a dummy path since the actual result is handled asynchronously
+    Ok("Download started".to_string())
+}
+
+pub async fn download_and_cache_audio(track_id: String, source_type: String, source_hash: String, url: String, tx: mpsc::UnboundedSender<CacheDownloadResult>) {
     println!("[cache] Starting download for track: {} ({}:{})", track_id, source_type, source_hash);
-    
-    let response = reqwest::get(&url).await
-        .map_err(|e| format!("Failed to download audio: {}", e))?;
-    
+
+    // Download the file
+    let response = match reqwest::get(&url).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            println!("[cache] Download failed for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            return;
+        }
+    };
+
     if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
+        println!("[cache] Download failed with status {} for {} ({}:{})", response.status(), track_id, source_type, source_hash);
+        return;
     }
 
-    let bytes = response.bytes().await
-        .map_err(|e| format!("Failed to read response body: {}", e))?;
-    
-    // Now handle the cache operations with the downloaded data
+    let bytes = match response.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            println!("[cache] Failed to read response body for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            return;
+        }
+    };
+
+    // Handle the cache operations with the downloaded data
     let mut cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_mut() {
         let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
-        
+
         // Generate filename based on cache key (sanitized for filesystem)
         let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
         let file_name = format!("{}.m4a", safe_key);
         let file_path = cache.cache_dir.join(&file_name);
 
         // Write to file
-        let mut file = fs::File::create(&file_path)
-            .map_err(|e| format!("Failed to create cache file: {}", e))?;
-        
-        file.write_all(&bytes)
-            .map_err(|e| format!("Failed to write cache file: {}", e))?;
+        let mut file = match fs::File::create(&file_path) {
+            Ok(f) => f,
+            Err(e) => {
+                println!("[cache] Failed to create cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                return;
+            }
+        };
+
+        if let Err(e) = file.write_all(&bytes) {
+            println!("[cache] Failed to write cache file for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            return;
+        }
 
         let file_size = bytes.len() as u64;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
 
         // Add to cache index
-        let entry = CacheEntry {
+        if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), file_name, file_size) {
+            println!("[cache] Failed to add to cache index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            return;
+        }
+
+        let cached_path = file_path.to_string_lossy().to_string();
+
+        // Send completion notification
+        let result = CacheDownloadResult {
             track_id: track_id.clone(),
             source_type: source_type.clone(),
             source_hash: source_hash.clone(),
-            file_path: file_name,
+            cached_path: cached_path.clone(),
             file_size,
-            cached_at: now,
-            last_accessed: now,
         };
 
-        cache.index.entries.insert(cache_key, entry);
-        cache.index.total_size += file_size;
-
-        // Clean up old entries if cache is too large
-        cache.cleanup_cache()?;
-
-        // Save index
-        cache.save_index()?;
-
-        println!("[cache] Successfully cached track: {} ({}:{}) - {} bytes", track_id, source_type, source_hash, file_size);
-        Ok(file_path.to_string_lossy().to_string())
+        if let Err(e) = tx.send(result) {
+            println!("[cache] Failed to send cache completion notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+        } else {
+            println!("[cache] Cache download completed for {} ({}:{}) -> {}", track_id, source_type, source_hash, cached_path);
+        }
     } else {
-        Err("Cache not initialized".to_string())
+        println!("[cache] Cache not initialized, cannot cache {} ({}:{})", track_id, source_type, source_hash);
     }
 }
 

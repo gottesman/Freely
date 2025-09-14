@@ -318,38 +318,22 @@ export default function HomeTab() {
   }, [followedArtists, api, waitForApi, runConcurrentTasks]);
 
   // ---- Horizontal scroller helpers (stable per ref) ----
+  const scrollMargin = 220; // Adjusted margin to account for button width
   const makeScroller = useCallback((ref: React.RefObject<HTMLDivElement>) => {
     const left = () => {
       const el = ref.current;
       if (!el) return;
-      const children = Array.from(el.children) as HTMLElement[];
-      if (!children.length) return;
-      const positions = children.map(c => c.offsetLeft);
-      const current = el.scrollLeft;
-      let idx = 0;
-      for (let i = 0; i < positions.length; i++) {
-        if (positions[i] <= current + 1) idx = i;
-        else break;
-      }
-      const prevIdx = Math.max(0, idx - 1);
-      const target = positions[prevIdx];
-      el.scrollTo({ left: target, behavior: 'smooth' });
+      const pageWidth = el.clientWidth;
+      const newScrollLeft = Math.max(0, el.scrollLeft - pageWidth + scrollMargin);
+      el.scrollTo({ left: newScrollLeft, behavior: 'smooth' });
     };
     const right = () => {
       const el = ref.current;
       if (!el) return;
-      const children = Array.from(el.children) as HTMLElement[];
-      if (!children.length) return;
-      const positions = children.map(c => c.offsetLeft);
-      const current = el.scrollLeft;
-      let idx = 0;
-      for (let i = 0; i < positions.length; i++) {
-        if (positions[i] <= current + 1) idx = i;
-        else break;
-      }
-      const nextIdx = Math.min(positions.length - 1, idx + 1);
-      const target = positions[nextIdx];
-      if (target !== current) el.scrollTo({ left: target, behavior: 'smooth' });
+      const pageWidth = el.clientWidth; // account for buttons
+      const maxScrollLeft = el.scrollWidth - el.clientWidth;
+      const newScrollLeft = Math.min(maxScrollLeft, el.scrollLeft + pageWidth - scrollMargin);
+      el.scrollTo({ left: newScrollLeft, behavior: 'smooth' });
     };
     return { left, right };
   }, []);
@@ -633,15 +617,6 @@ export default function HomeTab() {
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scMostPlayed.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
       </HomeSection>
-
-      {/* Genres & Moods */}
-      <HomeSection id="genres" title={t('home.section.genres')} more>
-        <div className="chip-grid">
-          {['Electronic', 'Chill', 'Focus', 'Gaming', 'Workout', 'Jazz', 'Classical', 'Hip-Hop', 'Ambient', 'Indie'].map(tag => (
-            <button key={tag} className="chip" type="button">{tag}</button>
-          ))}
-        </div>
-      </HomeSection>
     </section>
   );
 }
@@ -649,12 +624,11 @@ export default function HomeTab() {
 /* --- Internal compositional components --- */
 interface HomeSectionProps { id: string; title: string; children: React.ReactNode; more?: boolean }
 function HomeSection({ id, title, children, more }: HomeSectionProps) {
-  const { t } = useI18n();
   return (
     <section className="home-section" aria-labelledby={`${id}-title`}>
       <header className="home-sec-head">
         <h2 id={`${id}-title`} className="home-sec-title">{title}</h2>
-        {more && <button className="np-link home-sec-more" type="button">{t('home.section.seeAll')}</button>}
+        {/*more && <button className="np-link home-sec-more" type="button">{t('home.section.seeAll')}</button>*/}
       </header>
       {children}
     </section>

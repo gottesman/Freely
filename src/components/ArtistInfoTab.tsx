@@ -301,13 +301,7 @@ function useBiography(artistName?: string) {
     setBioState(prev => ({ ...prev, bioExpanded: !prev.bioExpanded }));
   }, []);
 
-  const bioPreview = useMemo(() => {
-    if (!bioState.bio) return '';
-    const { preview } = processBioText(bioState.bio, ARTIST_CONFIG.BIO_PREVIEW_LENGTH);
-    return `<p>${preview.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`;
-  }, [bioState.bio]);
-
-  return { ...bioState, loading, toggleExpanded, bioPreview };
+  return { ...bioState, loading, toggleExpanded };
 }
 
 // Custom hook for follow functionality
@@ -418,7 +412,7 @@ const ArtistGrid = React.memo<{
           />
           <div className="info" style={{ marginTop: '6px' }}>
             <div 
-              className="name ellipsis" 
+              className="overflow-ellipsis" 
               title={item.name} 
               style={{ fontSize: '0.85rem', fontWeight: 500 }}
             >
@@ -443,11 +437,10 @@ const BiographySection = React.memo<{
   bio?: string;
   bioErr?: string;
   bioExpanded: boolean;
-  bioPreview: string;
   loading: boolean;
   onToggleExpanded: () => void;
   t: (key: string, fallback?: string) => string;
-}>(({ bio, bioErr, bioExpanded, bioPreview, loading, onToggleExpanded, t }) => (
+}>(({ bio, bioErr, bioExpanded, loading, onToggleExpanded, t }) => (
   <div className="np-section np-artist-info" aria-label={t('np.artistBio', 'Artist biography')}>
     <h4 className="np-sec-title">{t('np.bio.title', 'Biography')}</h4>
     {loading && <p className="np-hint">{t('np.bio.loading')}</p>}
@@ -458,7 +451,7 @@ const BiographySection = React.memo<{
         <div className="bio-content">
           <div 
             className="np-bio-text" 
-            dangerouslySetInnerHTML={{ __html: bioExpanded ? bio : bioPreview }} 
+            dangerouslySetInnerHTML={{ __html: bio }} 
           />
         </div>
         <button 
@@ -482,7 +475,7 @@ export default function ArtistInfoTab({ artistId }: { artistId?: string }) {
 
   const api = useSpotifyAPI();
   const { artist, topTracks, recentAlbums, playlists, loading } = useArtistData(api, artistId);
-  const { bio, bioErr, bioExpanded, loading: bioLoading, toggleExpanded, bioPreview } = useBiography(artist?.name);
+  const { bio, bioErr, bioExpanded, loading: bioLoading, toggleExpanded } = useBiography(artist?.name);
   const { localFollowing, toggleFollow } = useFollowManagement(artist);
 
   // Memoized computed values
@@ -606,7 +599,6 @@ export default function ArtistInfoTab({ artistId }: { artistId?: string }) {
         bio={bio}
         bioErr={bioErr}
         bioExpanded={bioExpanded}
-        bioPreview={bioPreview}
         loading={bioLoading}
         onToggleExpanded={toggleExpanded}
         t={t}
