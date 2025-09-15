@@ -6,6 +6,7 @@ use libloading::{Library, Symbol};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use reqwest;
+use tauri::Emitter;
 use crate::cache::{download_and_cache_audio, CacheDownloadResult, get_cached_file_path};
 use crate::bass::{ensure_bass_loaded, bass_err, probe_duration_bass, load_bass_plugins};
 use crate::bass::{
@@ -20,6 +21,8 @@ use crate::bass::{
     BASS_DEVICE_ENABLED, BASS_DEVICE_DEFAULT_FLAG, BASS_DEVICE_INIT,
 };
 use crate::utils::{resolve_audio_source};
+use std::collections::HashMap;
+use std::time::SystemTime;
 
 pub struct PlaybackState {
     url: Option<String>,
@@ -76,6 +79,10 @@ impl PlaybackState {
 }
 
 static STATE: Lazy<Mutex<PlaybackState>> = Lazy::new(|| Mutex::new(PlaybackState::new()));
+
+// Short-lived dedupe map to avoid duplicate playback_start_with_source work when frontend
+// accidentally invokes it multiple times in quick succession. Maps a key -> epoch millis.
+static RECENT_STARTS: Lazy<Mutex<HashMap<String, u128>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 
 // SAFETY: We mark PlaybackState as Send because we guard all access behind a Mutex and only manipulate
@@ -306,7 +313,7 @@ pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
     st.current_source_hash = None;
     st.cache_download_tx = None;
     
-    println!("[bass] Playback state updated, duration: {:?}", st.duration);
+    //println!("[bass] Playback state updated, duration: {:?}", st.duration);
     Ok(serde_json::json!({"success": true, "data": {"duration": st.duration}}))
 }
 
@@ -380,6 +387,7 @@ fn extract_source_info(url: &str) -> (String, String) {
 
 #[tauri::command]
 pub async fn playback_start_with_cache(
+    app: tauri::AppHandle,
     track_id: String,
     url: String,
     prefer_cache: bool,
@@ -418,99 +426,260 @@ pub async fn playback_start_with_cache(
         false
     };
 
-    // Start streaming playback immediately for instant playback
-    println!("[bass] Starting streaming playback for instant access");
-    let result = playback_start(url.clone()).await;
+    // Instead of immediately streaming the CDN URL (which creates a duplicate network stream),
+    // start the background cache download first and try to play the temporary .part file as soon
+    // as it has data. If the temp file doesn't become ready within a short timeout, fall back to
+    // streaming the provided URL for instant playback.
 
-    // If streaming works and we want to cache, start background download with channel for completion
-    if result.is_ok() && use_cached {
+    if use_cached {
         // Create a unique key for this download to prevent duplicates
         let download_key = format!("{}:{}:{}", track_id, final_source_type, final_source_hash);
-        
+
         // Check if this download is already in progress
         {
             let state_guard = STATE.lock().unwrap();
             if state_guard.ongoing_cache_downloads.contains(&download_key) {
                 println!("[bass] Cache download already in progress for {}, skipping duplicate", download_key);
-                return result;
+                // If a download is already in progress, we'll still attempt to play any existing .part file
+            } else {
+                println!("[bass] Starting background cache download for {}", download_key);
+
+                // Mark this download as in progress
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    state_guard.ongoing_cache_downloads.insert(download_key.clone());
+                }
+
+                // Create a channel for cache download completion
+                let (tx, mut rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
+
+                // Store the sender in the state (without holding lock across await)
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    state_guard.cache_download_tx = Some(tx.clone());
+                }
+
+                // Start background download
+                let track_id_clone = track_id.clone();
+                let source_type_clone = final_source_type.clone();
+                let source_hash_clone = final_source_hash.clone();
+                let url_clone = url.clone();
+                let download_key_clone = download_key.clone();
+
+                let app_clone = app.clone();
+                tokio::spawn(async move {
+                    // Call download_and_cache_audio with an AppHandle so it can emit progress events
+                    download_and_cache_audio(Some(app_clone), track_id_clone, source_type_clone, source_hash_clone, url_clone, tx).await;
+
+                    // Remove this download from the ongoing downloads set
+                    let mut state_guard = STATE.lock().unwrap();
+                    state_guard.ongoing_cache_downloads.remove(&download_key_clone);
+                });
+
+                // Spawn a task to listen for cache completion and switch playback
+                let current_track_id = track_id.clone();
+                let current_source_type = final_source_type.clone();
+                let current_source_hash = final_source_hash.clone();
+
+                tokio::spawn(async move {
+                    while let Some(result) = rx.recv().await {
+                        // Check if this cached file is still relevant
+                        // More lenient check: if we're currently playing and the cached track matches
+                        let (should_switch, playing, current_track) = {
+                            let state_guard = STATE.lock().unwrap();
+                            (state_guard.playing && state_guard.current_track_id.as_ref() == Some(&result.track_id),
+                             state_guard.playing,
+                             state_guard.current_track_id.clone())
+                        };
+
+                        println!("[bass] Cache completion check: should_switch={}, playing={}, cached_track={}, current_track={:?}",
+                                 should_switch, playing, result.track_id, current_track);
+
+                        if should_switch {
+                            println!("[bass] Cache download completed, preparing gapless handoff to cached file: {}", result.cached_path);
+
+                            // Delegate to the gapless handoff helper
+                            gapless_handoff_to(result.cached_path.clone()).await;
+                        } else {
+                            println!("[bass] Cache completed but conditions not met (playing: {}, cached: {}, current: {:?}), ignoring switch",
+                                     playing,
+                                     result.track_id,
+                                     current_track);
+                        }
+                        break; // Only handle one completion
+                    }
+                });
             }
         }
-        
-        println!("[bass] Starting background cache download for {}", download_key);
 
-        // Mark this download as in progress
-        {
-            let mut state_guard = STATE.lock().unwrap();
-            state_guard.ongoing_cache_downloads.insert(download_key.clone());
-        }
-
-        // Create a channel for cache download completion
-        let (tx, mut rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
-
-        // Store the sender in the state (without holding lock across await)
-        {
-            let mut state_guard = STATE.lock().unwrap();
-            state_guard.cache_download_tx = Some(tx.clone());
-        }
-
-        // Start background download
-        let track_id_clone = track_id.clone();
-        let source_type_clone = final_source_type.clone();
-        let source_hash_clone = final_source_hash.clone();
-        let url_clone = url.clone();
-        let download_key_clone = download_key.clone();
-
-        tokio::spawn(async move {
-            download_and_cache_audio(track_id_clone, source_type_clone, source_hash_clone, url_clone, tx).await;
-            
-            // Remove this download from the ongoing downloads set
-            let mut state_guard = STATE.lock().unwrap();
-            state_guard.ongoing_cache_downloads.remove(&download_key_clone);
-        });
-
-        // Spawn a task to listen for cache completion and switch playback
-        let current_track_id = track_id.clone();
-        let current_source_type = final_source_type.clone();
-        let current_source_hash = final_source_hash.clone();
-
-        tokio::spawn(async move {
-            while let Some(result) = rx.recv().await {
-                // Check if this is still the current track (without holding lock across await)
-                let is_current_track = {
-                    let state_guard = STATE.lock().unwrap();
-                    state_guard.current_track_id.as_ref() == Some(&current_track_id) &&
-                    state_guard.current_source_type.as_ref() == Some(&current_source_type) &&
-                    state_guard.current_source_hash.as_ref() == Some(&current_source_hash)
-                };
-
-                if is_current_track {
-                    println!("[bass] Cache download completed, switching to cached file: {}", result.cached_path);
-
-                    // Get current position to resume from same point (without holding lock across await)
-                    let current_position = {
-                        if let Ok(status) = playback_status().await {
-                            status.get("data").and_then(|d| d.get("position")).and_then(|p| p.as_f64()).unwrap_or(0.0)
-                        } else {
-                            0.0
-                        }
-                    };
-
-                    // Switch to cached playback and seek to current position
-                    let cached_url = format!("file://{}", result.cached_path);
-                    if let Ok(_) = playback_start(cached_url).await {
-                        if current_position > 0.0 {
-                            let _ = playback_seek(current_position).await;
+        // Attempt to play the .part file while background download is in progress if available.
+        // Prefer reacting to inflight status updated by the downloader; fall back to quick filesystem polling.
+        let immediate_playback_result: Result<serde_json::Value, String> = if let Some(tmp_path) = crate::cache::get_tmp_cache_path(&track_id, &final_source_type, &final_source_hash) {
+            // Poll inflight bytes for up to ~3.5s
+            let mut waited_ms = 0u64;
+            let max_wait_ms = 3500u64;
+            let mut play_result: Option<Result<serde_json::Value, String>> = None;
+            while waited_ms < max_wait_ms {
+                if let Some((bytes_downloaded, _total)) = crate::cache::get_inflight_status(&track_id, &final_source_type, &final_source_hash) {
+                    if bytes_downloaded > 512 {
+                        println!("[bass] Inflight download has {} bytes, attempting playback from temp file: {:?}", bytes_downloaded, tmp_path);
+                        match playback_start(format!("file://{}", tmp_path.display())).await {
+                            Ok(v) => { play_result = Some(Ok(v)); break; },
+                            Err(e) => { println!("[bass] playback_start (tmp) failed after inflight check: {}", e); play_result = Some(Err(e)); break; }
                         }
                     }
-                } else {
-                    println!("[bass] Cache completed but track changed, ignoring switch");
                 }
-                break; // Only handle one completion
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                waited_ms += 100;
             }
-        });
+
+            if let Some(res) = play_result {
+                res
+            } else {
+                // Quick filesystem poll for up to 1.5s
+                let mut waited_ms = 0u64;
+                let max_wait_ms = 1500u64;
+                let mut play_result2: Option<Result<serde_json::Value, String>> = None;
+                while waited_ms < max_wait_ms {
+                    if tmp_path.exists() {
+                        if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+                            if metadata.len() > 512 {
+                                println!("[bass] Quick-poll: playing from temp cache file while downloading: {:?}", tmp_path);
+                                match playback_start(format!("file://{}", tmp_path.display())).await {
+                                    Ok(v) => { play_result2 = Some(Ok(v)); break; },
+                                    Err(e) => { println!("[bass] playback_start (tmp) failed after quick-poll: {}", e); play_result2 = Some(Err(e)); break; }
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    waited_ms += 100;
+                }
+
+                if let Some(res2) = play_result2 {
+                    res2
+                } else {
+                    println!("[bass] Temp cache file not ready after wait, falling back to streaming URL");
+                    playback_start(url.clone()).await
+                }
+            }
+        } else {
+            // No tmp path available; immediately stream
+            println!("[bass] No tmp path available, streaming URL: {}", url);
+            playback_start(url.clone()).await
+        };
+
+        match &immediate_playback_result {
+            Ok(val) => println!("[bass] Immediate playback started: {:?}", val),
+            Err(e) => println!("[bass] Immediate playback failed: {}", e),
+        }
+
+        return immediate_playback_result;
+    } else {
+        // Not preferring cache: start streaming immediately
+        println!("[bass] Starting streaming playback for instant access");
+        return playback_start(url.clone()).await;
+    }
+}
+
+// Perform a gapless handoff to a cached file path. This creates a second stream, seeks it to the
+// current position, starts it muted, crossfades volumes, stops the old stream, and updates state.
+async fn gapless_handoff_to(cached_path: String) {
+    let cached_url = format!("file://{}", cached_path.clone());
+
+    // Get current playback position
+    let current_position = {
+        if let Ok(status) = playback_status().await {
+            status.get("data").and_then(|d| d.get("position")).and_then(|p| p.as_f64()).unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    };
+
+    // Acquire function pointers and snapshot state while holding lock
+    let (maybe_fns, old_handle_opt, target_volume, is_muted) = {
+        let state_guard = STATE.lock().unwrap();
+        if state_guard.bass_lib.is_none() || state_guard.stream.is_none() {
+            (None, state_guard.stream, state_guard.volume, state_guard.muted)
+        } else {
+            let lib_ref = state_guard.bass_lib.as_ref().unwrap();
+            unsafe {
+                let f_create_file: BassStreamCreateFile = *lib_ref.get(b"BASS_StreamCreateFile").unwrap();
+                let f_channel_set_attr: BassChannelSetAttribute = *lib_ref.get(b"BASS_ChannelSetAttribute").unwrap();
+                let f_channel_play: BassChannelPlay = *lib_ref.get(b"BASS_ChannelPlay").unwrap();
+                let f_channel_stop: BassChannelStop = *lib_ref.get(b"BASS_ChannelStop").unwrap();
+                let f_stream_free: BassStreamFree = *lib_ref.get(b"BASS_StreamFree").unwrap();
+                let f_seconds_to_bytes: BassChannelSeconds2Bytes = *lib_ref.get(b"BASS_ChannelSeconds2Bytes").unwrap();
+                let f_set_position: BassChannelSetPosition = *lib_ref.get(b"BASS_ChannelSetPosition").unwrap();
+
+                (Some((f_create_file, f_channel_set_attr, f_channel_play, f_channel_stop, f_stream_free, f_seconds_to_bytes, f_set_position)), state_guard.stream, state_guard.volume, state_guard.muted)
+            }
+        }
+    };
+
+    if maybe_fns.is_none() || old_handle_opt.is_none() {
+        // Fallback to simple playback if we can't do fancy handoff
+        if let Ok(_) = playback_start(cached_url).await {
+            if current_position > 0.0 { let _ = playback_seek(current_position).await; }
+        }
+        return;
     }
 
-    result
+    let (bass_stream_create_file, bass_channel_set_attribute, bass_channel_play, bass_channel_stop, bass_stream_free, bass_channel_seconds_to_bytes, bass_channel_set_position) = maybe_fns.unwrap();
+
+    let c_path = match CString::new(cached_path.clone()) { Ok(c) => c, Err(e) => { println!("[bass] Invalid cached path CString: {}", e); if let Ok(_) = playback_start(cached_url.clone()).await { let _ = playback_seek(current_position).await; } return; } };
+
+    let new_handle = unsafe { bass_stream_create_file(0, c_path.as_ptr() as *const c_void, 0, 0, BASS_STREAM_AUTOFREE) };
+    if new_handle == 0 {
+        println!("[bass] Failed to create new stream for cached file, falling back");
+        if let Ok(_) = playback_start(cached_url.clone()).await { let _ = playback_seek(current_position).await; }
+        return;
+    }
+
+    unsafe { bass_channel_set_attribute(new_handle, BASS_ATTRIB_VOL, 0.0); }
+
+    if current_position > 0.0 {
+        let bytes = unsafe { bass_channel_seconds_to_bytes(new_handle, current_position) };
+        unsafe { bass_channel_set_position(new_handle, bytes, BASS_POS_BYTE); }
+    }
+
+    unsafe { bass_channel_play(new_handle, 0); }
+
+    // Crossfade
+    let steps = 20u32;
+    let step_delay_ms = 8u64;
+    let old_handle = old_handle_opt.unwrap();
+    let user_volume = if is_muted { 0.0 } else { target_volume };
+
+    for i in 0..=steps {
+        let t = (i as f32) / (steps as f32);
+        let new_vol = user_volume * t;
+        let old_vol = user_volume * (1.0 - t);
+        unsafe {
+            let _ = bass_channel_set_attribute(new_handle, BASS_ATTRIB_VOL, new_vol);
+            let _ = bass_channel_set_attribute(old_handle, BASS_ATTRIB_VOL, old_vol);
+        }
+        tokio::time::sleep(Duration::from_millis(step_delay_ms)).await;
+    }
+
+    unsafe {
+        let _ = bass_channel_set_attribute(new_handle, BASS_ATTRIB_VOL, user_volume);
+        let _ = bass_channel_set_attribute(old_handle, BASS_ATTRIB_VOL, 0.0);
+        let _ = bass_channel_stop(old_handle);
+        let _ = bass_stream_free(old_handle);
+    }
+
+    {
+        let mut state_guard = STATE.lock().unwrap();
+        state_guard.stream = Some(new_handle);
+        state_guard.url = Some(cached_url.clone());
+        state_guard.playing = true;
+        state_guard.started_at = Some(Instant::now());
+        state_guard.paused_at = None;
+        state_guard.accumulated_paused = Duration::ZERO;
+    }
+
+    println!("[bass] Gapless handoff complete, now playing cached file: {}", cached_url);
 }
 
 #[derive(Deserialize)]
@@ -520,10 +689,12 @@ pub struct PlaybackSourceSpec {
     pub source_value: String,
     pub prefer_cache: Option<bool>,
     pub source_meta: Option<serde_json::Value>,
+    // Optional client-provided ID for correlation
+    pub client_request_id: Option<String>,
 }
 
 #[tauri::command]
-pub async fn playback_start_with_source(spec: PlaybackSourceSpec) -> Result<serde_json::Value, String> {
+pub async fn playback_start_with_source(app: tauri::AppHandle, spec: PlaybackSourceSpec) -> Result<serde_json::Value, String> {
     println!("[bass] playback_start_with_source called for track: {}, type: {}, prefer_cache: {:?}",
              spec.track_id, spec.source_type, spec.prefer_cache);
 
@@ -569,17 +740,118 @@ pub async fn playback_start_with_source(spec: PlaybackSourceSpec) -> Result<serd
     println!("[bass] Generated source hash: {} for type: {}", source_hash, spec.source_type);
 
     // OPTIMIZATION: Check cache FIRST before doing any URL resolution
+    // Dedupe rapid repeated calls: if we saw the same track+source very recently, return ack
+    {
+        let key = format!("{}:{}:{}", spec.track_id, spec.source_type, source_hash);
+        let mut recent = RECENT_STARTS.lock().unwrap();
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
+        if let Some(&ts) = recent.get(&key) {
+            if now.saturating_sub(ts) < 2000 {
+                println!("[bass] Duplicate playback_start_with_source for {}, returning quick ack", key);
+                let _ = app.emit("playback:start:ack", serde_json::json!({
+                    "trackId": spec.track_id,
+                    "sourceType": spec.source_type,
+                    "sourceHash": source_hash,
+                    "async": true,
+                    "dedup": true,
+                    "clientRequestId": spec.client_request_id
+                }));
+                return Ok(serde_json::json!({ "success": true, "async": true, "dedup": true }));
+            }
+        }
+        recent.insert(key, now);
+
+        // Emit an immediate ack with optional client_request_id so frontend can correlate
+        let _ = app.emit("playback:start:ack", serde_json::json!({
+            "trackId": spec.track_id,
+            "sourceType": spec.source_type,
+            "sourceHash": source_hash,
+            "async": true,
+            "early_ack": true,
+            "clientRequestId": spec.client_request_id
+        }));
+
+        // Emit an immediate ack so the frontend can detect that we've accepted the
+        // playback start request and begun internal work. Emitting here avoids a
+        // race where the frontend subscribes after this command returns or when
+        // we take a slow synchronous code path below.
+        let _ = app.emit("playback:start:ack", serde_json::json!({
+            "trackId": spec.track_id,
+            "sourceType": spec.source_type,
+            "sourceHash": source_hash,
+            "async": true,
+            "early_ack": true
+        }));
+    }
     if spec.prefer_cache.unwrap_or(true) {
         println!("[bass] Checking cache before URL resolution...");
-        
+
         // Check for cached files directly
         if let Some(cached_path) = get_cached_file_path(&spec.track_id, &spec.source_type, &source_hash) {
             println!("[bass] Cache hit! Playing from cached file directly: {}", cached_path.display());
-            
+
             // Start playback directly from cached file
             return playback_start(format!("file://{}", cached_path.display())).await;
         }
-        
+
+        // If a background download has already been started (e.g. user clicked Download first),
+        // prefer to attempt playback from the temporary .part file while it's being written.
+        // This avoids creating a duplicate CDN stream.
+        if let Some(tmp_path) = crate::cache::get_tmp_cache_path(&spec.track_id, &spec.source_type, &source_hash) {
+            // If inflight download exists, check bytes downloaded and try to play if there's enough data.
+            if let Some((bytes_downloaded, _)) = crate::cache::get_inflight_status(&spec.track_id, &spec.source_type, &source_hash) {
+                if bytes_downloaded > 512 {
+                    println!("[bass] Inflight download found with {} bytes, attempting playback from tmp file: {:?}", bytes_downloaded, tmp_path);
+                    match playback_start(format!("file://{}", tmp_path.display())).await {
+                        Ok(v) => { println!("[bass] playback_start (tmp, inflight) returned Ok: {:?}", v); return Ok(v); },
+                        Err(e) => { println!("[bass] playback_start (tmp, inflight) failed: {}", e); }
+                    }
+                } else {
+                    // Wait briefly (up to 1s) for the tmp file to reach a minimal playable size
+                    let mut waited_ms = 0u64;
+                    let max_wait_ms = 1000u64;
+                    while waited_ms < max_wait_ms {
+                        if let Some((b, _)) = crate::cache::get_inflight_status(&spec.track_id, &spec.source_type, &source_hash) {
+                            if b > 512 {
+                                println!("[bass] Inflight download reached {} bytes, attempting playback from tmp file: {:?}", b, tmp_path);
+                                match playback_start(format!("file://{}", tmp_path.display())).await {
+                                    Ok(v) => { println!("[bass] playback_start (tmp after wait) returned Ok: {:?}", v); return Ok(v); },
+                                    Err(e) => { println!("[bass] playback_start (tmp after wait) failed: {}", e); break; }
+                                }
+                            }
+                        }
+                        // quick filesystem check too
+                        if tmp_path.exists() {
+                            if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+                                if metadata.len() > 512 {
+                                    println!("[bass] Tmp file now has {} bytes, attempting playback: {:?}", metadata.len(), tmp_path);
+                                    match playback_start(format!("file://{}", tmp_path.display())).await {
+                                        Ok(v) => { println!("[bass] playback_start (tmp after fs wait) returned Ok: {:?}", v); return Ok(v); },
+                                        Err(e) => { println!("[bass] playback_start (tmp after fs wait) failed: {}", e); break; }
+                                    }
+                                }
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        waited_ms += 100;
+                    }
+                }
+            } else {
+                // No inflight record, but tmp file might exist from another worker
+                if tmp_path.exists() {
+                    if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+                        if metadata.len() > 512 {
+                            println!("[bass] Tmp file exists with {} bytes, attempting playback: {:?}", metadata.len(), tmp_path);
+                            match playback_start(format!("file://{}", tmp_path.display())).await {
+                                Ok(v) => { println!("[bass] playback_start (tmp existing) returned Ok: {:?}", v); return Ok(v); },
+                                Err(e) => { println!("[bass] playback_start (tmp existing) failed: {}", e); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         println!("[bass] Cache miss, proceeding with URL resolution...");
     }
 
@@ -588,14 +860,138 @@ pub async fn playback_start_with_source(spec: PlaybackSourceSpec) -> Result<serd
     let resolved_url = resolve_audio_source(&spec.source_type, &spec.source_value).await?;
     println!("[bass] Resolved source URL: {}", resolved_url);
 
-    // Now use the existing hybrid caching system for downloads
-    playback_start_with_cache(
-        spec.track_id,
-        resolved_url,
-        spec.prefer_cache.unwrap_or(true),
-        Some(spec.source_type),
-        Some(source_hash)
-    ).await
+    // Start playback immediately on the command thread so the frontend doesn't
+    // need to wait for a background worker to manipulate audio APIs.
+    println!("[bass] Starting immediate playback attempt for URL: {}", resolved_url);
+    // If caching is preferred, spawn the background cache download *before*
+    // attempting immediate playback. This allows us to try playing the
+    // temporary .part file if it becomes ready quickly and avoids creating a
+    // duplicate CDN stream when a local partial file is available.
+    if spec.prefer_cache.unwrap_or(true) {
+        // Create unique download key and avoid duplicate downloads
+        let download_key = format!("{}:{}:{}", spec.track_id, spec.source_type, source_hash);
+
+        {
+            let state_guard = STATE.lock().unwrap();
+            if state_guard.ongoing_cache_downloads.contains(&download_key) {
+                println!("[bass] Cache download already in progress for {}, skipping spawn", download_key);
+            } else {
+                println!("[bass] Spawning background cache download for {}", download_key);
+
+                // Mark ongoing
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    state_guard.ongoing_cache_downloads.insert(download_key.clone());
+                }
+
+                // create channel
+                let (tx, mut rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
+
+                // store sender
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    state_guard.cache_download_tx = Some(tx.clone());
+                }
+
+                // spawn download worker
+                let app_clone = app.clone();
+                let track_id_clone = spec.track_id.clone();
+                let source_type_clone = spec.source_type.clone();
+                let source_hash_clone = source_hash.clone();
+                let url_clone = resolved_url.clone();
+                let download_key_clone = download_key.clone();
+
+                tokio::spawn(async move {
+                    download_and_cache_audio(Some(app_clone), track_id_clone, source_type_clone, source_hash_clone, url_clone, tx).await;
+
+                    // remove from ongoing
+                    let mut state_guard = STATE.lock().unwrap();
+                    state_guard.ongoing_cache_downloads.remove(&download_key_clone);
+                });
+
+                // spawn listener to perform gapless handoff when download completes
+                let current_track_id = spec.track_id.clone();
+                tokio::spawn(async move {
+                    while let Some(result) = rx.recv().await {
+                        let (should_switch, playing, current_track) = {
+                            let state_guard = STATE.lock().unwrap();
+                            (state_guard.playing && state_guard.current_track_id.as_ref() == Some(&result.track_id),
+                             state_guard.playing,
+                             state_guard.current_track_id.clone())
+                        };
+
+                        println!("[bass] Cache completion check (bg listener): should_switch={}, playing={}, cached_track={}, current_track={:?}", should_switch, playing, result.track_id, current_track);
+
+                        if should_switch {
+                            println!("[bass] Cache download completed (bg), performing gapless handoff: {}", result.cached_path);
+                            gapless_handoff_to(result.cached_path.clone()).await;
+                        } else {
+                            println!("[bass] Cache completed (bg) but not switching: playing={}, cached={}, current={:?}", playing, result.track_id, current_track);
+                        }
+                        break;
+                    }
+                });
+            }
+        }
+
+        // Spawn a non-blocking task to attempt immediate playback (tmp .part preferred).
+        // Returning quickly prevents the frontend from getting stuck waiting on a long blocking call.
+        let play_track = spec.track_id.clone();
+        let play_type = spec.source_type.clone();
+        let play_hash = source_hash.clone();
+        let play_resolved = resolved_url.clone();
+
+        tokio::spawn(async move {
+            if let Some(tmp_path) = crate::cache::get_tmp_cache_path(&play_track, &play_type, &play_hash) {
+                let mut played = false;
+                let mut waited_ms = 0u64;
+                let max_wait_ms = 3000u64;
+                while waited_ms < max_wait_ms {
+                    if tmp_path.exists() {
+                        if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+                            if metadata.len() > 1024 {
+                                println!("[bass] Playing from temp cache file while downloading: {:?}", tmp_path);
+                                played = true;
+                                break;
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    waited_ms += 100;
+                }
+
+                if played {
+                    println!("[bass] Attempting playback from temp file: {:?}", tmp_path);
+                    match playback_start(format!("file://{}", tmp_path.display())).await {
+                        Ok(val) => println!("[bass] playback_start (tmp) returned Ok: {:?}", val),
+                        Err(e) => println!("[bass] playback_start (tmp) returned Err: {}", e),
+                    }
+                } else {
+                    println!("[bass] Temp cache file not ready, falling back to streaming URL for instant playback");
+                    println!("[bass] Attempting playback from stream URL: {}", play_resolved);
+                    match playback_start(play_resolved.clone()).await {
+                        Ok(val) => println!("[bass] playback_start (stream) returned Ok: {:?}", val),
+                        Err(e) => println!("[bass] playback_start (stream) returned Err: {}", e),
+                    }
+                }
+            } else {
+                // No tmp path available; immediately stream
+                println!("[bass] No tmp path available, streaming URL: {}", play_resolved);
+                match playback_start(play_resolved.clone()).await {
+                    Ok(val) => println!("[bass] playback_start (stream) returned Ok: {:?}", val),
+                    Err(e) => println!("[bass] playback_start (stream) returned Err: {}", e),
+                }
+            }
+        });
+
+        // Return immediately to caller — playback is started asynchronously.
+        println!("[bass] playback_start_with_source returning immediately (async spawn done)");
+        return Ok(serde_json::json!({ "success": true, "async": true }));
+    }
+
+    // Not preferring cache: start streaming immediately
+    println!("[bass] Starting streaming playback for instant access");
+    playback_start(resolved_url.clone()).await
 }
 
 #[tauri::command]
@@ -620,7 +1016,7 @@ pub async fn playback_pause() -> Result<serde_json::Value, String> {
     if st.playing { 
         st.playing = false; 
         st.paused_at = Some(Instant::now()); 
-        println!("[bass] Playback state set to paused");
+        //println!("[bass] Playback state set to paused");
     } 
     Ok(serde_json::json!({"success": true}))
 }
@@ -649,7 +1045,7 @@ pub async fn playback_resume() -> Result<serde_json::Value, String> {
             st.accumulated_paused += paused_at.elapsed(); 
         } 
         st.playing = true; 
-        println!("[bass] Playback state set to playing");
+        //println!("[bass] Playback state set to playing");
     } 
     Ok(serde_json::json!({"success": true})) 
 }
@@ -1515,7 +1911,7 @@ pub async fn playback_set_volume(volume: f32) -> Result<serde_json::Value, Strin
             if result == 0 {
                 println!("[bass] Warning: Failed to set channel volume");
             } else {
-                println!("[bass] Channel volume set successfully");
+                //println!("[bass] Channel volume set successfully");
             }
         }
     }

@@ -25,18 +25,67 @@ export async function startPlaybackWithSource(
   });
   
   try {
-    const result = await runTauriCommand('playback_start_with_source', {
+    // Fire the command but do not rely solely on its long-running completion.
+    // The backend now returns quickly and emits a `playback:start:ack` event
+    // when it has spawned the async playback task. We'll await the quick
+    // invoke result, but also race it with an ack event to avoid UI blocking
+    // in cases where the invoke might still take longer.
+    // Listen for the ack event (short timeout) before firing the invoke to avoid race
+    const eventModule = await import('@tauri-apps/api/event');
+    // Correlate ack events with this specific request using a clientRequestId
+    const clientRequestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
+    const ackPromise = new Promise<any>((resolve) => {
+      let unlisten: any = null;
+      const timer = setTimeout(() => {
+        if (unlisten) unlisten();
+        resolve({ timeout: true });
+      }, 2500);
+
+      (async () => {
+        try {
+          unlisten = await eventModule.listen('playback:start:ack', (evt: any) => {
+            try { clearTimeout(timer); } catch {}
+            // Only resolve when the ack matches our clientRequestId
+            const payload = evt.payload || evt;
+            if (payload && payload.clientRequestId && payload.clientRequestId === clientRequestId) {
+              if (unlisten) unlisten();
+              resolve(payload);
+            }
+          });
+        } catch (e) {
+          // If listening fails, resolve immediately so we don't hang
+          try { clearTimeout(timer); } catch {}
+          resolve({ listen_error: true });
+        }
+      })();
+    });
+
+    // Fire the invoke after listener is attached so we don't miss the ack.
+    // Keep the invoke's promise so we can race it vs the ack: sometimes the
+    // backend returns a quick invoke result (dedup/success) and we should use
+    // that instead of waiting for the ack timeout.
+    const invokePromise = runTauriCommand('playback_start_with_source', {
       spec: {
         track_id: trackId,
         source_type: sourceType,
         source_value: sourceValue,
         prefer_cache: preferCache,
-        source_meta: sourceMeta
+        source_meta: sourceMeta,
+        client_request_id: clientRequestId
       }
+    }).then((r) => {
+      console.log('[audioCache] playback_start_with_source invoke completed (background):', r);
+      return { invokeResult: r };
+    }).catch((e) => {
+      console.warn('[audioCache] playback_start_with_source invoke failed (background):', e);
+      return { invokeError: e };
     });
-    
-    console.log('[audioCache] Backend response:', result);
-    return result;
+
+    // Race the ack (which includes a timeout) with the invoke result. Prefer
+    // the ack, but accept a fast invoke result when it arrives first.
+    const res = await Promise.race([ackPromise, invokePromise]);
+    console.log('[audioCache] Playback ack or timeout:', res);
+    return res;
   } catch (error) {
     console.error('[audioCache] Failed to start playback with source:', error);
     throw error;

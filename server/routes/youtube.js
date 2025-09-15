@@ -70,11 +70,29 @@ router.get('/youtube', async (req, res) => {
 
     // Get fresh info if not cached
     if (!info) {
-      info = await ytdlpManager.getVideoInfo(target, formatPreference);
-      
-      // Cache the info
-      if (info) {
-        cache.set(target, info, SERVER_CONSTANTS.YOUTUBE_CACHE_TTL);
+      try {
+        info = await ytdlpManager.getVideoInfo(target, formatPreference);
+        
+        // Cache the info
+        if (info) {
+          cache.set(target, info, SERVER_CONSTANTS.YOUTUBE_CACHE_TTL);
+        }
+      } catch (videoError) {
+        const errorMessage = videoError?.message || String(videoError);
+        
+        // Check for specific unavailable video errors
+        if (errorMessage.includes('This video is unavailable') || 
+            errorMessage.includes('Video unavailable') ||
+            errorMessage.includes('video is not available')) {
+          return res.status(404).json({
+            success: false,
+            error: 'Video is unavailable',
+            reason: 'unavailable'
+          });
+        }
+        
+        // Re-throw other errors
+        throw videoError;
       }
     }
 

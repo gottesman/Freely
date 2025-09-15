@@ -303,7 +303,7 @@
     border-radius: 4px;
     padding: 2px 6px;
 }
-.source-meta { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.source-meta { display:flex; flex-direction:column; gap:4px; min-width:0; flex:1; }
 .source-meta strong { font-weight:600; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .source-sub { font-size:12px; opacity:.65; }
 .source-actions { display:flex; gap:8px; align-items:center; }

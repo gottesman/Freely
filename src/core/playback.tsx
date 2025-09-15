@@ -562,7 +562,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             true, // prefer cache
             sourceMeta.meta
           );
-          console.log('[playback] Source-based playback call completed, result:', result);
+          console.log('[playback] Source-based playback call completed (invoke or ack):', result);
+
+          // The audioCache.startPlaybackWithSource now may return either:
+          // - a full invoke result { success, data } (immediate playback info), OR
+          // - an ack-like payload from the event listener (e.g., { trackId, sourceHash, async: true })
+          // - a short timeout placeholder { timeout: true } when no ack was received quickly
+          // Normalize these shapes so downstream logic treats ack/timeout as non-fatal
+          if (result && typeof result === 'object' && (result.timeout || result.listen_error || result.async)) {
+            // Treat as successful spawn of background playback; we'll set loading/awaiting state
+            result = { success: true, data: { cache_used: false, streaming_started: true } };
+          }
         } else if (state.playbackUrl && state.playbackUrl !== 'source-based-playback') {
           console.log('[playback] Using direct playback with URL:', state.playbackUrl);
           // Only use direct playback for actual URLs, not for placeholder values
@@ -877,15 +887,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     // Step 3: Start backend audio playback and wait for confirmation
     console.log('[playback] Step 3: Starting backend audio playback');
     try {
-      const result = await startPlaybackWithSource(
-        newTrackId,
-        sourceMeta.type,
-        sourceMeta.value,
-        true, // prefer cache
-        sourceMeta.meta
-      );
-      
-      console.log('[playback] Backend playback start result:', result);
+        let result = await startPlaybackWithSource(
+          newTrackId,
+          sourceMeta.type,
+          sourceMeta.value,
+          true, // prefer cache
+          sourceMeta.meta
+        );
+        
+        console.log('[playback] Backend playback start result (invoke or ack):', result);
+        if (result && typeof result === 'object' && (result.timeout || result.listen_error || result.async)) {
+          // Normalize quick ack into a friendly success shape
+          // so the UI doesn't treat the short-race outcome as an error
+          (result as any) = { success: true, data: { cache_used: false, streaming_started: true } };
+        }
       
       if (result.success && result.data) {
         // Step 4: Wait for backend audio playback to start before removing loading status
@@ -967,7 +982,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             }
             
             console.log('[playback] Step 3: Starting backend audio playback');
-            const result = await startPlaybackWithSource(
+            let result = await startPlaybackWithSource(
               state.trackId,
               sourceMeta.type,
               sourceMeta.value,
@@ -975,8 +990,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               sourceMeta.meta
             );
             
-            console.log('[playback] Backend playback start result:', result);
-            
+            console.log('[playback] Backend playback start result (invoke or ack):', result);
+            if (result && typeof result === 'object' && (result.timeout || result.listen_error || result.async)) {
+              (result as any) = { success: true, data: { cache_used: false, streaming_started: true } };
+            }
+
             if (result.success) {
               console.log('[playback] Step 4: Backend confirmed playback start');
               // Set playback URL to indicate active playback (only if not already set)

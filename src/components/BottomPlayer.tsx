@@ -3,6 +3,7 @@ import { usePlaybackSelector, usePlayback, useCacheStatus } from '../core/playba
 import { useI18n } from '../core/i18n';
 import { useAlerts } from '../core/alerts';
 import { usePlaylists } from '../core/playlists';
+import { useDB } from '../core/dbIndexed';
 
 // Constants for performance optimization
 const RAF_THROTTLE_MS = 200; // Throttle state updates to reduce re-renders
@@ -81,6 +82,7 @@ export default function BottomPlayer({
   const { t } = useI18n();
   const { push: pushAlert, alerts } = useAlerts();
   const { playlists, getPlaylistTrackIds } = usePlaylists();
+  const { getRecentPlays } = useDB();
 
   // Combined state for better performance
   const [playerState, setPlayerState] = useState<PlayerState>(initialPlayerState);
@@ -345,6 +347,42 @@ export default function BottomPlayer({
     playbackCtx.toggle();
   }, [noSource, isTrackLoading, playbackCtx]);
 
+  const handlePrevious = useCallback(async () => {
+    // Get current position in seconds
+    const currentPositionSeconds = backendPosition || 0;
+    
+    // If current position is over 10 seconds, rewind to start
+    if (currentPositionSeconds > 10) {
+      try {
+        backendSeek(0);
+        setPlayerState(prev => ({ ...prev, positionMs: 0 }));
+      } catch (error) {
+        console.error('Failed to seek to start:', error);
+      }
+      return;
+    }
+    
+    // If current position is 10 seconds or less, get previously played track from history
+    try {
+      const recentPlays = await getRecentPlays(10); // Get last 10 plays
+      
+      // Find the most recent play that's not the current track
+      const previousPlay = recentPlays.find(play => play.track_id !== currentTrack?.id);
+      
+      if (previousPlay) {
+        // Use playNow to prepend this track to the queue and play it
+        playbackCtx.playNow([previousPlay.track_id]);
+      } else {
+        // No previous track found, fall back to regular previous behavior
+        playbackControls.prev();
+      }
+    } catch (error) {
+      console.error('Failed to get previous track from history:', error);
+      // Fall back to regular previous behavior
+      playbackControls.prev();
+    }
+  }, [backendPosition, backendSeek, currentTrack?.id, getRecentPlays, playbackCtx, playbackControls.prev]);
+
   const beginSeek = useCallback((clientX: number) => {
     if (!trackMetadata.durationMs || noSource || isTrackLoading) return;
     if (!barRef.current) return;
@@ -529,7 +567,7 @@ export default function BottomPlayer({
           <button 
             className="player-icons player-icons-prev" 
             aria-label={t('player.previous')} 
-            onClick={playbackControls.prev}
+            onClick={handlePrevious}
           >
             <span className="material-symbols-rounded filled">skip_previous</span>
           </button>

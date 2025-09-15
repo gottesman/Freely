@@ -115,32 +115,47 @@ pub async fn resolve_torrent_source(value: &str) -> Result<String, String> {
 }
 
 pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
-    // If it's already a localhost streaming URL, return as-is
+    // Determine the video ID from several possible input formats, including
+    // direct IDs, YouTube URLs, youtu.be short links, and local streaming/info URLs
+    let mut video_id_opt: Option<String> = None;
+
+    // Handle local streaming/info URL formats first
     if value.starts_with("http://localhost:9000/source/youtube") {
-        return Ok(value.to_string());
+        if let Some(start) = value.find("id=") {
+            let id_start = start + 3;
+            if let Some(end) = value[id_start..].find('&') {
+                video_id_opt = Some(value[id_start..id_start + end].to_string());
+            } else {
+                video_id_opt = Some(value[id_start..].to_string());
+            }
+        }
     }
 
-    // For YouTube sources, get the direct CDN URL from the info endpoint
-    let video_id = if value.len() == 11 && value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-        // It's already a video ID
-        value.to_string()
-    } else {
-        // Try to extract video ID from URL
+    // If not a local URL, check if value is already a video ID
+    if video_id_opt.is_none() && value.len() == 11 && value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        video_id_opt = Some(value.to_string());
+    }
+
+    // Try to extract from common URL patterns
+    if video_id_opt.is_none() {
         if let Some(start) = value.find("v=") {
             if let Some(end) = value[start + 2..].find('&') {
-                value[start + 2..start + 2 + end].to_string()
+                video_id_opt = Some(value[start + 2..start + 2 + end].to_string());
             } else {
-                value[start + 2..].to_string()
+                video_id_opt = Some(value[start + 2..].to_string());
             }
         } else if let Some(start) = value.find("youtu.be/") {
             if let Some(end) = value[start + 9..].find('?') {
-                value[start + 9..start + 9 + end].to_string()
+                video_id_opt = Some(value[start + 9..start + 9 + end].to_string());
             } else {
-                value[start + 9..].to_string()
+                video_id_opt = Some(value[start + 9..].to_string());
             }
-        } else {
-            return Err("Unable to extract YouTube video ID".to_string());
         }
+    }
+
+    let video_id = match video_id_opt {
+        Some(id) => id,
+        None => return Err("Unable to extract YouTube video ID".to_string()),
     };
 
     // Get the info to extract the direct YouTube CDN URL

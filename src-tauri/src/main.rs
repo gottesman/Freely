@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Allowlist non-critical warnings during active development to keep build output focused.
+// These can be tightened later by addressing each warning individually.
+#![allow(unused_imports, dead_code, unused_variables, unused_mut)]
 
 mod bass;
 mod cache;
@@ -187,6 +190,7 @@ fn main() {
             // Cache commands
             cache::cache_get_file,
             cache::cache_download_and_store,
+            cache::cache_download_status,
             cache::cache_get_stats,
             cache::cache_clear,
             // External API commands
