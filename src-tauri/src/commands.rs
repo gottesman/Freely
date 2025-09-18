@@ -491,3 +491,127 @@ pub mod external {
         Ok(true)
     }
 }
+
+/// Playback operations
+pub mod playback {
+    use crate::playback::{
+        PlaybackSourceSpec, PlaybackStatus, 
+        playback_start_internal, playback_start_with_source_internal,
+        playback_pause_internal, playback_resume_internal, playback_stop_internal,
+        playback_seek_internal, playback_status_internal, 
+        get_audio_devices_internal, get_audio_settings_internal, set_audio_settings_internal,
+        reinitialize_audio_internal, playback_cleanup_internal,
+        playback_set_volume_internal, playback_get_volume_internal, 
+        playback_set_mute_internal, playback_toggle_mute_internal,
+        get_download_progress_internal,
+    };
+    use tauri::Emitter;
+
+    // Tauri command wrappers that call the internal implementation functions
+
+    #[tauri::command]
+    pub async fn playback_start(url: String) -> Result<serde_json::Value, String> {
+        playback_start_internal(url).await
+    }
+
+    #[tauri::command]
+    pub async fn playback_start_with_source(app: tauri::AppHandle, spec: PlaybackSourceSpec) -> Result<serde_json::Value, String> {
+        playback_start_with_source_internal(app, spec).await
+    }
+
+    #[tauri::command]
+    pub async fn playback_pause() -> Result<serde_json::Value, String> {
+        playback_pause_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn playback_resume() -> Result<serde_json::Value, String> {
+        playback_resume_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn playback_stop() -> Result<serde_json::Value, String> {
+        playback_stop_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn playback_seek(position: f64) -> Result<serde_json::Value, String> {
+        playback_seek_internal(position).await
+    }
+
+    #[tauri::command]
+    pub async fn playback_status() -> Result<serde_json::Value, String> {
+        playback_status_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn get_audio_devices() -> Result<serde_json::Value, String> {
+        get_audio_devices_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn get_audio_settings() -> Result<serde_json::Value, String> {
+        get_audio_settings_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn set_audio_settings(settings: serde_json::Value) -> Result<serde_json::Value, String> {
+        set_audio_settings_internal(settings).await
+    }
+
+    #[tauri::command]
+    pub async fn reinitialize_audio(device_id: i32, sample_rate: u32, buffer_size: u32) -> Result<serde_json::Value, String> {
+        reinitialize_audio_internal(device_id, sample_rate, buffer_size).await
+    }
+
+    #[tauri::command]
+    pub async fn playback_cleanup() -> Result<bool, String> {
+        playback_cleanup_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn playback_set_volume(volume: f32) -> Result<serde_json::Value, String> {
+        playback_set_volume_internal(volume).await
+    }
+
+    #[tauri::command]
+    pub async fn playback_get_volume() -> Result<serde_json::Value, String> {
+        playback_get_volume_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn playback_set_mute(muted: bool) -> Result<serde_json::Value, String> {
+        playback_set_mute_internal(muted).await
+    }
+
+    #[tauri::command]
+    pub async fn playback_toggle_mute() -> Result<serde_json::Value, String> {
+        playback_toggle_mute_internal().await
+    }
+
+    #[tauri::command]
+    pub async fn get_download_progress() -> Result<serde_json::Value, String> {
+        get_download_progress_internal().await
+    }
+}
+
+/// Download control operations
+pub mod downloads {
+    use super::*;
+    use crate::downloads as dl;
+
+    #[tauri::command]
+    pub async fn downloads_pause(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String) -> Result<bool, String> {
+        dl::downloads_pause(app, track_id, source_type, source_hash).await
+    }
+
+    #[tauri::command]
+    pub async fn downloads_resume(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String) -> Result<bool, String> {
+        dl::downloads_resume(app, track_id, source_type, source_hash).await
+    }
+
+    #[tauri::command]
+    pub async fn downloads_remove(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String) -> Result<bool, String> {
+        dl::downloads_remove(app, track_id, source_type, source_hash).await
+    }
+}

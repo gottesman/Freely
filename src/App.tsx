@@ -15,6 +15,7 @@ import { useAppReady } from './core/ready';
 import { useI18n, I18nProvider } from './core/i18n';
 import { PromptProvider } from './core/PromptContext';
 import { runTauriCommand } from './core/tauriCommands';
+import { DownloadsProvider } from './core/Downloads';
 import { ContextMenuProvider } from './core/ContextMenuContext';
 
 // Constants for performance optimization
@@ -227,7 +228,9 @@ export default function App() {
         <ContextMenuProvider>
           <PlaybackProvider>
             <AlertsProvider>
-              <Main />
+              <DownloadsProvider>
+                <Main />
+              </DownloadsProvider>
             </AlertsProvider>
           </PlaybackProvider>
         </ContextMenuProvider>
@@ -318,7 +321,8 @@ function Main() {
           rightWidth: rw ? Math.min(Math.max(parseInt(rw, 10), UI_CONSTANTS.minPanel), UI_CONSTANTS.maxPanel) : prev.rightWidth,
           leftCollapsed: lc === '1',
           rightCollapsed: rc === '1',
-          rightTab: (rtab === 'queue' || rtab === 'artist') ? rtab : prev.rightTab
+          // Accept 'artist' | 'queue' | 'downloads' from persisted settings
+          rightTab: (rtab === 'queue' || rtab === 'artist' || rtab === 'downloads') ? rtab : prev.rightTab
         }));
       } catch (e) {
         // Fallback to localStorage
@@ -336,7 +340,8 @@ function Main() {
                 : prev.rightWidth,
               leftCollapsed: obj.leftCollapsed === true,
               rightCollapsed: obj.rightCollapsed === true,
-              rightTab: (obj.rightTab === 'queue' || obj.rightTab === 'artist') ? obj.rightTab : prev.rightTab
+              // Accept 'artist' | 'queue' | 'downloads' from local storage
+              rightTab: (obj.rightTab === 'queue' || obj.rightTab === 'artist' || obj.rightTab === 'downloads') ? obj.rightTab : prev.rightTab
             }));
           }
         } catch {
@@ -686,6 +691,15 @@ function Main() {
     }));
   }, []);
 
+  // Open Downloads tab in the right panel and ensure it is visible
+  const openDownloadsTab = useCallback(() => {
+    setUIState(prev => ({
+      ...prev,
+      rightCollapsed: false,
+      rightTab: 'downloads'
+    }));
+  }, []);
+
   // Direct event-driven AddToPlaylist modal host (replaces former Provider/Context)
   useEffect(() => {
     function onOpen(ev: Event) {
@@ -778,7 +792,9 @@ function Main() {
             lyricsOpen={lyricsState.open}
             onToggleLyrics={toggleLyrics}
             onToggleQueueTab={toggleQueueTab}
+            onToggleDownloads={openDownloadsTab}
             queueActive={uiState.rightTab === 'queue'}
+            downloadsActive={uiState.rightTab === 'downloads'}
           />
         </div>
 

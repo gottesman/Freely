@@ -16,6 +16,8 @@
   "queue.drag": "Drag to reorder {track}",
   "queue.playingNow": "Playing Now",
   "queue.nextUp": "Next Up",
+  "downloads.title": "Downloads",
+  "downloads.empty": "No downloads",
   "loading.db": "Preparing database",
   "loading.fonts": "Loading fonts",
   "loading.css": "Loading styles",

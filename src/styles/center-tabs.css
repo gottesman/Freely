@@ -101,32 +101,48 @@
 .np-album-trackcount { font-size:13px; opacity:.65; font-weight:400; letter-spacing:.5px; line-height:1.4; }
 
 /* Queue */
-.np-queue-list { list-style:none; margin:0; padding:0 8px; display:flex; flex-direction:column; gap:6px; }
-.np-queue-list li { display:flex; gap:10px; align-items:center; background:var(--surface-1); padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.2; border:1px solid var(--border-subtle); cursor:pointer; transition: background var(--dur-med), border-color var(--dur-med), transform 160ms cubic-bezier(.2,.8,.3,1); position:relative; will-change:transform; }
-.np-queue-list.no-tx li { transition: background var(--dur-med), border-color var(--dur-med); }
-.np-queue-list li:hover { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
-.queue-more-btn{opacity: 0;}
-.np-queue-list li:hover .queue-more-btn { opacity:1; }
-.np-queue-list li.active { background:var(--accent); color:var(--text-dark); border:transparent; font-weight:inherit; box-shadow:0 0 0 1px rgba(0,0,0,0.15) inset; }
-.np-queue-list li .track { flex:1 1 auto; }
-.np-queue-list li .artist { opacity:.7; }
-.np-queue-list li .queue-art { width:38px; height:38px; border-radius:8px; overflow:hidden; background:rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 2px 4px -1px rgba(0,0,0,.4); }
-.np-queue-list li .queue-art img { width:100%; height:100%; object-fit:cover; display:block; }
+.np-queue-list , .np-downloads-list  { list-style:none; margin:0; padding:0 8px; display:flex; flex-direction:column; gap:6px; }
+.np-queue-list li , .np-downloads-list li  { display:flex; gap:10px; align-items:center; background:var(--surface-1); padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.2; border:1px solid var(--border-subtle); cursor:pointer; transition: background var(--dur-med), border-color var(--dur-med), transform 160ms cubic-bezier(.2,.8,.3,1); position:relative; will-change:transform; }
+.np-queue-list.no-tx li , .np-downloads-list.no-tx li  { transition: background var(--dur-med), border-color var(--dur-med); }
+.np-queue-list li:hover , .np-downloads-list li:hover  { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
+.queue-more-btn, .downloads-more-btn {opacity: 0;}
+.np-queue-list li:hover .queue-more-btn , .np-downloads-list li:hover .downloads-more-btn  { opacity:1; }
+.np-queue-list li.active , .np-downloads-list li.active  { background:var(--accent); color:var(--text-dark); border:transparent; font-weight:inherit; box-shadow:0 0 0 1px rgba(0,0,0,0.15) inset; }
+.np-queue-list li .track , .np-downloads-list li .track  { flex:1 1 auto; }
+.np-queue-list li .artist , .np-downloads-list li .artist  { opacity:.7; }
+.np-queue-list li .queue-art , .np-downloads-list li .queue-art  { width:38px; height:38px; border-radius:8px; overflow:hidden; background:rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 2px 4px -1px rgba(0,0,0,.4); }
+.np-queue-list li .queue-art img , .np-downloads-list li .queue-art img  { width:100%; height:100%; object-fit:cover; display:block; }
+
+/* Downloads circular progress */
+.np-downloads-list li .downloads-art { flex-shrink: 0; position: relative; width: 38px; height: 38px; border-radius: 8px; overflow: hidden; display:flex; align-items:center; justify-content:center; background: rgba(255,255,255,0.05); }
+.np-downloads-list li .downloads-art img {filter: brightness(0.5)}
+.np-downloads-list li .download-progress-outer { position: absolute; inset: 2px; display:block; border-radius: 50%; }
+.np-downloads-list li .download-progress-inner { 
+    /* Expect --progress in degrees, 0deg..360deg */
+    --ring-color: var(--accent);
+    --track-color: rgba(255,255,255,0.12);
+    position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(var(--ring-color) var(--progress, 0deg), var(--track-color) 0deg);
+    mask: radial-gradient(circle at 50% 50%, transparent 56%, #000 57%);
+    -webkit-mask: radial-gradient(circle at 50% 50%, transparent 56%, #000 57%);
+}
+.np-downloads-list li.active .download-progress-inner { --ring-color: var(--text); }
+.np-downloads-list li .download-progress-label { color: var(--text); text-shadow: 0 1px 0 rgba(0,0,0,.75); }
 
 /* Hover play button overlay */
-.queue-play-btn { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); color:#fff; border:none; cursor:pointer; opacity:0; transition: opacity var(--dur-med); font-size:18px; margin:0; padding:0; }
-.queue-play-btn .material-symbols-rounded { --size:22px; }
-.np-queue-list li:not(.active):hover .queue-play-btn { opacity:1; }
+.queue-play-btn , .downloads-play-btn  { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); color:#fff; border:none; cursor:pointer; opacity:0; transition: opacity var(--dur-med); font-size:18px; margin:0; padding:0; }
+.queue-play-btn .material-symbols-rounded , .downloads-play-btn .material-symbols-rounded  { --size:22px; }
+.np-queue-list li:not(.active):hover .queue-play-btn , .np-downloads-list li:not(.active):hover .queue-play-btn  { opacity:1; }
 
 /* Suppress play overlay while hovering drag handle (browsers supporting :has) */
-.np-queue-list li:has(.queue-drag-handle:hover) .queue-play-btn { opacity:0 !important; }
+.np-queue-list li:has(.queue-drag-handle:hover) .queue-play-btn , .np-downloads-list li:has(.queue-drag-handle:hover) .queue-play-btn  { opacity:0 !important; }
 
 /* Active dragging item visual */
-.np-queue-list li.dragging-item { box-shadow:0 0 0 2px var(--accent) inset, 0 4px 12px -2px rgba(0,0,0,.6); z-index:3; backdrop-filter: blur(15px); }
+.np-queue-list li.dragging-item , .np-downloads-list li.dragging-item  { box-shadow:0 0 0 2px var(--accent) inset, 0 4px 12px -2px rgba(0,0,0,.6); z-index:3; backdrop-filter: blur(15px); }
 
-.collapsed .np-queue-list { padding:0; }
-.collapsed .np-queue-list li { justify-content:center; padding: 8px; }
-.collapsed .np-queue-list li >:not(.queue-art) { display:none !important; }
+.collapsed .np-queue-list, .collapsed .np-downloads-list  { padding:0; }
+.collapsed .np-queue-list li,.collapsed .np-downloads-list li  { justify-content:center; padding: 8px; }
+.collapsed .np-queue-list li >:not(.queue-art),.collapsed .np-downloads-list li >:not(.queue-art)  { display:none !important; }
 
 /* Tracklist */
 .np-tracklist { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
@@ -134,7 +150,7 @@
 
 /* Inline play button overlaying index */
 .track-action { position:absolute; left:2px; top:50%; transform:translateY(-50%) scale(.7); background:#fff0; border:none; color:var(--text); width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; padding:0; cursor:pointer; opacity:0; transition: opacity var(--dur-med), transform var(--dur-med), background var(--dur-med), border-color var(--dur-med); }
-.queue-track-btn {
+.queue-track-btn , .downloads-track-btn  {
     left: -21px;
 }
 .np-tracklist li:hover .track-action, .np-tracklist li:not(.playing):hover .track-action { opacity:1; transform:translateY(-50%) scale(1); }

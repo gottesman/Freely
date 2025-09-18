@@ -1,14 +1,19 @@
 use std::os::raw::{c_int, c_char, c_uint, c_ulong};
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, CStr, c_void};
 use libloading::{Library, Symbol};
+
+// DOWNLOADPROC callback type - called by BASS when downloading data
+pub type DownloadProc = unsafe extern "C" fn(buffer: *const c_void, length: c_uint, user: *mut c_void);
 
 // BASS function type definitions
 pub type BassInit = unsafe extern "system" fn(device: c_int, freq: c_uint, flags: c_uint, win: *mut std::ffi::c_void, dsguid: *mut std::ffi::c_void) -> c_int;
 pub type BassFree = unsafe extern "system" fn() -> c_int;
 pub type BassSetConfig = unsafe extern "system" fn(option: c_uint, value: c_uint) -> c_uint;
+// Pointer variant used for string-based settings like HTTP User-Agent
+pub type BassSetConfigPtr = unsafe extern "system" fn(option: c_uint, value: *const u8) -> c_uint;
 pub type BassPluginLoad = unsafe extern "system" fn(file: *const c_char, flags: c_uint) -> u32;
 pub type BassStreamCreateFile = unsafe extern "system" fn(mem: c_int, file: *const std::ffi::c_void, offset: c_ulong, length: c_ulong, flags: c_uint) -> u32;
-pub type BassStreamCreateUrl = unsafe extern "system" fn(url: *const c_char, offset: c_ulong, flags: c_uint, proc_: *mut std::ffi::c_void, user: *mut std::ffi::c_void) -> u32;
+pub type BassStreamCreateUrl = unsafe extern "system" fn(url: *const c_char, offset: c_ulong, flags: c_uint, proc_: Option<DownloadProc>, user: *mut std::ffi::c_void) -> u32;
 pub type BassStreamFree = unsafe extern "system" fn(handle: u32) -> c_int;
 pub type BassChannelPlay = unsafe extern "system" fn(handle: u32, restart: c_int) -> c_int;
 pub type BassChannelPause = unsafe extern "system" fn(handle: u32) -> c_int;
@@ -27,6 +32,7 @@ pub type BassSetVolume = unsafe extern "system" fn(volume: f32) -> c_int;
 pub type BassGetDeviceInfo = unsafe extern "system" fn(device: c_uint, info: *mut BassDeviceInfo) -> c_int;
 pub type BassGetInfo = unsafe extern "system" fn(info: *mut BassInfo) -> c_int;
 pub type BassGetDevice = unsafe extern "system" fn() -> c_uint;
+pub type BassStreamGetFilePosition = unsafe extern "system" fn(handle: u32, mode: c_uint) -> c_ulong;
 
 // BASS constants
 pub const BASS_OK: c_int = 0;
@@ -39,8 +45,10 @@ pub const BASS_DEVICE_DEFAULT: c_int = -1;
 pub const BASS_CONFIG_NET_TIMEOUT: c_uint = 11;
 pub const BASS_CONFIG_NET_AGENT: c_uint = 16;
 pub const BASS_CONFIG_NET_BUFFER: c_uint = 10;
+// General device buffer length (ms) used prior to BASS_Init
+pub const BASS_CONFIG_BUFFER: c_uint = 0;
 
-pub const BASS_STREAM_BLOCK: c_uint = 0x100000;
+pub const BASS_STREAM_BLOCK: c_uint = 0x100000; // No longer used - we handle buffering manually
 pub const BASS_STREAM_STATUS: c_uint = 0x800000;
 pub const BASS_STREAM_AUTOFREE: c_uint = 0x40000;
 pub const BASS_STREAM_PRESCAN: c_uint = 0x200000;
@@ -48,6 +56,16 @@ pub const BASS_STREAM_RESTRATE: c_uint = 0x80000;
 
 pub const BASS_POS_BYTE: c_uint = 0;
 pub const BASS_ACTIVE_STOPPED: c_uint = 0;
+
+// File position modes for BASS_StreamGetFilePosition
+pub const BASS_FILEPOS_CURRENT: c_uint = 0;
+pub const BASS_FILEPOS_DOWNLOAD: c_uint = 1;
+pub const BASS_FILEPOS_END: c_uint = 2;
+pub const BASS_FILEPOS_START: c_uint = 3;
+pub const BASS_FILEPOS_CONNECTED: c_uint = 4;
+pub const BASS_FILEPOS_SIZE: c_uint = 5;
+pub const BASS_FILEPOS_ASYNCBUF: c_uint = 6;
+pub const BASS_FILEPOS_ASYNCBUFLEN: c_uint = 7;
 pub const BASS_ACTIVE_PLAYING: c_uint = 1;
 pub const BASS_ACTIVE_STALLED: c_uint = 2;
 pub const BASS_ACTIVE_PAUSED: c_uint = 3;
@@ -234,5 +252,177 @@ pub fn probe_duration_bass(lib: &Library, handle: u32) -> Option<f64> {
         } else {
             None
         }
+    }
+}
+
+// ---- Lightweight wrapper functions over BASS symbols ----
+
+pub fn bass_init(lib: &Library, device: c_int, freq: c_uint, flags: c_uint) -> c_int {
+    unsafe {
+        let f: Symbol<BassInit> = match lib.get(b"BASS_Init") { Ok(f) => f, Err(_) => return 0 };
+        f(device, freq, flags, std::ptr::null_mut(), std::ptr::null_mut())
+    }
+}
+
+pub fn bass_free(lib: &Library) -> c_int {
+    unsafe {
+        let f: Symbol<BassFree> = match lib.get(b"BASS_Free") { Ok(f) => f, Err(_) => return 0 };
+        f()
+    }
+}
+
+pub fn bass_set_config(lib: &Library, option: c_uint, value: c_uint) -> c_uint {
+    unsafe {
+        let f: Symbol<BassSetConfig> = match lib.get(b"BASS_SetConfig") { Ok(f) => f, Err(_) => return 0 };
+        f(option, value)
+    }
+}
+
+pub fn bass_set_config_ptr(lib: &Library, option: c_uint, value: *const u8) -> c_uint {
+    unsafe {
+        let f: Symbol<BassSetConfigPtr> = match lib.get(b"BASS_SetConfigPtr") { Ok(f) => f, Err(_) => return 0 };
+        f(option, value)
+    }
+}
+
+// legacy variants removed; use stream_create below
+
+// Unified stream creation API to handle both file and URL sources with optional offset and callback
+pub enum StreamSource<'a> {
+    File(&'a CStr),
+    Url { url: &'a CStr, offset: Option<c_ulong> },
+}
+
+pub fn stream_create(
+    lib: &Library,
+    src: StreamSource,
+    flags: c_uint,
+    proc_cb: Option<DownloadProc>,
+    user: *mut std::ffi::c_void,
+) -> u32 {
+    unsafe {
+        match src {
+            StreamSource::File(path) => {
+                let f: Symbol<BassStreamCreateFile> = match lib.get(b"BASS_StreamCreateFile") { Ok(f) => f, Err(_) => return 0 };
+                f(0, path.as_ptr() as *const std::ffi::c_void, 0, 0, flags)
+            }
+            StreamSource::Url { url, offset } => {
+                let ofs = offset.unwrap_or(0);
+                let f: Symbol<BassStreamCreateUrl> = match lib.get(b"BASS_StreamCreateURL") { Ok(f) => f, Err(_) => return 0 };
+                f(url.as_ptr(), ofs, flags, proc_cb, user)
+            }
+        }
+    }
+}
+
+pub fn stream_free(lib: &Library, handle: u32) -> c_int {
+    unsafe {
+        let f: Symbol<BassStreamFree> = match lib.get(b"BASS_StreamFree") { Ok(f) => f, Err(_) => return 0 };
+        f(handle)
+    }
+}
+
+pub fn channel_play(lib: &Library, handle: u32, restart: c_int) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelPlay> = match lib.get(b"BASS_ChannelPlay") { Ok(f) => f, Err(_) => return 0 };
+        f(handle, restart)
+    }
+}
+
+pub fn channel_pause(lib: &Library, handle: u32) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelPause> = match lib.get(b"BASS_ChannelPause") { Ok(f) => f, Err(_) => return 0 };
+        f(handle)
+    }
+}
+
+pub fn channel_stop(lib: &Library, handle: u32) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelStop> = match lib.get(b"BASS_ChannelStop") { Ok(f) => f, Err(_) => return 0 };
+        f(handle)
+    }
+}
+
+pub fn channel_is_active(lib: &Library, handle: u32) -> c_uint {
+    unsafe {
+        let f: Symbol<BassChannelIsActive> = match lib.get(b"BASS_ChannelIsActive") { Ok(f) => f, Err(_) => return 0 };
+        f(handle)
+    }
+}
+
+pub fn channel_get_length(lib: &Library, handle: u32, mode: c_uint) -> c_ulong {
+    unsafe {
+        let f: Symbol<BassChannelGetLength> = match lib.get(b"BASS_ChannelGetLength") { Ok(f) => f, Err(_) => return 0xFFFFFFFF };
+        f(handle, mode)
+    }
+}
+
+pub fn channel_get_position(lib: &Library, handle: u32, mode: c_uint) -> c_ulong {
+    unsafe {
+        let f: Symbol<BassChannelGetPosition> = match lib.get(b"BASS_ChannelGetPosition") { Ok(f) => f, Err(_) => return 0xFFFFFFFF };
+        f(handle, mode)
+    }
+}
+
+pub fn channel_bytes2seconds(lib: &Library, handle: u32, pos: c_ulong) -> f64 {
+    unsafe {
+        let f: Symbol<BassChannelBytes2Seconds> = match lib.get(b"BASS_ChannelBytes2Seconds") { Ok(f) => f, Err(_) => return 0.0 };
+        f(handle, pos)
+    }
+}
+
+pub fn channel_seconds2bytes(lib: &Library, handle: u32, sec: f64) -> c_ulong {
+    unsafe {
+        let f: Symbol<BassChannelSeconds2Bytes> = match lib.get(b"BASS_ChannelSeconds2Bytes") { Ok(f) => f, Err(_) => return 0xFFFFFFFF };
+        f(handle, sec)
+    }
+}
+
+pub fn channel_set_position(lib: &Library, handle: u32, pos: c_ulong, mode: c_uint) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelSetPosition> = match lib.get(b"BASS_ChannelSetPosition") { Ok(f) => f, Err(_) => return 0 };
+        f(handle, pos, mode)
+    }
+}
+
+pub fn channel_set_attribute(lib: &Library, handle: u32, attrib: c_uint, value: f32) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelSetAttribute> = match lib.get(b"BASS_ChannelSetAttribute") { Ok(f) => f, Err(_) => return 0 };
+        f(handle, attrib, value)
+    }
+}
+
+pub fn error_get_code(lib: &Library) -> c_int {
+    unsafe {
+        let f: Symbol<BassErrorGetCode> = match lib.get(b"BASS_ErrorGetCode") { Ok(f) => f, Err(_) => return -1 };
+        f()
+    }
+}
+
+pub fn get_device_info(lib: &Library, device: c_uint, info: &mut BassDeviceInfo) -> c_int {
+    unsafe {
+        let f: Symbol<BassGetDeviceInfo> = match lib.get(b"BASS_GetDeviceInfo") { Ok(f) => f, Err(_) => return 0 };
+        f(device, info)
+    }
+}
+
+pub fn get_info(lib: &Library, info: &mut BassInfo) -> c_int {
+    unsafe {
+        let f: Symbol<BassGetInfo> = match lib.get(b"BASS_GetInfo") { Ok(f) => f, Err(_) => return 0 };
+        f(info)
+    }
+}
+
+pub fn get_device(lib: &Library) -> c_uint {
+    unsafe {
+        let f: Symbol<BassGetDevice> = match lib.get(b"BASS_GetDevice") { Ok(f) => f, Err(_) => return u32::MAX };
+        f()
+    }
+}
+
+pub fn stream_get_file_position(lib: &Library, handle: u32, mode: c_uint) -> c_ulong {
+    unsafe {
+        let f: Symbol<BassStreamGetFilePosition> = match lib.get(b"BASS_StreamGetFilePosition") { Ok(f) => f, Err(_) => return 0xFFFFFFFF };
+        f(handle, mode)
     }
 }

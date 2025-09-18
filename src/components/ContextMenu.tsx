@@ -599,6 +599,14 @@ export interface BuildTrackMenuOptions {
   queueRemovable?: boolean; // if true, show "remove from playlist" option
   queueOptions?: boolean; // whether to show queue manipulation group
   playlistRemove?: (trackId: string) => void; // if provided, show "remove from playlist" option
+  // Downloads-specific (optional)
+  downloadId?: string; // downloads item id (typically create_cache_filename base)
+  isPaused?: boolean;  // whether this download is paused (controls Pause/Resume label)
+  downloadsActions?: { // optional callbacks for actions; falls back to CustomEvents if not provided
+    pause?: (id?: string) => void;
+    resume?: (id?: string) => void;
+    remove?: (id?: string) => void;
+  }
 }
 
 export function buildQueueContextMenuItems(opts: BuildTrackMenuOptions): ContextMenuItem[] {
@@ -723,7 +731,7 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
       icon: 'person',
       iconFilled: true,
       meta: { title: trackTitle, subtitle: trackData?.artists?.map((a: any) => a.name).join(', ') || '' }
-    },    
+    },
     ...(typeof playlistRemove === 'function' ? [
       {
         id: 'remove', label: t('common.removeFromPlaylist', 'Remove'), type: 'action', icon: 'delete',
@@ -780,6 +788,80 @@ export function buildTrackContextMenuItems(opts: BuildTrackMenuOptions): Context
       }
     ] : []) as any,
 
+    ...(firstArtist?.id ? [
+      {
+        id: 'artist', label: t('common.goToArtist', 'Go to artist'), type: 'action' as const, icon: 'person', iconFilled: true,
+        onClick: () => {
+          if (firstArtist.id) window.dispatchEvent(new CustomEvent('freely:selectArtist', { detail: { artistId: firstArtist.id, source: 'track-list-menu' } }));
+        }
+      }
+    ] : []),
+    ...(trackData?.id ? [
+      {
+        id: 'info', label: t('common.goToSong', 'Go to song'), type: 'action' as const, icon: 'music_note',
+        onClick: () => {
+          window.dispatchEvent(new CustomEvent('freely:selectTrack', { detail: { trackId: trackData.id, source: 'track-list-menu' } }));
+        }
+      }
+    ] : [])
+  ];
+  return items;
+}
+export function buildDownloadsContextMenuItems(opts: BuildTrackMenuOptions): ContextMenuItem[] {
+  if (!opts || typeof opts !== 'object') return [];
+  const {
+    t,
+    trackData,
+    downloadId,
+    isPaused = false,
+    downloadsActions,
+  } = opts;
+
+
+  const trackTitle = trackData?.name || trackData?.id || 'track';
+  const firstArtist = trackData?.artists?.[0];
+  const items: ContextMenuItem[] = [
+    {
+      id: 'title',
+      label: 'title',
+      type: 'custom',
+      image: (window as any).imageRes?.(trackData?.album?.images, 3) || undefined,
+      icon: 'person',
+      iconFilled: true,
+      meta: { title: trackTitle, subtitle: trackData?.artists?.map((a: any) => a.name).join(', ') || '' }
+    },
+    {
+      id: 'grp-download', label: trackTitle, type: 'group', items: [
+        {
+          id: isPaused ? 'act-resume-download' : 'act-pause-download',
+          label: isPaused ? t('common.resume', 'Resume') : t('common.pause', 'Pause'),
+          type: 'action',
+          icon: isPaused ? 'play_arrow' : 'pause',
+          iconFilled: true,
+          onClick: () => {
+            const id = downloadId || trackData?.id;
+            if (isPaused) {
+              if (downloadsActions?.resume) return downloadsActions.resume(id);
+              window.dispatchEvent(new CustomEvent('freely:downloads:resume', { detail: { id } }));
+            } else {
+              if (downloadsActions?.pause) return downloadsActions.pause(id);
+              window.dispatchEvent(new CustomEvent('freely:downloads:pause', { detail: { id } }));
+            }
+          }
+        },
+        {
+          id: 'act-remove-download',
+          label: t('common.remove', 'Remove'),
+          type: 'action',
+          icon: 'delete',
+          onClick: () => {
+            const id = downloadId || trackData?.id;
+            if (downloadsActions?.remove) return downloadsActions.remove(id);
+            window.dispatchEvent(new CustomEvent('freely:downloads:remove', { detail: { id } }));
+          }
+        }
+      ]
+    },
     ...(firstArtist?.id ? [
       {
         id: 'artist', label: t('common.goToArtist', 'Go to artist'), type: 'action' as const, icon: 'person', iconFilled: true,

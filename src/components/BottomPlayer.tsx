@@ -44,14 +44,18 @@ type Props = {
   lyricsOpen?: boolean;
   onToggleLyrics?: () => void;
   onToggleQueueTab?: () => void;
+  onToggleDownloads?: () => void;
   queueActive?: boolean;
+  downloadsActive?: boolean;
 };
 
 export default function BottomPlayer({
   lyricsOpen,
   onToggleLyrics,
   onToggleQueueTab,
+  onToggleDownloads,
   queueActive,
+  downloadsActive,
 }: Props) {
   // Memoized playback control functions
   const playbackControls = useMemo(() => ({
@@ -542,7 +546,6 @@ export default function BottomPlayer({
               <div className="song-album overflow-ellipsis">{trackMetadata.album}</div>
             </div>
           </div>
-
           <button
             className="small player-icons player-icons-add-playlist"
             title={t('player.addPlaylist')}
@@ -609,31 +612,6 @@ export default function BottomPlayer({
             )}
           </div>
 
-          {/* Cache status indicator */}
-          {cacheStatus?.isCaching && (
-            <div
-              className="cache-status"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                marginLeft: '8px',
-                fontSize: '12px',
-                color: 'var(--accent, #007acc)',
-                opacity: 0.8
-              }}
-              title={cacheStatus.cacheProgress ? 
-                `Caching: ${Math.round(cacheStatus.cacheProgress)}%` : 
-                'Downloading to cache...'}
-            >
-              <span className="material-symbols-rounded" style={{ fontSize: '16px', marginRight: '4px' }}>
-                download
-              </span>
-              {cacheStatus.cacheProgress ? 
-                `${Math.round(cacheStatus.cacheProgress)}%` : 
-                'Caching...'}
-            </div>
-          )}
-
           <button 
             className="player-icons player-icons-next" 
             aria-label={t('player.next')} 
@@ -648,6 +626,14 @@ export default function BottomPlayer({
         </div>
 
         <div className="extras">
+          <button
+            className={`small player-icons player-icons-download ${downloadsActive ? 'active' : ''}`}
+            title={t('player.download')}
+            aria-label={t('player.download')}
+            onClick={onToggleDownloads}
+          >
+            <span className="material-symbols-rounded">download</span>
+          </button>
           <button
             className={`small player-icons player-icons-lyrics ${lyricsOpen ? 'active' : ''}`}
             aria-label={lyricsOpen ? t('player.hideLyrics') : t('player.showLyrics')}

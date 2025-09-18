@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import MoreFromArtist from './MoreFromArtist';
 import QueueTab from './QueueTab';
+import DownloadsTab from './DownloadsTab';
 import useArtistBuckets from '../core/hooks/useArtistBuckets';
 import { useI18n } from '../core/i18n';
 
@@ -10,7 +11,8 @@ const PANEL_CONFIG = {
   defaultTab: 'artist' as const,
   tabs: {
     artist: 'artist',
-    queue: 'queue'
+    queue: 'queue',
+    downloads: 'downloads'
   } as const
 } as const;
 
@@ -58,7 +60,9 @@ const PanelHeader = React.memo<{
   const toggleLabel = collapsed ? t('panel.expand', 'Expand') : t('panel.collapse', 'Collapse');
   const panelTitle = currentTab === PANEL_CONFIG.tabs.artist 
     ? t('artist.moreFrom') 
-    : t('queue.title');
+    : currentTab === PANEL_CONFIG.tabs.queue
+      ? t('queue.title')
+      : t('downloads.title', 'Downloads');
 
   return (
     <div className="panel-header">
@@ -108,6 +112,9 @@ const TabContent = React.memo<{
   
   if (currentTab === PANEL_CONFIG.tabs.queue) {
     return <QueueTab collapsed={collapsed} />;
+  }
+  if (currentTab === PANEL_CONFIG.tabs.downloads) {
+    return <DownloadsTab collapsed={collapsed} />;
   }
   
   return null;

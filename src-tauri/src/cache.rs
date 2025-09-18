@@ -13,6 +13,7 @@ use tokio::fs as tokio_fs;
 use tauri::Manager;
 use tauri::Emitter;
 use crate::utils::resolve_audio_source;
+use crate::downloads;
 
 #[derive(Debug)]
 pub struct CacheDownloadResult {
@@ -252,12 +253,27 @@ impl AudioCache {
         Ok(())
     }
 }
+/// Create a safe cache filename (without extension) based on identifiers.
+/// Returns a string like "<track>_<source_type>_<hash>" sanitized for filesystem.
+pub fn create_cache_filename(track_id: &str, source_type: &str, source_hash: &str) -> String {
+    let safe_track: String = track_id
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    let safe_hash: String = source_hash
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    format!("{}_{}_{}", safe_track, source_type, safe_hash)
+}
 
 // Global cache state
 static CACHE: Lazy<Mutex<Option<AudioCache>>> = Lazy::new(|| Mutex::new(None));
 
 // Track inflight downloads: map cache_key -> (bytes_written, optional_total_bytes)
 static INFLIGHT_DOWNLOADS: Lazy<Mutex<HashMap<String, (u64, Option<u64>)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+// Track inflight metadata to recover identifiers for UI listing: cache_key -> (track_id, source_type, source_hash)
+static INFLIGHT_META: Lazy<Mutex<HashMap<String, (String, String, String)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Recent cache miss log debouncing: map cache_key -> last_logged_unix_seconds
 const MISS_LOG_DEBOUNCE_SECS: u64 = 5;
@@ -331,34 +347,35 @@ pub fn get_cached_file_path(track_id: &str, source_type: &str, source_hash: &str
     }
 }
 
-// Return the expected temporary (.part) path for a given cache key, if the cache is initialized.
-pub fn get_tmp_cache_path(track_id: &str, source_type: &str, source_hash: &str) -> Option<PathBuf> {
+/// Get the cache directory path
+pub fn get_cache_dir() -> Option<PathBuf> {
     let cache_guard = CACHE.lock().unwrap();
-    if let Some(cache) = cache_guard.as_ref() {
-        let cache_key = AudioCache::generate_cache_key(track_id, source_type, source_hash);
-        let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
-        let tmp_name = format!("{}.part", safe_key);
-        return Some(cache.cache_dir.join(tmp_name));
+    cache_guard.as_ref().map(|c| c.cache_dir.clone())
+}
+
+/// Add a cached file to the cache index
+pub fn add_cached_file_to_index(track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64) -> Result<(), String> {
+    let mut cache_guard = CACHE.lock().unwrap();
+    if let Some(cache) = cache_guard.as_mut() {
+        cache.add_cached_file(track_id, source_type, source_hash, file_path, file_size)
+    } else {
+        Err("Cache not initialized".to_string())
     }
-    None
 }
 
 // Return current inflight download status (bytes_downloaded, optional total) for a given key
 pub fn get_inflight_status(track_id: &str, source_type: &str, source_hash: &str) -> Option<(u64, Option<u64>)> {
-    let cache_key = AudioCache::generate_cache_key(track_id, source_type, source_hash);
-    let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
+    let cache_key = create_cache_filename(track_id, source_type, source_hash);
     let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-    inflight.get(&safe_key).cloned()
+    inflight.get(&cache_key).cloned()
 }
 
-// Return the expected final (.m4a) path for a given cache key, if the cache is initialized.
+// Return the expected final (extension-less) path for a given cache key, if the cache is initialized.
 pub fn get_final_cache_path(track_id: &str, source_type: &str, source_hash: &str) -> Option<PathBuf> {
     let cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_ref() {
-        let cache_key = AudioCache::generate_cache_key(track_id, source_type, source_hash);
-        let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
-        let final_name = format!("{}.m4a", safe_key);
-        return Some(cache.cache_dir.join(final_name));
+        let base = create_cache_filename(track_id, source_type, source_hash);
+        return Some(cache.cache_dir.join(base));
     }
     None
 }
@@ -461,14 +478,13 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         }
         return;
     }
-
-    // Prepare safe filename and temp path (do not hold cache lock while downloading)
-    let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
-    let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
-    let final_file_name = format!("{}.m4a", safe_key);
-
-    // We'll write to a .part temporary file and atomically rename on success
-    let tmp_file_name = format!("{}.part", safe_key);
+    // Use shared helper for consistent base name
+    let base_name = create_cache_filename(&track_id, &source_type, &source_hash);
+    // Ensure we have a control handle for this download
+    downloads::ensure_control_for(&base_name);
+    
+    // We'll write to a .part file and then rename to final (extension-less) name on success
+    let cache_file_name = format!("{}.part", base_name);
 
     // Ensure cache directory exists (read it from the global cache while holding lock briefly)
     let cache_dir = {
@@ -481,25 +497,25 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         }
     };
 
-    let tmp_path = cache_dir.join(&tmp_file_name);
-    let final_path = cache_dir.join(&final_file_name);
+    let cache_path = cache_dir.join(&cache_file_name);
+    let final_path = cache_dir.join(&base_name);
 
-    // Stream response into temp file while collecting initial bytes for validation
+    // Stream response into part file while collecting initial bytes for validation
     // Capture content length before consuming the response
     let content_len_opt = resp.content_length();
     let mut stream = resp.bytes_stream();
 
     // Open async file for writing
-    let mut file = match tokio_fs::File::create(&tmp_path).await {
+    let mut file = match tokio_fs::File::create(&cache_path).await {
         Ok(f) => f,
             Err(e) => {
-            println!("[cache] Failed to create temp cache file {:?}: {}", tmp_path, e);
+            println!("[cache] Failed to create cache file {:?}: {}", cache_path, e);
             if let Some(app_ref) = app.as_ref() {
                 let _ = app_ref.emit("cache:download:error", serde_json::json!({
                     "trackId": track_id,
                     "sourceType": source_type,
                     "sourceHash": source_hash,
-                    "message": format!("Failed to create temp file: {}", e)
+                    "message": format!("Failed to create cache file: {}", e)
                 }));
             }
             return;
@@ -516,7 +532,9 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     // Mark inflight
     {
         let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-        inflight.insert(safe_key.clone(), (0u64, content_len_opt));
+        inflight.insert(base_name.clone(), (0u64, content_len_opt));
+        let mut meta = INFLIGHT_META.lock().unwrap();
+        meta.insert(base_name.clone(), (track_id.clone(), source_type.clone(), source_hash.clone()));
     }
 
     // Emit initial progress event
@@ -532,6 +550,29 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     }
 
     while let Some(item) = stream.next().await {
+        // Respect pause/cancel controls
+        if downloads::is_cancelled(&base_name) {
+            println!("[cache] Cancel requested for {} ({}:{})", track_id, source_type, source_hash);
+            let _ = tokio_fs::remove_file(&cache_path).await;
+            let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+            inflight.remove(&base_name);
+            if let Some(app_ref) = app.as_ref() {
+                let _ = app_ref.emit("cache:download:error", serde_json::json!({
+                    "trackId": track_id,
+                    "sourceType": source_type,
+                    "sourceHash": source_hash,
+                    "message": "cancelled"
+                }));
+            }
+            // Clear control state
+            downloads::clear_control(&base_name);
+            return;
+        }
+        // If paused, wait until resumed or cancelled
+        if downloads::is_paused(&base_name) {
+            downloads::wait_while_paused_or_until_cancel(&base_name).await;
+            if downloads::is_cancelled(&base_name) { continue; }
+        }
         match item {
             Ok(chunk) => {
                 // Collect into prefix buffer until we have enough
@@ -541,13 +582,15 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                     prefix_buf.extend_from_slice(&chunk[..to_take]);
                 }
 
-                // Write chunk to temp file
+                // Write chunk to part file
                 if let Err(e) = file.write_all(&chunk).await {
-                    println!("[cache] Failed to write to temp cache file {:?}: {}", tmp_path, e);
-                    let _ = tokio_fs::remove_file(&tmp_path).await;
+                    println!("[cache] Failed to write to part file {:?}: {}", cache_path, e);
+                    let _ = tokio_fs::remove_file(&cache_path).await;
                     // clear inflight
                     let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                    inflight.remove(&safe_key);
+                    inflight.remove(&base_name);
+                    let mut meta = INFLIGHT_META.lock().unwrap();
+                    meta.remove(&base_name);
                     if let Some(app_ref) = app.as_ref() {
                         let _ = app_ref.emit("cache:download:error", serde_json::json!({
                             "trackId": track_id,
@@ -556,13 +599,15 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                             "message": format!("Write failed: {}", e)
                         }));
                     }
+                    // Clear control state on error
+                    downloads::clear_control(&base_name);
                     return;
                 }
                 total_written = total_written.saturating_add(chunk.len() as u64);
                 // update inflight bytes
                 {
                     let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                    if let Some(v) = inflight.get_mut(&safe_key) {
+                    if let Some(v) = inflight.get_mut(&base_name) {
                         v.0 = total_written;
                     }
                 }
@@ -572,7 +617,7 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                     if is_valid_audio_content(&prefix_buf) {
                         ready_emitted = true;
                         if let Some(app_ref) = app.as_ref() {
-                            let tmp_path_str = tmp_path.to_string_lossy().to_string();
+                            let tmp_path_str = cache_path.to_string_lossy().to_string();
                             let _ = app_ref.emit("cache:download:ready", serde_json::json!({
                                 "trackId": track_id,
                                 "sourceType": source_type,
@@ -600,9 +645,11 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             }
             Err(e) => {
                 println!("[cache] Error while streaming download for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-                let _ = tokio_fs::remove_file(&tmp_path).await;
+                let _ = tokio_fs::remove_file(&cache_path).await;
                 let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                inflight.remove(&safe_key);
+                inflight.remove(&base_name);
+                let mut meta = INFLIGHT_META.lock().unwrap();
+                meta.remove(&base_name);
                 if let Some(app_ref) = app.as_ref() {
                     let _ = app_ref.emit("cache:download:error", serde_json::json!({
                         "trackId": track_id,
@@ -611,6 +658,8 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                         "message": format!("Streaming error: {}", e)
                     }));
                 }
+                // Clear control state on error
+                downloads::clear_control(&base_name);
                 return;
             }
         }
@@ -618,17 +667,21 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
 
     // Ensure file is flushed to disk
     if let Err(e) = file.flush().await {
-        println!("[cache] Failed to flush temp file {:?}: {}", tmp_path, e);
-        let _ = tokio_fs::remove_file(&tmp_path).await;
+    println!("[cache] Failed to flush cache file {:?}: {}", cache_path, e);
+    let _ = tokio_fs::remove_file(&cache_path).await;
+        // Clear control on validation failure
+        downloads::clear_control(&base_name);
         return;
     }
 
     // Validate collected prefix bytes
     if !is_valid_audio_content(&prefix_buf) {
         println!("[cache] Downloaded content is not valid audio for {} ({}:{}), size: {} bytes", track_id, source_type, source_hash, total_written);
-        let _ = tokio_fs::remove_file(&tmp_path).await;
-        let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-        inflight.remove(&safe_key);
+    let _ = tokio_fs::remove_file(&cache_path).await;
+    let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+    inflight.remove(&base_name);
+    let mut meta = INFLIGHT_META.lock().unwrap();
+    meta.remove(&base_name);
         if let Some(app_ref) = app.as_ref() {
             let _ = app_ref.emit("cache:download:error", serde_json::json!({
                 "trackId": track_id,
@@ -637,12 +690,14 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 "message": "Validation failed: content is not valid audio"
             }));
         }
+        // Clear control on finalize error
+        downloads::clear_control(&base_name);
         return;
     }
 
     // Atomically rename temp file to final name
-    if let Err(e) = tokio_fs::rename(&tmp_path, &final_path).await {
-        println!("[cache] Failed to rename temp file to final cache file {:?} -> {:?}: {}", tmp_path, final_path, e);
+    if let Err(e) = tokio_fs::rename(&cache_path, &final_path).await {
+        println!("[cache] Failed to rename cache file to final cache file {:?} -> {:?}: {}", cache_path, final_path, e);
 
         // It's possible another concurrent task already moved/created the final file.
         // If the final file exists, treat this as success and ensure the index contains it.
@@ -655,7 +710,7 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 Err(err) => {
                     println!("[cache] Failed to stat existing final file {:?}: {}", final_path, err);
                     // Try to remove temp file if present, then abort
-                    let _ = tokio_fs::remove_file(&tmp_path).await;
+                    let _ = tokio_fs::remove_file(&cache_path).await;
                     return;
                 }
             };
@@ -668,7 +723,7 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 if let Some(cache) = cache_guard.as_mut() {
                     let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
                     if !cache.index.entries.contains_key(&cache_key) {
-                        if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), final_file_name.clone(), file_size) {
+                        if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), base_name.clone(), file_size) {
                             add_failed = Some(e);
                         }
                     }
@@ -677,10 +732,12 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
 
             if let Some(e) = add_failed {
                 println!("[cache] Failed to add existing final file to index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
-                // Nothing else we can do; clean up tmp and return
-                let _ = tokio_fs::remove_file(&tmp_path).await;
+                // Nothing else we can do; clean up cache file and return
+                let _ = tokio_fs::remove_file(&cache_path).await;
                 let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                inflight.remove(&safe_key);
+                inflight.remove(&base_name);
+                let mut meta = INFLIGHT_META.lock().unwrap();
+                meta.remove(&base_name);
 
                 if let Some(app_ref) = app.as_ref() {
                     let _ = app_ref.emit("cache:download:error", serde_json::json!({
@@ -722,18 +779,20 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             }
 
             // Clean up temp if it still exists
-            let _ = tokio_fs::remove_file(&tmp_path).await;
+            let _ = tokio_fs::remove_file(&cache_path).await;
             let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-            inflight.remove(&safe_key);
+            inflight.remove(&base_name);
             return;
         }
 
         // If we get here, rename failed and final file doesn't exist. Try to remove the tmp file if present and abort.
-        if tokio_fs::metadata(&tmp_path).await.is_ok() {
-            let _ = tokio_fs::remove_file(&tmp_path).await;
+        if tokio_fs::metadata(&cache_path).await.is_ok() {
+            let _ = tokio_fs::remove_file(&cache_path).await;
         }
         let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-        inflight.remove(&safe_key);
+        inflight.remove(&base_name);
+        let mut meta = INFLIGHT_META.lock().unwrap();
+        meta.remove(&base_name);
             if let Some(app_ref) = app.as_ref() {
                 let _ = app_ref.emit("cache:download:error", serde_json::json!({
                     "trackId": track_id,
@@ -751,19 +810,23 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     {
         let mut cache_guard = CACHE.lock().unwrap();
         if let Some(cache) = cache_guard.as_mut() {
-            if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), final_file_name.clone(), file_size) {
+            if let Err(e) = cache.add_cached_file(track_id.clone(), source_type.clone(), source_hash.clone(), base_name.clone(), file_size) {
                 println!("[cache] Failed to add to cache index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
                 // On failure remove the cached file
                 let _ = std::fs::remove_file(&final_path);
                 let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                inflight.remove(&safe_key);
+                inflight.remove(&base_name);
+                // Clear control on index add failure
+                downloads::clear_control(&base_name);
                 return;
             }
         } else {
             println!("[cache] Cache not initialized during finalization, removing file: {:?}", final_path);
             let _ = std::fs::remove_file(&final_path);
             let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-            inflight.remove(&safe_key);
+            inflight.remove(&base_name);
+            // Clear control if cache not initialized
+            downloads::clear_control(&base_name);
             return;
         }
     }
@@ -799,18 +862,21 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     // clear inflight
     {
         let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-        inflight.remove(&safe_key);
+        inflight.remove(&base_name);
+        let mut meta = INFLIGHT_META.lock().unwrap();
+        meta.remove(&base_name);
     }
+    // Clear control on success
+    downloads::clear_control(&base_name);
 }
 
 
 #[tauri::command]
 pub async fn cache_download_status(track_id: String, source_type: String, source_hash: String) -> Result<serde_json::Value, String> {
-    let cache_key = AudioCache::generate_cache_key(&track_id, &source_type, &source_hash);
-    let safe_key = cache_key.replace(":", "_").replace("/", "_").replace("\\", "_");
+    let base_name = create_cache_filename(&track_id, &source_type, &source_hash);
 
     let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-    if let Some((bytes, total_opt)) = inflight.get(&safe_key) {
+    if let Some((bytes, total_opt)) = inflight.get(&base_name) {
         return Ok(serde_json::json!({
             "bytes_downloaded": *bytes,
             "total_bytes": total_opt,
@@ -843,4 +909,33 @@ pub async fn cache_clear() -> Result<(), String> {
         return Ok(());
     }
     Err("Cache not initialized".to_string())
+}
+
+// Enumerate current inflight downloads for UI sync
+#[tauri::command]
+pub async fn cache_list_inflight() -> Result<serde_json::Value, String> {
+    let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+    let meta = INFLIGHT_META.lock().unwrap();
+    let mut arr: Vec<serde_json::Value> = Vec::new();
+    for (base, (bytes, total_opt)) in inflight.iter() {
+        if let Some((track_id, source_type, source_hash)) = meta.get(base) {
+            arr.push(serde_json::json!({
+                "id": base,
+                "trackId": track_id,
+                "sourceType": source_type,
+                "sourceHash": source_hash,
+                "bytes_downloaded": bytes,
+                "total_bytes": total_opt,
+                "inflight": true
+            }));
+        } else {
+            arr.push(serde_json::json!({
+                "id": base,
+                "bytes_downloaded": bytes,
+                "total_bytes": total_opt,
+                "inflight": true
+            }));
+        }
+    }
+    Ok(serde_json::json!({ "items": arr }))
 }

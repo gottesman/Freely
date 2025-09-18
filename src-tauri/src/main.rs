@@ -7,6 +7,7 @@ mod bass;
 mod cache;
 mod commands;
 mod playback;
+mod downloads;
 mod server;
 mod utils;
 mod window;
@@ -169,30 +170,35 @@ fn main() {
             youtube::youtube_get_info,
             // (no fs command)
             // Playback commands
-            playback::playback_start,
-            playback::playback_start_with_cache,
-            playback::playback_start_with_source,
-            playback::playback_pause,
-            playback::playback_resume,
-            playback::playback_stop,
-            playback::playback_status,
-            playback::playback_seek,
-            playback::playback_cleanup,
-            playback::playback_set_volume,
-            playback::playback_get_volume,
-            playback::playback_set_mute,
-            playback::playback_toggle_mute,
+            commands::playback::playback_start,
+            commands::playback::playback_start_with_source,
+            commands::playback::playback_pause,
+            commands::playback::playback_resume,
+            commands::playback::playback_stop,
+            commands::playback::playback_status,
+            commands::playback::playback_seek,
+            commands::playback::playback_cleanup,
+            commands::playback::playback_set_volume,
+            commands::playback::playback_get_volume,
+            commands::playback::playback_set_mute,
+            commands::playback::playback_toggle_mute,
+            commands::playback::get_download_progress,
+            // Downloads control commands
+            commands::downloads::downloads_pause,
+            commands::downloads::downloads_resume,
+            commands::downloads::downloads_remove,
             // Audio settings commands
-            playback::get_audio_devices,
-            playback::get_audio_settings,
-            playback::set_audio_settings,
-            playback::reinitialize_audio,
+            commands::playback::get_audio_devices,
+            commands::playback::get_audio_settings,
+            commands::playback::set_audio_settings,
+            commands::playback::reinitialize_audio,
             // Cache commands
             cache::cache_get_file,
             cache::cache_download_and_store,
             cache::cache_download_status,
             cache::cache_get_stats,
             cache::cache_clear,
+            cache::cache_list_inflight,
             // External API commands
             external::charts_get_weekly_tops,
             external::genius_search,
@@ -214,7 +220,7 @@ fn main() {
                         
                         // Cleanup BASS resources before closing
                         tauri::async_runtime::spawn(async move {
-                            let _ = crate::playback::playback_cleanup().await;
+                            let _ = crate::playback::playback_cleanup_internal().await;
                         });
                     }
                 }

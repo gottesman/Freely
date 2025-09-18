@@ -16,6 +16,8 @@
   "queue.drag": "Arrastra para reordenar {track}",
   "queue.playingNow": "Reproduciendo ahora",
   "queue.nextUp": "A continuación",
+  "downloads.title": "Descargas",
+  "downloads.empty": "Sin descargas",
   "loading.db": "Preparando base de datos",
   "loading.fonts": "Cargando fuentes",
   "loading.css": "Cargando estilos",
