@@ -1,10 +1,29 @@
 # Freely — decentralized, P2P music player
 
-A decentralized, peer-to-peer music player built with React and TypeScript.
+<p align="center">
+	<img src="public/icon-192.png" alt="Freely splash screen" width="192" />
+</p>
 
-## Tauri (experimental)
+**Freely** is an experimental music player focused on **peer-to-peer streaming** and **local-first data ownership**.
 
-This repository includes an experimental Tauri target alongside the existing Electron setup. The Tauri files are minimal and intended to let you try a native build which often produces smaller executables.
+The idea: stream music directly from other peers, work offline, and carry your playlists, favorites, and settings anywhere.
+
+## Highlights
+
+* **P2P-first streaming** — play music from LAN or WebRTC peers.
+* **Local-first** — your data stays with you; export/import anytime.
+* **Multi-format** — MP3, FLAC, WAV, OGG, AAC, etc.
+* **Customizable UI** — themes, plugins, small-screen mode.
+* **Cross-platform** — desktop and mobile.
+
+## Current Status
+
+✨ **Prototype** — core P2P transport, local DB, UI.
+Missing: robust chunking, polished UX, small-screen (PIP), importing and exporting configurations, plugins and a system tray icon.
+
+## Development
+
+This repository includes an experimental Tauri target for a native build which often produces smaller executables versus an electron build (less than 10MB vs more than 90MB installer).
 
 Quick run (dev):
 
@@ -23,42 +42,8 @@ npm run tauri:build
 **See the [Development](#development) and [Building](#building) sections below for comprehensive instructions.**
 
 Notes:
-- Tauri requires a Rust toolchain and platform-specific dependencies. See https://tauri.app/v1/guides/getting-started/prerequisites for setup.
+- Tauri requires a Rust toolchain and platform-specific dependencies. See https://tauri.app/start/prerequisites for setup.
 - The Tauri config is in `src-tauri/tauri.conf.json` and the minimal Rust entry is in `src-tauri/src/main.rs`.
-
-# Freely — decentralized, P2P music player
-
-<p align="center">
-	<img src="public/splash.png" alt="Freely splash screen" width="480" />
-</p>
-
-**Freely** is an experimental, web-first music player focused on **peer-to-peer streaming** and **local-first data ownership**.
-
-The idea: stream music directly from other peers, work offline, and carry your playlists, favorites, and settings anywhere.
-
-## Highlights
-
-* **P2P-first streaming** — play music from LAN or WebRTC peers.
-* **Local-first** — your data stays with you; export/import anytime.
-* **Multi-format** — MP3, FLAC, WAV, OGG, AAC.
-* **Customizable UI** — themes, plugins, small-screen mode.
-* **Cross-platform** — web, desktop, mobile.
-
-## Current Status
-
-✨ **Prototype** — core P2P transport, local DB, basic UI.
-Missing: advanced buffering, robust chunking, polished UX.
-
-## Development
-
-### Quick Start
-
-```bash
-npm install
-npm run dev
-```
-
-This starts the Vite development server for the React frontend and builds the Node.js server bundle.
 
 ### Environment Setup
 
@@ -138,7 +123,7 @@ npm run tauri:build:release
 
 - **Node.js** 18+ and npm
 - **Rust toolchain** (for Tauri builds)
-- **Platform dependencies** (see [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites))
+- **Platform dependencies** (see [Tauri prerequisites](https://tauri.app/start/prerequisites))
 
 ### Build Outputs
 
@@ -224,10 +209,10 @@ In Electron main we read `process.env.SPOTIFY_TOKEN_ENDPOINT`; if present the ap
 ## Roadmap
 
 1. Better streaming reliability (chunk hashing, multi-peer fetch)
-2. Native SQLite for desktop
+2. More language options
 3. IndexedDB option for web
 4. Plugin manager & sandboxing
-5. Mobile polish & WebRTC fixes
+5. Mobile build & WebRTC fixes
 
 ## CSS / Styling Architecture
 
