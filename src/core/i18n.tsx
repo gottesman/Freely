@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback, useMemo } from 'react';
-import { setSpotifyLocale } from './spotify';
+import { setSpotifyLocale } from './SpotifyClient';
 
 // Performance constants
 const DEFAULT_LANG = 'en';

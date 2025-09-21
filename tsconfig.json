@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["DOM", "ES2020"],
+    "lib": ["DOM", "ES2022"],
     "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Node",
@@ -14,7 +14,17 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "downlevelIteration": true
+    "downlevelIteration": true,
+    // Performance optimizations
+    "incremental": true,
+    "removeComments": true,
+    "importHelpers": true,
+    // Better tree shaking and unused code detection (relaxed strict mode)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": false,
+    "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "build", "src-tauri/target"]
 }

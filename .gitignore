@@ -17,3 +17,4 @@ src-tauri/target
 src-tauri/Cargo.lock
 src-tauri/server-dist
 deprecated*
+COMMIT_MESSAGE.md

@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useI18n } from '../core/i18n';
-import LeftPanelPlaylists from './LeftPanelPlaylists';
-import LeftPanelArtists from './LeftPanelArtists';
+import LeftPanelPlaylists from './LeftPanel/Playlists';
+import LeftPanelArtists from './LeftPanel/FollowedArtists';
 
 // Constants for better performance and maintainability
 const PANEL_CONFIG = {

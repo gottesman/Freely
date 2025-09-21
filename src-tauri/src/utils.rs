@@ -3,6 +3,7 @@ use std::process::{Child, Stdio};
 use tokio::sync::mpsc;
 use reqwest;
 use std::path::PathBuf;
+use crate::bass::{ensure_bass_loaded, bass_init, probe_audio_format_for_url, BASS_DEVICE_DEFAULT};
 
 /// Spawns a background thread to capture and log process output
 pub fn spawn_logger(
@@ -95,23 +96,26 @@ pub async fn resolve_http_source(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-pub async fn resolve_torrent_source(value: &str) -> Result<String, String> {
+pub async fn resolve_torrent_source_with_index(value: &str, file_index: Option<usize>) -> Result<String, String> {
     // Extract infoHash from magnetURI if needed
-    if value.starts_with("magnet:") {
+    let info_hash = if value.starts_with("magnet:") {
         if let Some(start) = value.find("xt=urn:btih:") {
             let hash_start = start + 12;
             if let Some(end) = value[hash_start..].find('&') {
-                let info_hash = &value[hash_start..hash_start + end];
-                return Ok(format!("http://localhost:9000/stream/{}/0", info_hash.to_lowercase()));
+                value[hash_start..hash_start + end].to_lowercase()
             } else {
-                let info_hash = &value[hash_start..];
-                return Ok(format!("http://localhost:9000/stream/{}/0", info_hash.to_lowercase()));
+                value[hash_start..].to_lowercase()
             }
+        } else {
+            return Err("Invalid magnet URI format".to_string());
         }
-        return Err("Invalid magnet URI format".to_string());
-    }
-    // Assume it's already an infoHash
-    Ok(format!("http://localhost:9000/stream/{}/0", value.to_lowercase()))
+    } else {
+        // Assume it's already an infoHash
+        value.to_lowercase()
+    };
+    
+    let index = file_index.unwrap_or(0);
+    Ok(format!("http://localhost:9000/stream/{}/{}", info_hash, index))
 }
 
 pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
@@ -307,7 +311,7 @@ pub async fn resolve_audio_source(source_type: &str, value: &str) -> Result<Stri
     let result = match source_type {
         "local" => resolve_local_source(value).await,
         "http" => resolve_http_source(value).await,
-        "torrent" => resolve_torrent_source(value).await,
+        "torrent" => resolve_torrent_source_with_index(value, None).await,
         "youtube" => resolve_youtube_source(value).await,
         _ => {
             println!("[bass] Unsupported source type: {}", source_type);
@@ -323,28 +327,43 @@ pub async fn resolve_audio_source(source_type: &str, value: &str) -> Result<Stri
     result
 }
 
-pub async fn resolve_audio_source_with_format(source_type: &str, value: &str) -> Result<ResolvedAudioSource, String> {
+pub async fn resolve_audio_source_with_format(source_type: &str, value: &str, file_index: Option<usize>) -> Result<ResolvedAudioSource, String> {
     println!("[bass] resolve_audio_source_with_format called with type: '{}', value: '{}'", source_type, value);
     
-    let result = match source_type {
-        "local" => {
-            let url = resolve_local_source(value).await?;
-            ResolvedAudioSource { url, format: None }
+    // First, resolve the final URL for the source type
+    let resolved = match source_type {
+        "local" => resolve_local_source(value).await?,
+        "http" => resolve_http_source(value).await?,
+        "torrent" => resolve_torrent_source_with_index(value, file_index).await?,
+        "youtube" => {
+            // For YouTube we already extract format when possible via server info
+            let yt = resolve_youtube_source_with_format(value).await?;
+            return Ok(yt);
         },
-        "http" => {
-            let url = resolve_http_source(value).await?;
-            ResolvedAudioSource { url, format: None }
-        },
-        "torrent" => {
-            let url = resolve_torrent_source(value).await?;
-            ResolvedAudioSource { url, format: None }
-        },
-        "youtube" => resolve_youtube_source_with_format(value).await?,
         _ => {
             println!("[bass] Unsupported source type: {}", source_type);
             return Err(format!("Unsupported source type: {}", source_type));
         },
     };
+
+    // Try probing format using BASS (shared helper) without starting full playback
+    let mut format: Option<AudioFormat> = None;
+    if let Ok(lib) = ensure_bass_loaded() {
+        // Initialize BASS if not already (safe no-op if already initialized)
+        let _ = bass_init(&lib, BASS_DEVICE_DEFAULT, 44100, 0);
+        if let Some(info) = probe_audio_format_for_url(&lib, &resolved) {
+            format = Some(AudioFormat {
+                acodec: info.codec,
+                ext: None,
+                filesize: None,
+                mime_type: None,
+            });
+        }
+    } else {
+        println!("[bass] Unable to load BASS library for format probing");
+    }
+
+    let result = ResolvedAudioSource { url: resolved, format };
     
     println!("[bass] Source resolution successful");
     Ok(result)

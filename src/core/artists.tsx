@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useDB } from './dbIndexed';
-import type { SpotifyArtist } from './spotify';
+import { useDB } from './Database';
+import type { SpotifyArtist } from './SpotifyClient';
 
 // Types for better performance and maintainability
 type StoredArtistRow = { 

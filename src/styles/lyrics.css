@@ -3,7 +3,7 @@
 .np-lyrics-scroll {
   height: 100%;
   position: relative; /* anchor for absolutely positioned close button */
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .np-lyrics-body {
@@ -36,6 +36,17 @@
     border-radius:inherit;
     box-shadow:0 0 0 1px var(--text) inset;
     overflow: hidden;
+}
+.lyrics-right-panel{
+    align-items: center;
+    position:absolute;
+    inset:0;
+    z-index:903;
+    display:flex;
+    justify-content:center;
+    background: rgba(var(--bg),1);
+    border-radius:0 0 var(--app-border-radius) var(--app-border-radius);
+    box-shadow:0 0 0 1px var(--text) inset;
 }
 .np-lyrics-overlay.active { pointer-events:auto; opacity:1; }
 .lyrics-section {
@@ -139,6 +150,15 @@
 .letter.sung {
     color: var(--lyric-wave-up);
 }
+.np-lyrics-container{
+    height:100%;
+    position:relative;
+    overflow:hidden;
+}
+.np-lyrics-header{
+    position: absolute;
+    height: 100%;
+}
 .lyrics-body .lyric-word .word-progress {
     position: absolute;
     left: 0; top: 0; bottom: 0;
@@ -186,7 +206,7 @@
     100%  { transform: scale(1.1);}
 }
 
-.lyric-line.played { opacity: 0; }
+.lyric-line.played { opacity: 0.3; }
 .lyric-line.last .letter{
     color: var(--accent);
 }
@@ -283,6 +303,10 @@
     top: 16px;
     right: 16px;
 }
+.lyrics-switch-btn {
+    top: 60px;
+    right: 16px;
+}
 
 .lyrics-btn:hover {
     background: var(--glass-bg-hover);
@@ -291,4 +315,41 @@
 
 .lyrics-btn:active {
     transform: translateY(1px);
+}
+
+/* Right Panel Lyrics */
+
+.lyrics-right-panel .np-lyrics-scroll {
+    height: 100%;
+    overflow-y: auto;
+    padding: 0;
+}
+
+.lyrics-right-panel .np-lyrics-body {
+    padding: 20px;
+    height: 100%;
+}
+
+.lyrics-right-panel .lyrics-body {
+    padding: 50px 0;
+    gap: calc(max(1vw, 1vh) * 1.5); /* Smaller gaps for right panel */
+}
+
+.lyrics-right-panel .lyric-line {
+    --lyrics-font-size: min(max(1.5vw, 1.5vh),26px); /* Smaller font size for right panel */
+    font-size: calc(var(--lyrics-font-size) * var(--lyrics-font-multiplier));
+}
+
+.lyrics-right-panel .lyrics-btn {
+    position: absolute; /* Keep relative to the lyrics body */
+}
+
+.lyrics-right-panel .lyrics-settings-btn {
+    bottom: 16px;
+    left: 16px;
+}
+
+.lyrics-right-panel .lyrics-switch-btn {
+    top: 16px;
+    left: 16px;
 }

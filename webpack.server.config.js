@@ -15,7 +15,8 @@ module.exports = {
   },
   externals: {
     // Only exclude native modules that must be loaded dynamically
-    'utp-native': 'commonjs utp-native'
+    'utp-native': 'commonjs utp-native',
+    // Bundle webtorrent instead of externalizing it for packaged apps
   },
   module: {
     parser: {

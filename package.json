@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "0.13.5",
+  "version": "1.1.0-test",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -11,9 +11,15 @@
     "dev:frontend": "vite",
     "dev": "npm-run-all --parallel dev:frontend build:server",
     "build": "tsc && vite build",
+    "build:optimized": "set NODE_ENV=production&& tsc && vite build --mode production",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:server": "webpack --config webpack.server.config.js",
+    "tauri:build": "tauri build",
+    "tauri:build:release": "tauri build --release",
+    "build:server": "webpack --config webpack.server.config.js --mode production",
+    "analyze": "vite build --mode analyze",
+    "typecheck": "tsc --noEmit",
+    "lint:css": "stylelint \"src/**/*.css\"",
     "fetch:ytdlp": "node scripts/fetch-youtubedl.js",
     "fetch:bass": "node scripts/fetch-bass.js",
     "version:update": "node scripts/update-version.js",
@@ -30,7 +36,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "utp-native": "^2.5.3",
-    "webtorrent": "^1.9.7"
+    "webtorrent": "^2.8.4"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.0.0-beta.18",
@@ -41,6 +47,7 @@
     "@types/webtorrent": "^0.109.9",
     "@types/ws": "^8.5.10",
     "@vitejs/plugin-react": "^4.3.1",
+    "adm-zip": "^0.5.10",
     "npm-run-all": "^4.1.5",
     "prebuild-install": "^7.1.1",
     "prettier": "^3.3.1",
@@ -50,7 +57,6 @@
     "typescript": "^5.4.5",
     "vite": "^5.2.13",
     "webpack": "^5.101.3",
-    "webpack-cli": "^6.0.1",
-    "adm-zip": "^0.5.10"
+    "webpack-cli": "^6.0.1"
   }
 }

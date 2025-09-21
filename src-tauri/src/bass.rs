@@ -12,6 +12,7 @@ pub type BassSetConfig = unsafe extern "system" fn(option: c_uint, value: c_uint
 // Pointer variant used for string-based settings like HTTP User-Agent
 pub type BassSetConfigPtr = unsafe extern "system" fn(option: c_uint, value: *const u8) -> c_uint;
 pub type BassPluginLoad = unsafe extern "system" fn(file: *const c_char, flags: c_uint) -> u32;
+pub type BassPluginGetInfo = unsafe extern "system" fn(handle: u32) -> *const BassPluginInfo;
 pub type BassStreamCreateFile = unsafe extern "system" fn(mem: c_int, file: *const std::ffi::c_void, offset: c_ulong, length: c_ulong, flags: c_uint) -> u32;
 pub type BassStreamCreateUrl = unsafe extern "system" fn(url: *const c_char, offset: c_ulong, flags: c_uint, proc_: Option<DownloadProc>, user: *mut std::ffi::c_void) -> u32;
 pub type BassStreamFree = unsafe extern "system" fn(handle: u32) -> c_int;
@@ -27,6 +28,8 @@ pub type BassChannelSetPosition = unsafe extern "system" fn(handle: u32, pos: c_
 pub type BassErrorGetCode = unsafe extern "system" fn() -> c_int;
 pub type BassChannelGetAttribute = unsafe extern "system" fn(handle: u32, attrib: c_uint, value: *mut f32) -> c_int;
 pub type BassChannelSetAttribute = unsafe extern "system" fn(handle: u32, attrib: c_uint, value: f32) -> c_int;
+pub type BassChannelGetInfo = unsafe extern "system" fn(handle: u32, info: *mut BassChannelInfo) -> c_int;
+pub type BassChannelGetTags = unsafe extern "system" fn(handle: u32, tags: c_uint) -> *const c_char;
 pub type BassGetVolume = unsafe extern "system" fn() -> f32;
 pub type BassSetVolume = unsafe extern "system" fn(volume: f32) -> c_int;
 pub type BassGetDeviceInfo = unsafe extern "system" fn(device: c_uint, info: *mut BassDeviceInfo) -> c_int;
@@ -72,6 +75,78 @@ pub const BASS_ACTIVE_PAUSED: c_uint = 3;
 
 // Volume attributes
 pub const BASS_ATTRIB_VOL: c_uint = 2;
+pub const BASS_ATTRIB_FREQ: c_uint = 1;
+
+// Tag types for BASS_ChannelGetTags
+pub const BASS_TAG_ID3: c_uint = 0;        // ID3v1 tags : TAG_ID3 structure
+pub const BASS_TAG_ID3V2: c_uint = 1;      // ID3v2 tags : variable length block
+pub const BASS_TAG_OGG: c_uint = 2;        // OGG comments : series of null-terminated UTF-8 strings
+pub const BASS_TAG_HTTP: c_uint = 3;       // HTTP headers : series of null-terminated ANSI strings
+pub const BASS_TAG_ICY: c_uint = 4;        // ICY headers : series of null-terminated ANSI strings
+pub const BASS_TAG_META: c_uint = 5;       // ICY metadata : ANSI string
+pub const BASS_TAG_APE: c_uint = 6;        // APE tags : series of null-terminated UTF-8 strings
+pub const BASS_TAG_MP4: c_uint = 7;        // MP4/iTunes metadata : series of null-terminated UTF-8 strings
+pub const BASS_TAG_WMA: c_uint = 8;        // WMA tags : series of null-terminated UTF-8 strings
+pub const BASS_TAG_VENDOR: c_uint = 9;     // OGG encoder : UTF-8 string
+pub const BASS_TAG_LYRICS3: c_uint = 10;   // Lyric3v2 tag : ANSI string
+pub const BASS_TAG_CA_CODEC: c_uint = 11;  // CoreAudio codec info : TAG_CA_CODEC structure
+pub const BASS_TAG_MF: c_uint = 13;        // Media Foundation tags : series of null-terminated UTF-8 strings
+pub const BASS_TAG_WAVEFORMAT: c_uint = 14; // WAVE format : WAVEFORMATEX structure
+pub const BASS_TAG_RIFF_INFO: c_uint = 0x100; // RIFF "INFO" tags : series of null-terminated ANSI strings
+pub const BASS_TAG_RIFF_BEXT: c_uint = 0x101; // RIFF "BEXT" tags : TAG_BEXT structure
+pub const BASS_TAG_RIFF_CART: c_uint = 0x102; // RIFF "CART" tags : TAG_CART structure
+pub const BASS_TAG_RIFF_DISP: c_uint = 0x103; // RIFF "DISP" tags : TAG_DISP structure
+pub const BASS_TAG_APE_BINARY: c_uint = 0x1000; // + index #, binary APE tag : TAG_APE_BINARY structure
+pub const BASS_TAG_MUSIC_NAME: c_uint = 0x10000; // MOD music name : ANSI string
+pub const BASS_TAG_MUSIC_MESSAGE: c_uint = 0x10001; // MOD message : ANSI string
+pub const BASS_TAG_MUSIC_ORDERS: c_uint = 0x10002; // MOD order list : BYTE array of size length
+pub const BASS_TAG_MUSIC_AUTH: c_uint = 0x10003; // MOD author : UTF-8 string
+pub const BASS_TAG_MUSIC_INST: c_uint = 0x10100; // + instrument #, MOD instrument name : ANSI string
+pub const BASS_TAG_MUSIC_SAMPLE: c_uint = 0x10300; // + sample #, MOD sample name : ANSI string
+
+// Plugin info structs for BASS_PluginGetInfo
+#[repr(C)]
+pub struct BassPluginForm {
+    pub ctype: c_uint,
+    pub name: *const c_char,
+    pub exts: *const c_char,
+}
+
+#[repr(C)]
+pub struct BassPluginInfo {
+    pub version: c_uint,
+    pub formatc: c_uint,
+    pub formats: *const BassPluginForm,
+}
+
+// Channel type flags (ctype field in BASS_CHANNELINFO)
+pub const BASS_CTYPE_SAMPLE: c_uint = 1;
+pub const BASS_CTYPE_RECORD: c_uint = 2;
+pub const BASS_CTYPE_STREAM: c_uint = 0x10000;
+pub const BASS_CTYPE_STREAM_OGG: c_uint = 0x10002;
+pub const BASS_CTYPE_STREAM_MP1: c_uint = 0x10003;
+pub const BASS_CTYPE_STREAM_MP2: c_uint = 0x10004;
+pub const BASS_CTYPE_STREAM_MP3: c_uint = 0x10005;
+pub const BASS_CTYPE_STREAM_AIFF: c_uint = 0x10006;
+pub const BASS_CTYPE_STREAM_CA: c_uint = 0x10007;
+pub const BASS_CTYPE_STREAM_MF: c_uint = 0x10008;
+pub const BASS_CTYPE_STREAM_WAV: c_uint = 0x10009;
+pub const BASS_CTYPE_STREAM_WAV_PCM: c_uint = 0x50001;
+pub const BASS_CTYPE_STREAM_WAV_FLOAT: c_uint = 0x50003;
+// Plugin-provided stream types (partial)
+// Values based on BASS plugin API docs; used for codec identification only
+pub const BASS_CTYPE_STREAM_FLAC: c_uint = 0x10900;      // from bassflac
+pub const BASS_CTYPE_STREAM_FLAC_OGG: c_uint = 0x10901;  // from bassflac (Ogg FLAC)
+pub const BASS_CTYPE_MUSIC_MOD: c_uint = 0x20000;
+pub const BASS_CTYPE_MUSIC_MTM: c_uint = 0x20001;
+pub const BASS_CTYPE_MUSIC_S3M: c_uint = 0x20002;
+pub const BASS_CTYPE_MUSIC_XM: c_uint = 0x20003;
+pub const BASS_CTYPE_MUSIC_IT: c_uint = 0x20004;
+pub const BASS_CTYPE_MUSIC_MO3: c_uint = 0x00100;
+
+// DSD and DXD stream types
+pub const BASS_CTYPE_STREAM_DSD: c_uint = 0x10700;
+pub const BASS_CTYPE_STREAM_DSD_RAW: c_uint = 0x10701;
 
 // Device flags
 pub const BASS_DEVICE_ENABLED: c_uint = 1;
@@ -105,6 +180,20 @@ pub struct BassInfo {
     pub initflags: c_uint,      // BASS_Init "flags" parameter
     pub speakers: c_uint,       // number of speakers available
     pub freq: c_uint,           // current output sample rate
+}
+
+// BASS channel info structure
+#[repr(C)]
+#[derive(Debug)]
+pub struct BassChannelInfo {
+    pub freq: c_uint,           // default playback rate
+    pub chans: c_uint,          // channels
+    pub flags: c_uint,          // BASS_SAMPLE/STREAM/MUSIC/SPEAKER flags
+    pub ctype: c_uint,          // type of channel (BASS_CTYPE_xxx)
+    pub origres: c_uint,        // original resolution
+    pub plugin: u32,            // plugin handle (HPLUGIN)
+    pub sample: u32,            // sample handle (HSAMPLE/HMUSIC)
+    pub filename: *const c_char, // filename (NULL=live stream)
 }
 
 // Dynamic loading helper functions
@@ -392,6 +481,13 @@ pub fn channel_set_attribute(lib: &Library, handle: u32, attrib: c_uint, value: 
     }
 }
 
+pub fn channel_get_attribute(lib: &Library, handle: u32, attrib: c_uint, value: &mut f32) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelGetAttribute> = match lib.get(b"BASS_ChannelGetAttribute") { Ok(f) => f, Err(_) => return 0 };
+        f(handle, attrib, value as *mut f32)
+    }
+}
+
 pub fn error_get_code(lib: &Library) -> c_int {
     unsafe {
         let f: Symbol<BassErrorGetCode> = match lib.get(b"BASS_ErrorGetCode") { Ok(f) => f, Err(_) => return -1 };
@@ -425,4 +521,230 @@ pub fn stream_get_file_position(lib: &Library, handle: u32, mode: c_uint) -> c_u
         let f: Symbol<BassStreamGetFilePosition> = match lib.get(b"BASS_StreamGetFilePosition") { Ok(f) => f, Err(_) => return 0xFFFFFFFF };
         f(handle, mode)
     }
+}
+
+pub fn channel_get_info(lib: &Library, handle: u32, info: &mut BassChannelInfo) -> c_int {
+    unsafe {
+        let f: Symbol<BassChannelGetInfo> = match lib.get(b"BASS_ChannelGetInfo") { Ok(f) => f, Err(_) => return 0 };
+        f(handle, info)
+    }
+}
+
+pub fn channel_get_tags(lib: &Library, handle: u32, tags: c_uint) -> *const c_char {
+    unsafe {
+        let f: Symbol<BassChannelGetTags> = match lib.get(b"BASS_ChannelGetTags") { Ok(f) => f, Err(_) => return std::ptr::null() };
+        f(handle, tags)
+    }
+}
+
+// ---- Format/codec probing helpers (shared) ----
+
+/// Try to extract a codec string from available tags (metadata, container, HTTP headers)
+pub fn codec_from_tags(lib: &Library, handle: u32) -> Option<String> {
+    // 1) Inspect common metadata blocks
+    let meta_tag_types = [
+        BASS_TAG_ID3V2,
+        BASS_TAG_MP4,
+        BASS_TAG_OGG,
+        BASS_TAG_APE,
+        BASS_TAG_WMA,
+    ];
+
+    for &tag_type in &meta_tag_types {
+        let tags_ptr = channel_get_tags(lib, handle, tag_type);
+        if !tags_ptr.is_null() {
+            unsafe {
+                let tags_str = std::ffi::CStr::from_ptr(tags_ptr).to_string_lossy();
+                let tags = tags_str.to_lowercase();
+                if tags.contains("mp3") || tags.contains("mpeg-1") || tags.contains("mpeg-2") {
+                    return Some("mp3".to_string());
+                } else if tags.contains("aac") {
+                    return Some("aac".to_string());
+                } else if tags.contains("flac") {
+                    return Some("flac".to_string());
+                } else if tags.contains("alac") {
+                    return Some("alac".to_string());
+                } else if tags.contains("vorbis") {
+                    return Some("ogg".to_string());
+                } else if tags.contains("opus") {
+                    return Some("opus".to_string());
+                } else if tags.contains("wavpack") || tags.contains("wv") {
+                    return Some("wv".to_string());
+                }
+            }
+        }
+    }
+
+    // 2) Inspect HTTP headers (useful for streams): Content-Type
+    let http_ptr = channel_get_tags(lib, handle, BASS_TAG_HTTP);
+    if !http_ptr.is_null() {
+        unsafe {
+            let headers = std::ffi::CStr::from_ptr(http_ptr).to_string_lossy().to_lowercase();
+            // Try to find an explicit content-type
+            if headers.contains("audio/flac") || headers.contains("content-type: audio/flac") {
+                return Some("flac".to_string());
+            }
+            if headers.contains("audio/aac") || headers.contains("content-type: audio/aac") {
+                return Some("aac".to_string());
+            }
+            if headers.contains("audio/mp4") || headers.contains("audio/m4a") || headers.contains("content-type: audio/mp4") {
+                return Some("m4a".to_string());
+            }
+            if headers.contains("audio/ogg") || headers.contains("content-type: audio/ogg") {
+                // Could be Vorbis or Opus; prefer Opus if seen elsewhere later
+                return Some("ogg".to_string());
+            }
+            if headers.contains("audio/opus") || headers.contains("content-type: audio/opus") {
+                return Some("opus".to_string());
+            }
+            if headers.contains("audio/webm") || headers.contains("content-type: audio/webm") {
+                return Some("webm".to_string());
+            }
+            if headers.contains("audio/wav") || headers.contains("audio/x-wav") {
+                return Some("wav".to_string());
+            }
+        }
+    }
+
+    // 3) Inspect vendor string (primarily for OGG-based containers)
+    let vendor_ptr = channel_get_tags(lib, handle, BASS_TAG_VENDOR);
+    if !vendor_ptr.is_null() {
+        unsafe {
+            let vendor = std::ffi::CStr::from_ptr(vendor_ptr).to_string_lossy().to_lowercase();
+            if vendor.contains("opus") { return Some("opus".to_string()); }
+            if vendor.contains("vorbis") { return Some("ogg".to_string()); }
+            if vendor.contains("flac") { return Some("flac".to_string()); }
+        }
+    }
+
+    None
+}
+
+/// Try to infer codec from the filename/URL extension
+fn codec_from_filename_ptr(filename: *const c_char) -> Option<String> {
+    if filename.is_null() { return None; }
+    unsafe {
+        let name = std::ffi::CStr::from_ptr(filename).to_string_lossy().to_lowercase();
+        if name.contains(".flac") { return Some("flac".to_string()); }
+        if name.contains(".m4a") || name.contains(".mp4") { return Some("m4a".to_string()); }
+        if name.contains(".aac") { return Some("aac".to_string()); }
+        if name.contains(".mp3") { return Some("mp3".to_string()); }
+        if name.contains(".ogg") || name.contains(".oga") { return Some("ogg".to_string()); }
+        if name.contains(".opus") { return Some("opus".to_string()); }
+        if name.contains(".aiff") || name.contains(".aif") { return Some("aiff".to_string()); }
+        if name.contains(".wav") { return Some("wav".to_string()); }
+        if name.contains(".wv") { return Some("wv".to_string()); }
+        if name.contains(".alac") { return Some("alac".to_string()); }
+    }
+    None
+}
+
+/// Minimal info about stream format
+#[derive(Debug, Clone)]
+pub struct BassAudioFormatInfo {
+    pub codec: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub bits_per_sample: Option<u32>,
+}
+
+/// Probe audio format from a BASS channel handle
+pub fn probe_audio_format_from_channel(lib: &Library, handle: u32) -> BassAudioFormatInfo {
+    let mut info = BassChannelInfo {
+        freq: 0,
+        chans: 0,
+        flags: 0,
+        ctype: 0,
+        origres: 0,
+        plugin: 0,
+        sample: 0,
+        filename: std::ptr::null(),
+    };
+
+    if channel_get_info(lib, handle, &mut info) == 0 {
+        return BassAudioFormatInfo { codec: None, sample_rate: None, bits_per_sample: None };
+    }
+
+    let mut actual_freq: f32 = 0.0;
+    let sample_rate = if channel_get_attribute(lib, handle, BASS_ATTRIB_FREQ, &mut actual_freq) != 0 {
+        Some(actual_freq as u32)
+    } else {
+        Some(info.freq)
+    };
+
+    let bits_per_sample = if info.origres > 0 { Some(info.origres) } else { None };
+
+    let codec = if info.freq >= 352000 {
+        Some("dxd".to_string())
+    } else {
+        // First try direct ctype mappings for native/core formats we know
+        let direct = match info.ctype {
+            BASS_CTYPE_STREAM_MP3 => Some("mp3".to_string()),
+            BASS_CTYPE_STREAM_OGG => Some("ogg".to_string()),
+            BASS_CTYPE_STREAM_WAV | BASS_CTYPE_STREAM_WAV_PCM | BASS_CTYPE_STREAM_WAV_FLOAT => Some("wav".to_string()),
+            BASS_CTYPE_STREAM_AIFF => Some("aiff".to_string()),
+            BASS_CTYPE_STREAM_DSD | BASS_CTYPE_STREAM_DSD_RAW => Some("dsd".to_string()),
+            BASS_CTYPE_STREAM_FLAC | BASS_CTYPE_STREAM_FLAC_OGG => Some("flac".to_string()),
+            // CoreAudio / Media Foundation often indicate MP4/M4A family; refine via tags
+            BASS_CTYPE_STREAM_CA | BASS_CTYPE_STREAM_MF => Some("m4a".to_string()),
+            _ => None,
+        };
+
+        // Then fallback to tags and HTTP headers
+        let via_tags = direct.or_else(|| codec_from_tags(lib, handle));
+
+        // Finally, try filename/URL extension if still unknown
+        let via_name = via_tags.or_else(|| codec_from_filename_ptr(info.filename));
+
+        // As a last resort, try inspecting the plugin handle with BASS_PluginGetInfo
+        if via_name.is_some() {
+            via_name
+        } else {
+            // Dynamically load BASS_PluginGetInfo and inspect formats
+            unsafe {
+                if let Ok(sym) = lib.get::<BassPluginGetInfo>(b"BASS_PluginGetInfo") {
+                    if info.plugin != 0 {
+                        let pinfo_ptr = sym(info.plugin);
+                        if !pinfo_ptr.is_null() {
+                            let pinfo = &*pinfo_ptr;
+                            // Iterate formats to find a recognizable name or extension
+                            for i in 0..pinfo.formatc {
+                                let form_ptr = pinfo.formats.add(i as usize);
+                                if form_ptr.is_null() { continue; }
+                                let form = &*form_ptr;
+                                let name: String = if !form.name.is_null() { std::ffi::CStr::from_ptr(form.name).to_string_lossy().to_lowercase().to_string() } else { String::new() };
+                                let exts: String = if !form.exts.is_null() { std::ffi::CStr::from_ptr(form.exts).to_string_lossy().to_lowercase().to_string() } else { String::new() };
+                                // Heuristics based on plugin format name/extensions
+                                if name.contains("flac") || exts.contains("flac") { return BassAudioFormatInfo { codec: Some("flac".to_string()), sample_rate, bits_per_sample }; }
+                                if name.contains("opus") || exts.contains("opus") { return BassAudioFormatInfo { codec: Some("opus".to_string()), sample_rate, bits_per_sample }; }
+                                if name.contains("aac") || exts.contains("aac") { return BassAudioFormatInfo { codec: Some("aac".to_string()), sample_rate, bits_per_sample }; }
+                                if name.contains("alac") || exts.contains("alac") { return BassAudioFormatInfo { codec: Some("alac".to_string()), sample_rate, bits_per_sample }; }
+                                if name.contains("wavpack") || exts.contains("wv") { return BassAudioFormatInfo { codec: Some("wv".to_string()), sample_rate, bits_per_sample }; }
+                                if name.contains("webm") || exts.contains("webm") { return BassAudioFormatInfo { codec: Some("webm".to_string()), sample_rate, bits_per_sample }; }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+    };
+
+    BassAudioFormatInfo { codec, sample_rate, bits_per_sample }
+}
+
+/// Create a temporary BASS stream for URL and probe its format; the stream is freed before returning.
+pub fn probe_audio_format_for_url(lib: &Library, url: &str) -> Option<BassAudioFormatInfo> {
+    let c_url = std::ffi::CString::new(url).ok()?;
+    let flags = BASS_STREAM_STATUS | BASS_STREAM_BLOCK | BASS_STREAM_PRESCAN | BASS_STREAM_RESTRATE;
+    let handle = stream_create(
+        lib,
+        StreamSource::Url { url: &c_url, offset: None },
+        flags,
+        None,
+        std::ptr::null_mut(),
+    );
+    if handle == 0 { return None; }
+    let fmt = probe_audio_format_from_channel(lib, handle);
+    let _ = stream_free(lib, handle);
+    Some(fmt)
 }

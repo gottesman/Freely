@@ -1,22 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import LeftPanel from './components/LeftPanel';
-import CenterTabs from './components/CenterTabs';
+import CenterTabs from './components/CenterPanel';
 import RightPanel from './components/RightPanel';
-import BottomPlayer from './components/BottomPlayer';
-import LyricsOverlay from './components/LyricsOverlay';
-import GeniusClient from './core/musicdata';
-import MusixmatchClient, { SyncedLyrics } from './core/lyrics-musixmatch';
-import AddToPlaylistModal from './components/AddToPlaylistModal';
-import { DBProvider, useDB } from './core/dbIndexed';
-import { PlaybackProvider, usePlaybackSelector } from './core/playback';
+import BottomPlayer from './components/MainPlayer';
+import LyricsTab from './components/CenterPanel/LyricsTab';
+import GeniusClient from './core/Genius';
+import MusixmatchClient, { SyncedLyrics } from './core/LyricsProviders';
+import AddToPlaylistModal from './components/Utilities/PlaylistModal';
+import { DBProvider, useDB } from './core/Database';
+import { PlaybackProvider, usePlaybackSelector } from './core/Playback';
 import TitleBar from './components/TitleBar';
-import { AlertsProvider, AlertsHost, useAlerts } from './core/alerts';
-import { useAppReady } from './core/ready';
+import { AlertsProvider, AlertsHost } from './core/Alerts';
+import { useAppReady } from './core/Ready';
 import { useI18n, I18nProvider } from './core/i18n';
 import { PromptProvider } from './core/PromptContext';
-import { runTauriCommand } from './core/tauriCommands';
+import { runTauriCommand } from './core/TauriCommands';
 import { DownloadsProvider } from './core/Downloads';
-import { ContextMenuProvider } from './core/ContextMenuContext';
+import { ContextMenuProvider } from './core/ContextMenu';
 
 // Constants for performance optimization
 const UI_CONSTANTS = {
@@ -36,6 +36,7 @@ interface UIState {
   leftWidth: number;
   rightWidth: number;
   rightTab: string;
+  previousRightTab: string; // Track previous tab to return to when closing lyrics
   draggingLeft: boolean;
   draggingRight: boolean;
   collapseIntentLeft: boolean;
@@ -77,6 +78,7 @@ const initialUIState: UIState = {
   leftWidth: UI_CONSTANTS.defaultLeftWidth,
   rightWidth: UI_CONSTANTS.defaultRightWidth,
   rightTab: 'artist',
+  previousRightTab: 'artist',
   draggingLeft: false,
   draggingRight: false,
   collapseIntentLeft: false,
@@ -204,7 +206,7 @@ function useDebouncedSearch(searchState: SearchState, setSearchState: React.Disp
       setSearchState(prev => ({ ...prev, loading: true }));
 
       try {
-        const client = await import('./core/spotify-client');
+        const client = await import('./core/SpotifyClient');
         const results = await client.search(trimmedQuery, ['track', 'artist', 'album', 'playlist'], { limit: 50 });
         setSearchState(prev => ({ ...prev, results, loading: false }));
       } catch (e) {
@@ -242,7 +244,7 @@ export default function App() {
 function Main() {
   const { t } = useI18n();
   const { ready: dbReady, getSetting, setSetting } = useDB();
-  const { ready, states } = useAppReady(dbReady);
+  const { ready, states, progress } = useAppReady(dbReady);
   const playbackCurrent = usePlaybackSelector(s => s.currentTrack);
 
   // Custom hooks for better organization
@@ -274,25 +276,17 @@ function Main() {
   useEffect(() => {
     if (ready) return; // Don't send updates once ready
 
-    let statusText = 'Initializing...';
-
-    if (states.dbReady) {
-      statusText = 'Database ready.';
-    } if (states.fontsReady) {
-      statusText = 'Fonts loaded.';
-    } if (states.cssReady) {
-      statusText = 'Styles applied.';
-    } if (states.preloadReady) {
-      statusText = 'Environment ready.';
-    } if (states.warmupDone) {
-      statusText = 'Services warmed up.';
-    } if (states.minTimePassed) {
-      statusText = 'Finalizing setup...';
-    }
+    const statusText = progress.percentage >= 100
+      ? 'Finalizing setup...'
+      : `${progress.currentStep} (${progress.percentage}%)`;
 
     // Send status to splashscreen
-    runTauriCommand('update_loading_status', { status: statusText }).catch(console.error);
-  }, [ready, states]);
+    runTauriCommand('update_loading_status', {
+      status: statusText,
+      progress: progress.percentage,
+      details: progress.details
+    }).catch(console.error);
+  }, [ready, progress]);
 
   // Update current track ID ref
   useEffect(() => {
@@ -322,7 +316,7 @@ function Main() {
           leftCollapsed: lc === '1',
           rightCollapsed: rc === '1',
           // Accept 'artist' | 'queue' | 'downloads' from persisted settings
-          rightTab: (rtab === 'queue' || rtab === 'artist' || rtab === 'downloads') ? rtab : prev.rightTab
+          rightTab: (rtab === 'queue' || rtab === 'artist' || rtab === 'downloads' || rtab === 'lyrics') ? rtab : prev.rightTab
         }));
       } catch (e) {
         // Fallback to localStorage
@@ -341,7 +335,7 @@ function Main() {
               leftCollapsed: obj.leftCollapsed === true,
               rightCollapsed: obj.rightCollapsed === true,
               // Accept 'artist' | 'queue' | 'downloads' from local storage
-              rightTab: (obj.rightTab === 'queue' || obj.rightTab === 'artist' || obj.rightTab === 'downloads') ? obj.rightTab : prev.rightTab
+              rightTab: (obj.rightTab === 'queue' || obj.rightTab === 'artist' || obj.rightTab === 'downloads' || obj.rightTab === 'lyrics') ? obj.rightTab : prev.rightTab
             }));
           }
         } catch {
@@ -622,7 +616,26 @@ function Main() {
   ]);
 
   // BottomPlayer handlers (memoized)
-  const toggleLyrics = useCallback(() => setLyricsState(prev => ({ ...prev, open: !prev.open })), []);
+  const toggleLyrics = useCallback(() => {
+    const isLyricsInCenter = lyricsState.open;
+    const isLyricsInRightPanel = uiState.rightTab === 'lyrics';
+    
+    if (isLyricsInCenter) {
+      // Close center panel lyrics
+      setLyricsState(prev => ({ ...prev, open: false }));
+    } else if (isLyricsInRightPanel) {
+      // Close right panel lyrics by switching back to previous tab
+      setUIState(prev => ({ ...prev, rightTab: prev.previousRightTab }));
+    } else {
+      // No lyrics open, open in center panel
+      setLyricsState(prev => ({ ...prev, open: true }));
+    }
+  }, [lyricsState.open, uiState.rightTab]);
+
+  // Calculate if lyrics are open in either center panel or right panel
+  const lyricsOpen = useMemo(() => {
+    return lyricsState.open || uiState.rightTab === 'lyrics';
+  }, [lyricsState.open, uiState.rightTab]);
 
   // Additional lyrics state that wasn't consolidated
   const [lyricsText, setLyricsText] = useState<string | undefined>(undefined);
@@ -687,7 +700,8 @@ function Main() {
   const toggleQueueTab = useCallback(() => {
     setUIState(prev => ({
       ...prev,
-      rightTab: prev.rightTab === 'queue' ? 'artist' : 'queue'
+      previousRightTab: prev.rightTab !== 'lyrics' && prev.rightTab !== 'queue' ? prev.rightTab : prev.previousRightTab,
+      rightTab: prev.rightTab === 'queue' ? prev.previousRightTab : 'queue'
     }));
   }, []);
 
@@ -695,10 +709,30 @@ function Main() {
   const openDownloadsTab = useCallback(() => {
     setUIState(prev => ({
       ...prev,
-      rightCollapsed: false,
-      rightTab: 'downloads'
+      previousRightTab: prev.rightTab !== 'lyrics' && prev.rightTab !== 'downloads' ? prev.rightTab : prev.previousRightTab,
+      rightTab: prev.rightTab === 'downloads' ? prev.previousRightTab : 'downloads'
     }));
   }, []);
+
+  // Switch lyrics to right panel
+  const switchLyricsToRightPanel = useCallback(() => {
+    setUIState(prev => ({
+      ...prev,
+      previousRightTab: prev.rightTab !== 'lyrics' ? prev.rightTab : prev.previousRightTab, // Save current tab as previous
+      rightTab: 'lyrics',
+      rightCollapsed: false // Ensure right panel is visible
+    }));
+    setLyricsState(prev => ({ ...prev, open: false })); // Close center panel lyrics
+  }, []);
+
+  // Switch lyrics to center panel (overlay)
+  const switchLyricsToCenterPanel = useCallback(() => {
+    setLyricsState(prev => ({ ...prev, open: true }));
+    // Switch away from lyrics tab in right panel to previous tab
+    if (uiState.rightTab === 'lyrics') {
+      setUIState(prev => ({ ...prev, rightTab: prev.previousRightTab }));
+    }
+  }, [uiState.rightTab]);
 
   // Direct event-driven AddToPlaylist modal host (replaces former Provider/Context)
   useEffect(() => {
@@ -758,9 +792,10 @@ function Main() {
 
             <div className="center-area main-panels">
               <CenterTabs {...centerTabsProps} />
-              <LyricsOverlay
+              <LyricsTab
                 open={lyricsState.open}
                 onClose={() => setLyricsState(prev => ({ ...prev, open: false }))}
+                onSwitchToRightPanel={switchLyricsToRightPanel}
                 lyrics={lyricsState.loading ? t('np.loading') : lyricsText}
                 title={lyricsTitle}
                 synced={lyricsSynced}
@@ -781,15 +816,24 @@ function Main() {
               onToggle={() => setUIState(prev => ({ ...prev, rightCollapsed: !prev.rightCollapsed }))}
               width={uiState.rightWidth}
               activeRightTab={uiState.rightTab}
-              onRightTabChange={(tab) => setUIState(prev => ({ ...prev, rightTab: tab }))}
+              onRightTabChange={(tab) => setUIState(prev => ({ 
+                ...prev, 
+                previousRightTab: prev.rightTab !== 'lyrics' ? prev.rightTab : prev.previousRightTab,
+                rightTab: tab 
+              }))}
               extraClass={uiState.draggingRight ? `panel-dragging ${uiState.collapseIntentRight ? 'collapse-intent' : ''}` : ''}
               onSelectAlbum={(id) => { handleSelectAlbum(id); }}
               onSelectPlaylist={(id) => { handleSelectPlaylist(id); }}
+              lyricsText={lyricsState.loading ? t('np.loading') : lyricsText}
+              lyricsTitle={lyricsTitle}
+              lyricsSynced={lyricsSynced}
+              lyricsLoading={lyricsState.loading}
+              onSwitchLyricsToCenterPanel={switchLyricsToCenterPanel}
             />
           </div>
 
           <BottomPlayer
-            lyricsOpen={lyricsState.open}
+            lyricsOpen={lyricsOpen}
             onToggleLyrics={toggleLyrics}
             onToggleQueueTab={toggleQueueTab}
             onToggleDownloads={openDownloadsTab}

@@ -1,3 +1,4 @@
+const { app } = require('@tauri-apps/api');
 const { normalizeKey } = require('./stringUtils');
 
 /**
@@ -26,8 +27,37 @@ function buildSourceCacheKeys(searchQuery, page, includeYoutube, includeTorrents
   return { rawKey, normKey };
 }
 
+const getUserDataDir = (folder = '') => {
+  if (!folder) {
+    folder = 'general';
+  }
+  const os = require('os');
+  const path = require('path');
+  const fs = require('fs');
+  const platform = os.platform();
+  const homeDir = os.homedir();
+  let appDataDir;
+  
+  switch (platform) {
+    case 'win32':
+      // Windows: Use APPDATA environment variable or fallback
+      appDataDir = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming', 'Freely Player', folder);
+    case 'darwin':
+      // macOS: Application Support directory
+      appDataDir = path.join(homeDir, 'Library', 'Application Support', 'Freely Player', folder);
+    default:
+      // Linux and others: XDG data directory or fallback
+      appDataDir = process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share', 'Freely Player', folder);
+  }
+  if (!fs.existsSync(appDataDir)) {
+    fs.mkdirSync(appDataDir, { recursive: true });
+  }
+  return appDataDir;
+};
+
 module.exports = {
   booleanParam,
   buildTorrentCacheKeys,
-  buildSourceCacheKeys
+  buildSourceCacheKeys,
+  getUserDataDir
 };

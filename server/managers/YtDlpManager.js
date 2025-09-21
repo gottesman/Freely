@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const { getUserDataDir } = require('../utils/helpers');
 
 // YouTube integration with optimized initialization
 let youtubeDlAvailable = false;
@@ -87,6 +88,7 @@ class CacheEntry {
   }
 }
 
+const tempDir = getUserDataDir('youtube-dl');
 /**
  * YouTube data cache manager
  */
@@ -94,7 +96,7 @@ class YtDlpCache {
   constructor() {
     this.memoryCache = new Map();
     this.inflightRequests = new Map();
-    this.cacheDir = path.join(os.tmpdir(), 'freely-ytdlp-cache');
+    this.cacheDir = tempDir;
     this.setupCleanupInterval();
     this.ensureCacheDir();
   }
@@ -285,7 +287,6 @@ class YtDlpManager {
       console.log('[youtube-dl] Binary name:', binName);
       console.log('[youtube-dl] process.resourcesPath:', process.resourcesPath);
       console.log('[youtube-dl] process.execPath:', process.execPath);
-      console.log('[youtube-dl] os.homedir():', os.homedir());
       console.log('[youtube-dl] __dirname:', __dirname);
 
       for (const binPath of bundledPaths) {

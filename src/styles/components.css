@@ -1,4 +1,3 @@
-/* Generic Components: buttons, cards, lists, chips */
 .btn {
   background: var(--accent);
   color:var(--text-dark);
@@ -175,10 +174,7 @@ input[type="url"]::placeholder {
   box-shadow: 0 4px 10px #0003;
   background: #fff2;
 }
-.track-player .meta{
-  border: solid 1px #fff0;
-  max-width:250px;
-}
+
 .np-icon:hover, .np-pill:hover, input[type="text"]:hover, .pl-item:hover, .tb-nav-btn:hover, .media-card:hover, .track-player .meta:hover, .chip:hover, .np-tags:not(.disabled) .tag:hover, .np-tracklist li:hover, .card-btn:hover {
   border-color: var(--accent) !important;
   filter: drop-shadow(0 0 0 var(--accent));

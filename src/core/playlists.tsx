@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState, useEffect } from 'react';
-import { useDB } from './dbIndexed'; // Using the new provider
+import { useDB } from './Database'; // Using the new provider
 
 // Performance constants
 const SUBSCRIBER_DEBOUNCE_MS = 25;

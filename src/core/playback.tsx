@@ -1,8 +1,7 @@
 import React, { createContext, useEffect, useState, ReactNode, useMemo, useCallback, useReducer } from 'react';
-import { runTauriCommand, isTauriUnavailable } from './tauriCommands';
-import { SpotifyTrack } from './spotify';
-import { createCachedSpotifyClient } from './spotify-client';
-import { useDB } from './dbIndexed';
+import { runTauriCommand, isTauriUnavailable } from './TauriCommands';
+import { SpotifyTrack, createCachedSpotifyClient } from './SpotifyClient';
+import { useDB } from './Database';
 import AudioSourceProvider from './audioSource';
 import { startPlaybackWithSource } from './audioCache';
 
@@ -12,10 +11,6 @@ const CONFIG = {
     DEFAULT_INDEX: 0,
     PREFETCH_SIZE: 3, // Reduced from 5 for better performance
     TEST_TRACKS: ['3n3Ppam7vgaVa1iaRUc9Lp', '7ouMYWpwJ422jRcDASZB7P', '6EJiVf7U0p1BBfs0qqeb1f']
-  },
-  POLLING: {
-    INTERVAL: 500,
-    LOG_PROBABILITY: 0.01 // Only log 1% of poll attempts to reduce noise
   },
   SEEK: {
     DEBOUNCE_MS: 180,
@@ -86,6 +81,9 @@ interface PlaybackState {
   playing: boolean;
   duration: number;
   position: number;
+  codec?: string;
+  sampleRate?: number;
+  bitsPerSample?: number;
   
   // Volume state
   volume: number;
@@ -120,6 +118,9 @@ type PlaybackAction =
   | { type: 'SET_PLAYING'; playing: boolean }
   | { type: 'SET_POSITION'; position: number }
   | { type: 'SET_DURATION'; duration: number }
+  | { type: 'SET_CODEC'; codec?: string }
+  | { type: 'SET_SAMPLE_RATE'; sampleRate?: number }
+  | { type: 'SET_BITS_PER_SAMPLE'; bitsPerSample?: number }
   | { type: 'SET_VOLUME'; volume: number; muted?: boolean }
   | { type: 'SET_CACHE_STATUS'; status: Partial<PlaybackState['cacheStatus']> }
   | { type: 'SET_FETCH_IN_PROGRESS'; trackId: string | null }
@@ -175,6 +176,12 @@ function playbackReducer(state: PlaybackState, action: PlaybackAction): Playback
       return { ...state, position: action.position };
     case 'SET_DURATION':
       return { ...state, duration: action.duration };
+    case 'SET_CODEC':
+      return { ...state, codec: action.codec };
+    case 'SET_SAMPLE_RATE':
+      return { ...state, sampleRate: action.sampleRate };
+    case 'SET_BITS_PER_SAMPLE':
+      return { ...state, bitsPerSample: action.bitsPerSample };
     case 'SET_VOLUME':
       return { 
         ...state, 
@@ -236,6 +243,7 @@ interface PlaybackContextValue {
   playing: boolean;
   duration: number;
   position: number;
+  codec?: string;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -272,6 +280,9 @@ type PlaybackStateSnapshot = {
   playing: boolean;
   duration: number;
   position: number;
+  codec?: string;
+  sampleRate?: number;
+  bitsPerSample?: number;
   cacheStatus: PlaybackState['cacheStatus'];
   isTransitioning: boolean;
   awaitingBackendConfirmation: boolean;
@@ -294,9 +305,7 @@ function notifyPlaybackSubscribers(snapshot: PlaybackStateSnapshot) {
         entry.cb(next);
       }
     } catch (err) {
-      if (Math.random() < CONFIG.POLLING.LOG_PROBABILITY) {
-        console.warn('[playback] subscriber error', err);
-      }
+      console.warn('[playback] subscriber error', err);
     }
   });
 }
@@ -356,7 +365,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const { getApiCache, setApiCache, addPlay, ready, getSetting, setSetting } = useDB();
   
   // Refs for performance optimization
-  const pollRef = React.useRef<any>(null);
   const seekDebounceRef = React.useRef<any>(null);
   const lastSeekSentRef = React.useRef<number>(0);
   const pendingSeekRef = React.useRef<number | null>(null);
@@ -428,10 +436,30 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
                   infoHash: parsedSource.infoHash,
                   magnetURI: parsedSource.magnetURI,
                   playUrl: parsedSource.playUrl,
-                  title: parsedSource.title
+                  title: parsedSource.title,
+                  fileIndex: parsedSource.fileIndex
                 }
               };
               console.log('[playback] Attached source to track:', id, (track as any).source);
+
+              // Proactively query cache for format metadata (helps UI show codec/rate/bits early)
+              try {
+                const cacheResult = await runTauriCommand('cache_get_file', {
+                  trackId: id,
+                  sourceType: (track as any).source.type,
+                  sourceHash: (track as any).source.value,
+                  fileIndex: (track as any).source?.meta?.fileIndex
+                });
+                if (cacheResult && cacheResult.cached_path) {
+                  const { codec, sampleRate, bitsPerSample } = cacheResult as any;
+                  if (typeof codec === 'string') dispatch({ type: 'SET_CODEC', codec });
+                  if (typeof sampleRate === 'number') dispatch({ type: 'SET_SAMPLE_RATE', sampleRate });
+                  if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
+                }
+              } catch (e) {
+                // Non-critical
+                console.debug('[playback] Cache prefetch for format failed/ignored:', e);
+              }
             }
           }
         } catch (e) {
@@ -869,9 +897,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const cacheResult = await runTauriCommand('cache_get_file', {
         trackId: newTrackId,
         sourceType: sourceMeta.type,
-        sourceHash: sourceMeta.value
+        sourceHash: sourceMeta.value,
+        fileIndex: sourceMeta?.meta?.fileIndex
       });
       hasCachedFile = !!(cacheResult && cacheResult.cached_path);
+      // If cached and format metadata is available, surface it immediately to the UI
+      if (hasCachedFile) {
+        const { codec, sampleRate, bitsPerSample } = cacheResult as any;
+        if (typeof codec === 'string') dispatch({ type: 'SET_CODEC', codec });
+        if (typeof sampleRate === 'number') dispatch({ type: 'SET_SAMPLE_RATE', sampleRate });
+        if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
+      }
       console.log('[playback] Cache check result:', { hasCachedFile, cacheResult });
     } catch (e) {
       console.warn('[playback] Cache check failed:', e);
@@ -920,7 +956,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'SET_CACHE_STATUS', status: { isCaching: true } });
         }
         
-        // Clear loading status and start polling
+        // Clear loading status
         dispatch({ type: 'SET_LOADING', loading: false });
         dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
         dispatch({ type: 'SET_PLAYING', playing: true });
@@ -967,9 +1003,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               const cacheResult = await runTauriCommand('cache_get_file', {
                 trackId: state.trackId,
                 sourceType: sourceMeta.type,
-                sourceHash: sourceMeta.value
+                sourceHash: sourceMeta.value,
+                fileIndex: sourceMeta?.meta?.fileIndex
               });
               hasCachedFile = !!(cacheResult && cacheResult.cached_path);
+              // If cached and format metadata is available, surface it immediately to the UI
+              if (hasCachedFile) {
+                const { codec, sampleRate, bitsPerSample } = cacheResult as any;
+                if (typeof codec === 'string') dispatch({ type: 'SET_CODEC', codec });
+                if (typeof sampleRate === 'number') dispatch({ type: 'SET_SAMPLE_RATE', sampleRate });
+                if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
+              }
               console.log('[playback] Cache check result:', { hasCachedFile, cacheResult });
             } catch (e) {
               console.warn('[playback] Cache check failed:', e);
@@ -1309,57 +1353,48 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playAt(prevIndex);
   }, [state.queueIds.length, state.currentIndex, playAt]);
 
-  // Poll backend playback status (optimized with reduced state updates)
+  // Listen for playback status events (replaces polling)
   useEffect(() => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    
-    console.log('[playback] Setting up status polling interval');
-    pollRef.current = setInterval(async () => {
+    let mounted = true;
+
+    const handlePlaybackStatus = async (event: any) => {
+      if (!mounted) return;
+
       try {
-        const result = await runTauriCommand('playback_status');
-        
-        // Check if Tauri is unavailable
-        if (isTauriUnavailable(result)) {
-          // Only log this occasionally to avoid spam
-          if (Math.random() < CONFIG.POLLING.LOG_PROBABILITY) {
-            console.log('[playback] Tauri not available, skipping status update');
-          }
-          return;
-        }
-        
-        if (!result) {
-          console.warn('[playback] Status command returned null - Tauri invoke may not be available');
-          return;
-        }
-        
-        if (!result.success) {
-          console.warn('[playback] Status query failed:', result.error);
-          return;
-        }
-        
-        const status = result.data;
-        
-        // Don't update state during transitions to avoid race conditions
-        if (state.isTransitioning) {
-          console.log('[playback] Skipping status update during transition');
-          return;
-        }
-        
+        const result = event.payload || event;
+        const status = result?.data || result;
+
+        if (!status) return;
+
+        // During transitions, we still want to surface format info immediately,
+        // but avoid fragile state changes like playing/position when awaiting ack.
+        const inTransition = state.isTransitioning;
+
         // Update UI state based on actual backend state
         const wasPlaying = state.playing;
         const isPlaying = !!status.playing;
-        
+
         // Only update playing state if not awaiting backend confirmation and not during a seek
-        if (!state.awaitingBackendConfirmation && pendingSeekRef.current === null) {
+        if (!state.awaitingBackendConfirmation && pendingSeekRef.current === null && !inTransition) {
           dispatch({ type: 'SET_PLAYING', playing: isPlaying });
         }
-        
+
         // Update position and duration from backend (but not during transitions or pending seeks)
-        if (typeof status.position === 'number' && !state.awaitingBackendConfirmation && pendingSeekRef.current === null) {
+        if (typeof status.position === 'number' && !state.awaitingBackendConfirmation && pendingSeekRef.current === null && !inTransition) {
           dispatch({ type: 'SET_POSITION', position: status.position });
         }
         if (typeof status.duration === 'number') {
           dispatch({ type: 'SET_DURATION', duration: status.duration });
+        }
+        // Always accept format fields (codec/sampleRate/bits) even in transition
+        if (typeof status.codec === 'string') {
+          dispatch({ type: 'SET_CODEC', codec: status.codec });
+        }
+        if (typeof status.sampleRate === 'number') {
+          dispatch({ type: 'SET_SAMPLE_RATE', sampleRate: status.sampleRate });
+        }
+        if (typeof status.bitsPerSample === 'number') {
+          dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample: status.bitsPerSample });
         }
 
         // If we were awaiting backend confirmation and now we have playing status, clear the flag
@@ -1382,7 +1417,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           // If cache was used but no detailed status, mark as not caching
           dispatch({ type: 'SET_CACHE_STATUS', status: { isCaching: false } });
         }
-        
+
         // Handle errors from backend
         if (status.error) {
           // Don't treat seek errors as critical playback errors
@@ -1403,26 +1438,49 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             dispatch({ type: 'SET_ERROR', error: undefined });
           }
         }
-        
-        // Auto advance queue when track ends
-        if (status.ended && state.playbackUrl && wasPlaying) {
+
+        // Auto advance queue when track ends (do not depend on prior playing/url flags)
+        if (status.ended && !state.isTransitioning && !state.awaitingBackendConfirmation) {
           console.log('[playback] Track ended, advancing to next');
           next();
         }
-        
+
         // Debug logging when state changes
         if (wasPlaying !== isPlaying) {
           console.log('[playback] State changed:', { wasPlaying, isPlaying, url: status.url });
         }
-        
-      } catch (pollError) {
-        // Don't spam console with polling errors, but log occasionally
-        if (Math.random() < CONFIG.POLLING.LOG_PROBABILITY) {
-          console.warn('[playback] Status polling error:', pollError);
-        }
+
+      } catch (error) {
+        console.warn('[playback] Status event error:', error);
       }
-    }, CONFIG.POLLING.INTERVAL);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    };
+
+    // Set up event listener
+    const setupListener = async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const unlisten = await listen('playback:status', handlePlaybackStatus);
+
+        // Cleanup function
+        return () => {
+          try { unlisten(); } catch {}
+        };
+      } catch (e) {
+        // Tauri not available in browser preview
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[playback] Event API unavailable, status events disabled');
+        }
+        return () => {};
+      }
+    };
+
+    let cleanup: (() => void) | undefined;
+    setupListener().then((c) => { cleanup = c; });
+
+    return () => {
+      mounted = false;
+      if (cleanup) cleanup();
+    };
   }, [state.playing, state.playbackUrl, state.error, state.isTransitioning, state.awaitingBackendConfirmation, next]);
 
   // Cleanup debounce timer on unmount
@@ -1494,6 +1552,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playing: state.playing,
     duration: state.duration,
     position: state.position,
+    codec: state.codec,
+    sampleRate: state.sampleRate,
+    bitsPerSample: state.bitsPerSample,
     play,
     pause,
     toggle,
@@ -1511,7 +1572,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }), [
     state.currentTrack, state.loading, state.error, state.trackId, state.queueIds, 
     state.currentIndex, state.trackCache, state.playbackUrl, state.playing, 
-    state.duration, state.position, state.volume, state.muted, state.cacheStatus,
+    state.duration, state.position, state.codec, state.volume, state.muted, state.cacheStatus,
     setTrackId, fetchTrack, setQueue, enqueue, next, prev, playAt, playTrack, 
     playNow, reorderQueue, removeFromQueue, play, pause, toggle, seek, 
     setVolume, setMute, toggleMute
@@ -1531,6 +1592,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       playing: state.playing,
       duration: state.duration,
       position: state.position,
+      codec: state.codec,
+      sampleRate: state.sampleRate,
+      bitsPerSample: state.bitsPerSample,
       cacheStatus: state.cacheStatus,
       isTransitioning: state.isTransitioning,
       awaitingBackendConfirmation: state.awaitingBackendConfirmation
@@ -1540,7 +1604,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }, [
     state.currentTrack, state.loading, state.error, state.trackId, state.queueIds, 
     state.currentIndex, state.trackCache, state.playbackUrl, state.playing, 
-    state.duration, state.position, state.cacheStatus, state.isTransitioning, state.awaitingBackendConfirmation
+    state.duration, state.position, state.codec, state.sampleRate, state.bitsPerSample, state.cacheStatus, state.isTransitioning, state.awaitingBackendConfirmation
   ]);
 
   // Consolidated event handlers using the optimized event utilities

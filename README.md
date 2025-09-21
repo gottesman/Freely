@@ -10,17 +10,17 @@ Quick run (dev):
 
 ```bash
 npm install
-npm run dev    # starts the Vite dev server
-npm run tauri:dev
+npm run tauri dev
 ```
 
 Build (production):
 
 ```bash
 npm install
-npm run build
 npm run tauri:build
 ```
+
+**See the [Development](#development) and [Building](#building) sections below for comprehensive instructions.**
 
 Notes:
 - Tauri requires a Rust toolchain and platform-specific dependencies. See https://tauri.app/v1/guides/getting-started/prerequisites for setup.
@@ -49,20 +49,119 @@ The idea: stream music directly from other peers, work offline, and carry your p
 ✨ **Prototype** — core P2P transport, local DB, basic UI.
 Missing: advanced buffering, robust chunking, polished UX.
 
-## How to Run (Dev)
+## Development
+
+### Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-Create a local `.env` (copy from `.env.example`) and add your Genius API credentials if you plan to use lyrics / metadata lookups:
+This starts the Vite development server for the React frontend and builds the Node.js server bundle.
 
-```
+### Environment Setup
+
+Create a local `.env` (copy from `.env.example`) and add your API credentials:
+
+```bash
 cp .env.example .env # then edit values
 ```
 
 Only variables prefixed with `VITE_` are exposed to the renderer bundle. Keep `GENIUS_CLIENT_SECRET` private.
+
+### Development Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start frontend dev server and build server (parallel) |
+| `npm run dev:frontend` | Start only Vite dev server |
+| `npm run build:server` | Build Node.js server bundle |
+| `npm run typecheck` | Run TypeScript type checking |
+| `npm run lint:css` | Validate CSS styles with Stylelint |
+| `npm run fetch:ytdlp` | Download/update YouTube-DL binary |
+| `npm run fetch:bass` | Download/update BASS audio libraries |
+
+### Testing
+
+The project includes several testing and validation approaches:
+
+#### Type Checking
+```bash
+npm run typecheck
+# or directly:
+npx tsc --noEmit
+```
+
+#### CSS Validation
+Validate styles with Stylelint:
+```bash
+npm run lint:css
+# or directly:
+npx stylelint "src/**/*.css"
+```
+
+Configuration is in `.stylelintrc.cjs` following standard CSS rules.
+
+## Building
+
+### Development Build
+```bash
+npm run build
+```
+Creates optimized frontend build and server bundle.
+
+### Production Build
+```bash
+npm run build:optimized
+```
+Production-optimized build with environment variables.
+
+### Tauri Desktop App
+
+**Development:**
+```bash
+npm run tauri dev
+```
+
+**Production Build:**
+```bash
+npm run tauri:build
+```
+
+**Release Build:**
+```bash
+npm run tauri:build:release
+```
+
+### Build Requirements
+
+- **Node.js** 18+ and npm
+- **Rust toolchain** (for Tauri builds)
+- **Platform dependencies** (see [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites))
+
+### Build Outputs
+
+| Build Type | Output Location | Description |
+|------------|----------------|-------------|
+| Frontend | `dist/` | Vite-built React app |
+| Server | `src-tauri/server-dist/` | Bundled Node.js server |
+| Desktop | `src-tauri/target/` | Native executables |
+
+### Troubleshooting Builds
+
+**Missing binaries:** Run dependency fetchers:
+```bash
+npm run fetch:ytdlp
+npm run fetch:bass
+```
+
+**Type errors:** Check with `npm run typecheck`
+
+**Rust compilation issues:** Ensure Rust toolchain is updated:
+```bash
+rustup update
+```
 
 ### Spotify API
 

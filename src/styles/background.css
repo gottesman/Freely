@@ -1,8 +1,8 @@
 /* Animated Background */
 .bg {
-	--bg-image: url('https://img.freepik.com/free-vector/abstract-colorful-flow-shapes-background_23-2148233991.jpg');
-		--bg-color-default: radial-gradient(circle at 70% 20%, rgba(6,182,212,0.28) 0%, rgba(6,182,212,0.12) 20%, transparent 60%);
-		--bg-black-default: radial-gradient(circle at 20% 80%, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.18) 25%, transparent 60%);
+	/* --bg-image: url('https://img.freepik.com/free-vector/abstract-colorful-flow-shapes-background_23-2148233991.jpg'); */ 
+	--bg-color-default: radial-gradient(circle at 70% 20%, rgba(6,182,212,0.28) 0%, rgba(6,182,212,0.12) 20%, transparent 60%);
+	--bg-black-default: radial-gradient(circle at 20% 80%, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.18) 25%, transparent 60%);
 	position: absolute;
 	inset: 0;
 	pointer-events: none;

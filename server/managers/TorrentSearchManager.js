@@ -264,7 +264,7 @@ class TorrentSearchManager {
     this.registry.set(scraper.id, scraper);
     
     // Auto-login if scraper supports it
-    if (scraper.login && typeof scraper.login === 'function') {
+    if (scraper.login && typeof scraper.login === 'function' && scraper.add !== false) {
       scraper.login().then((res) => {
         console.log(`[TorrentSearchManager] ${scraper.id} login: ${res ? 'success' : 'failure'}`);
       }).catch(err => {

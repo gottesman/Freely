@@ -173,9 +173,12 @@ export async function runTauriCommand<T = any>(command: string, args?: any): Pro
   // Create and cache the promise
   const inflightPromise = (async (): Promise<TauriResult<T>> => {
     try {
+      console.log(`[TauriCommands] Invoking command: ${command}`, args);
       const result = await invokeFunction(command, args ?? {});
+      console.log(`[TauriCommands] Command ${command} result:`, result);
       return result as T;
     } catch (err) {
+      console.error(`[TauriCommands] Command ${command} error:`, err);
       return parseError(err);
     }
   })();

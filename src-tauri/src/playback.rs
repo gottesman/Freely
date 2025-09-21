@@ -5,15 +5,22 @@ use std::os::raw::{c_int, c_char, c_uint, c_ulong};
 use libloading::{Library, Symbol};
 use serde::Deserialize;
 use tauri::Emitter;
-use crate::cache::{get_cached_file_path, get_cache_dir, add_cached_file_to_index, create_cache_filename};
+use crate::cache::{get_cached_file_path, get_cached_file_path_with_index, get_cache_dir, add_cached_file_to_index, add_cached_file_to_index_with_index, add_cached_file_to_index_with_format, create_cache_filename, create_cache_filename_with_index};
 use crate::bass::{
     ensure_bass_loaded, bass_err, probe_duration_bass,
     bass_init, bass_free, bass_set_config, bass_set_config_ptr,
     stream_create, stream_free, StreamSource,
     channel_play, channel_pause, channel_stop, channel_is_active,
     channel_get_length, channel_get_position, channel_bytes2seconds, channel_seconds2bytes,
-    channel_set_position, channel_set_attribute, get_device_info, get_info, get_device,
+    channel_set_position, channel_set_attribute, channel_get_attribute, get_device_info, get_info, get_device,
     stream_get_file_position, error_get_code, BASS_CONFIG_BUFFER,
+    channel_get_info, channel_get_tags, BassChannelInfo,
+    BASS_TAG_ID3V2, BASS_TAG_OGG, BASS_TAG_APE, BASS_TAG_MP4, BASS_TAG_WMA,
+    BASS_CTYPE_STREAM_MP3, BASS_CTYPE_STREAM_OGG, BASS_CTYPE_STREAM_WAV,
+    BASS_CTYPE_STREAM_WAV_PCM, BASS_CTYPE_STREAM_WAV_FLOAT,
+    BASS_CTYPE_STREAM_AIFF, BASS_CTYPE_STREAM_CA, BASS_CTYPE_STREAM_MF,
+    BASS_CTYPE_STREAM_DSD, BASS_CTYPE_STREAM_DSD_RAW,
+    BassAudioFormatInfo, probe_audio_format_from_channel
 };
 use crate::bass::{
     BassStreamCreateFile, BassStreamFree,
@@ -21,7 +28,7 @@ use crate::bass::{
     BassChannelSetAttribute, BassDeviceInfo, BassInfo, DownloadProc,
     BASS_DEVICE_DEFAULT, BASS_CONFIG_NET_TIMEOUT, BASS_CONFIG_NET_AGENT, BASS_CONFIG_NET_BUFFER, BASS_STREAM_BLOCK,
     BASS_STREAM_STATUS, BASS_STREAM_AUTOFREE, BASS_STREAM_PRESCAN, BASS_STREAM_RESTRATE, BASS_POS_BYTE, BASS_ACTIVE_STOPPED,
-    BASS_ACTIVE_PLAYING, BASS_ACTIVE_STALLED, BASS_ACTIVE_PAUSED, BASS_ATTRIB_VOL,
+    BASS_ACTIVE_PLAYING, BASS_ACTIVE_STALLED, BASS_ACTIVE_PAUSED, BASS_ATTRIB_VOL, BASS_ATTRIB_FREQ,
     BASS_DEVICE_ENABLED, BASS_DEVICE_DEFAULT_FLAG, BASS_DEVICE_INIT,
     BASS_FILEPOS_CURRENT, BASS_FILEPOS_DOWNLOAD, BASS_FILEPOS_END, BASS_FILEPOS_START,
     BASS_FILEPOS_CONNECTED, BASS_FILEPOS_SIZE, BASS_FILEPOS_ASYNCBUF, BASS_FILEPOS_ASYNCBUFLEN,
@@ -72,12 +79,109 @@ fn apply_bass_runtime_config(lib: &Library) {
     bass_set_config(lib, BASS_CONFIG_NET_BUFFER, cfg.net_buffer_ms);
 }
 
+// Use shared helper from bass.rs for format probing
+type AudioFormatInfo = BassAudioFormatInfo;
+fn get_audio_format_info(lib: &Library, handle: u32) -> AudioFormatInfo {
+    probe_audio_format_from_channel(lib, handle)
+}
+
+fn detect_codec_from_channel_info(lib: &Library, handle: u32) -> Option<String> {
+    let mut info = BassChannelInfo {
+        freq: 0,
+        chans: 0,
+        flags: 0,
+        ctype: 0,
+        origres: 0,
+        plugin: 0,
+        sample: 0,
+        filename: std::ptr::null(),
+    };
+
+    if channel_get_info(lib, handle, &mut info) == 0 {
+        return None;
+    }
+
+    // Check for DXD first (very high sample rates typical of DXD)
+    if info.freq >= 352000 && (info.ctype == BASS_CTYPE_STREAM_DSD || info.ctype == BASS_CTYPE_STREAM_DSD_RAW) {
+        return Some("dxd".to_string());
+    }
+
+    // Map BASS channel types to format strings
+    match info.ctype {
+        BASS_CTYPE_STREAM_MP3 => Some("mp3".to_string()),
+        BASS_CTYPE_STREAM_OGG => Some("ogg".to_string()),
+        BASS_CTYPE_STREAM_WAV | BASS_CTYPE_STREAM_WAV_PCM | BASS_CTYPE_STREAM_WAV_FLOAT => Some("wav".to_string()),
+        BASS_CTYPE_STREAM_AIFF => Some("aiff".to_string()),
+        BASS_CTYPE_STREAM_DSD | BASS_CTYPE_STREAM_DSD_RAW => Some("dsd".to_string()),
+        BASS_CTYPE_STREAM_CA => {
+            // CoreAudio - could be various formats, try to get more info from tags
+            if let Some(codec) = get_codec_from_tags(lib, handle) {
+                Some(codec)
+            } else {
+                Some("aac".to_string()) // Default assumption
+            }
+        },
+        BASS_CTYPE_STREAM_MF => {
+            // Media Foundation - could be various formats
+            if let Some(codec) = get_codec_from_tags(lib, handle) {
+                Some(codec)
+            } else {
+                Some("m4a".to_string()) // Default assumption
+            }
+        },
+        _ => {
+            // Try to get codec info from tags as fallback
+            get_codec_from_tags(lib, handle)
+        }
+    }
+}
+
+// Helper function to extract codec info from metadata tags
+fn get_codec_from_tags(lib: &Library, handle: u32) -> Option<String> {
+    // Try different tag types to find codec information
+    let tag_types = [
+        BASS_TAG_ID3V2,
+        BASS_TAG_MP4,
+        BASS_TAG_OGG,
+        BASS_TAG_APE,
+        BASS_TAG_WMA,
+    ];
+
+    for &tag_type in &tag_types {
+        let tags_ptr = channel_get_tags(lib, handle, tag_type);
+        if !tags_ptr.is_null() {
+            // Parse tags to find codec info - this is a simplified approach
+            // In a real implementation, you'd parse the specific tag format
+            unsafe {
+                let tags_str = CStr::from_ptr(tags_ptr).to_string_lossy();
+                let tags = tags_str.to_lowercase();
+
+                // Look for common codec indicators in tags
+                if tags.contains("mp3") || tags.contains("mpeg-1") || tags.contains("mpeg-2") {
+                    return Some("mp3".to_string());
+                } else if tags.contains("aac") {
+                    return Some("aac".to_string());
+                } else if tags.contains("flac") {
+                    return Some("flac".to_string());
+                } else if tags.contains("vorbis") {
+                    return Some("ogg".to_string());
+                } else if tags.contains("opus") {
+                    return Some("opus".to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 // Structure to manage download file state for BASS download callback
 #[derive(Clone)]
 pub struct DownloadFileState {
     pub track_id: String,
     pub source_type: String,
     pub source_hash: String,
+    pub file_index: Option<usize>,
     pub cache_file: Arc<Mutex<File>>,
     pub cache_path: PathBuf,
     // When resuming without server Range support, skip this many bytes from the start
@@ -86,18 +190,42 @@ pub struct DownloadFileState {
     pub downloaded_bytes: u64,
     // Observed total bytes if known (captured on stop)
     pub total_bytes: Option<u64>,
+    // Whether the download has completed
+    pub download_complete: bool,
 }
 
 // filename helper was moved to crate::cache::create_cache_filename
 
 // BASS download callback function
 unsafe extern "C" fn download_proc(buffer: *const c_void, length: c_uint, user: *mut c_void) {
-    if user.is_null() || buffer.is_null() || length == 0 {
+    if user.is_null() {
         return;
     }
     
     // Cast user data back to our download state
     let state = &mut *(user as *mut DownloadFileState);
+    
+    // Check for download completion (BASS calls with buffer=NULL, length=0 when done)
+    if buffer.is_null() && length == 0 {
+        println!("[bass] Download completed for track: {}", state.track_id);
+        
+        // Mark download as complete
+        state.download_complete = true;
+        
+        // Flush the file
+        if let Ok(mut file) = state.cache_file.lock() {
+            let _ = file.flush();
+        }
+        
+        // If the track has already ended, finalize the cache now
+        // We need to check if the playback has ended
+        // For now, we'll finalize when playback_status detects the end
+        return;
+    }
+    
+    if buffer.is_null() || length == 0 {
+        return; // Nothing to write or invalid
+    }
     
     // Convert buffer to byte slice and write to cache file
     let data_slice = std::slice::from_raw_parts(buffer as *const u8, length as usize);
@@ -148,6 +276,10 @@ pub struct PlaybackState {
     current_source_hash: Option<String>,
     // Download file state for BASS callback
     download_file_state: Option<Box<DownloadFileState>>,
+    // Codec/format information
+    codec: Option<String>,
+    sample_rate: Option<u32>,
+    bits_per_sample: Option<u32>,
 }
 
 impl PlaybackState { 
@@ -174,6 +306,10 @@ impl PlaybackState {
             current_source_type: None,
             current_source_hash: None,
             download_file_state: None,
+            // Codec/format information
+            codec: None,
+            sample_rate: None,
+            bits_per_sample: None,
         } 
     } 
 }
@@ -189,7 +325,8 @@ fn create_bass_stream(
     lib: &Library,
     url: &str,
     enable_caching: bool,
-    cache_info: Option<(&str, &str, &str)> // track_id, source_type, source_hash
+    cache_info: Option<(&str, &str, &str)>, // track_id, source_type, source_hash
+    file_index: Option<usize>
 ) -> Result<(u32, Option<Box<DownloadFileState>>), String> {
     
     let handle = if url.starts_with("file://") {
@@ -211,7 +348,7 @@ fn create_bass_stream(
             let cache_dir = get_cache_dir().ok_or("Cache not initialized")?;
             
             // Create cache file name and path using .part for in-progress
-            let base = create_cache_filename(track_id, source_type, source_hash);
+            let base = create_cache_filename_with_index(track_id, source_type, source_hash, file_index);
             let cache_path = cache_dir.join(format!("{}.part", base));
             
             // Create or open the cache file. If it exists, open for append to resume;
@@ -243,11 +380,13 @@ fn create_bass_stream(
                 track_id: track_id.to_string(),
                 source_type: source_type.to_string(),
                 source_hash: source_hash.to_string(),
+                file_index,
                 cache_file: Arc::new(Mutex::new(cache_file)),
                 cache_path: cache_path,
                 skip_remaining: 0,
                 downloaded_bytes: existing_len as u64,
                 total_bytes: None,
+                download_complete: false,
             });
             
             let stream_flags = BASS_STREAM_STATUS | BASS_STREAM_BLOCK;
@@ -296,7 +435,7 @@ fn create_bass_stream(
 }
 
 // Function to finalize the cache file (.part -> extension-less) and add it to the cache index
-async fn finalize_cache_file(track_id: String, source_type: String, source_hash: String, cache_path: PathBuf, downloaded_bytes: Option<u64>, total_bytes: Option<u64>) {
+async fn finalize_cache_file(track_id: String, source_type: String, source_hash: String, file_index: Option<usize>, cache_path: PathBuf, downloaded_bytes: Option<u64>, total_bytes: Option<u64>, download_complete: bool) {
     // Check if file exists and has content
     if let Ok(metadata) = std::fs::metadata(&cache_path) {
         let file_size = metadata.len();
@@ -309,12 +448,17 @@ async fn finalize_cache_file(track_id: String, source_type: String, source_hash:
                     return;
                 }
             } else {
-                // Unknown total size; be conservative and do not finalize on stop
-                println!("[bass] Total size unknown, deferring finalization for: {}", cache_path.display());
-                return;
+                // Unknown total size; check if BASS indicated download completion
+                if download_complete {
+                    println!("[bass] Download marked complete by BASS despite unknown total size, finalizing: {}", cache_path.display());
+                } else {
+                    // Unknown total size and not marked complete - defer finalization
+                    println!("[bass] Total size unknown and download not complete, deferring finalization for: {}", cache_path.display());
+                    return;
+                }
             }
             // Create a proper cache filename (extension-less final name)
-            let cache_filename = create_cache_filename(&track_id, &source_type, &source_hash);
+            let cache_filename = create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
             
             // Get cache directory and final path
             if let Some(cache_dir) = get_cache_dir() {
@@ -332,12 +476,21 @@ async fn finalize_cache_file(track_id: String, source_type: String, source_hash:
                 }
                 
                 // Add to cache index
-                if let Err(e) = add_cached_file_to_index(
+                // Try to persist known audio format into cache index for UI reuse
+                let (codec, sample_rate, bits_per_sample) = {
+                    let st = STATE.lock().unwrap();
+                    (st.codec.clone(), st.sample_rate, st.bits_per_sample)
+                };
+                if let Err(e) = add_cached_file_to_index_with_format(
                     track_id.clone(),
                     source_type.clone(),
                     source_hash.clone(),
                     cache_filename,
-                    file_size
+                    file_size,
+                    file_index,
+                    codec,
+                    sample_rate,
+                    bits_per_sample
                 ) {
                     println!("[bass] Failed to add file to cache index: {}", e);
                 } else {
@@ -446,7 +599,23 @@ pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, S
     
     // Create new stream using unified function (no caching for simple playback_start)
     println!("[bass] Creating stream for: {}", actual_url);
-    let (handle, _download_state) = create_bass_stream(lib, &actual_url, false, None)?;
+    let (handle, _download_state) = create_bass_stream(lib, &actual_url, false, None, None)?;
+    
+    // Detect codec/format and audio properties from the stream
+    let format_info = get_audio_format_info(lib, handle);
+    st.codec = format_info.codec.clone();
+    st.sample_rate = format_info.sample_rate;
+    st.bits_per_sample = format_info.bits_per_sample;
+    
+    if let Some(ref codec) = st.codec {
+        println!("[bass] Detected codec: {}", codec);
+    }
+    if let Some(sample_rate) = st.sample_rate {
+        println!("[bass] Sample rate: {} Hz", sample_rate);
+    }
+    if let Some(bits) = st.bits_per_sample {
+        println!("[bass] Bits per sample: {}", bits);
+    }
     
     // Apply current volume to the new stream
     let current_volume = if st.muted { 0.0 } else { st.volume };
@@ -474,7 +643,6 @@ pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, S
         stream_free(lib, handle);
         return Err(error); 
     }
-    println!("[bass] Playback started successfully");
     
     // Update state
     st.duration = probe_duration_bass(lib, handle);
@@ -491,6 +659,15 @@ pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, S
     st.current_source_type = None;
     st.current_source_hash = None;
     
+    // Emit status update
+    drop(st); // Release the lock before emitting
+    emit_playback_status();
+    
+    // Start position update timer
+    start_position_update_timer();
+    
+    // Re-acquire the lock to access duration
+    let st = STATE.lock().unwrap();
     //println!("[bass] Playback state updated, duration: {:?}", st.duration);
     Ok(serde_json::json!({"success": true, "data": {"duration": st.duration}}))
 }
@@ -659,6 +836,12 @@ async fn gapless_handoff_to(cached_path: String) {
         state_guard.accumulated_paused = Duration::ZERO;
     }
 
+    // Emit status update
+    emit_playback_status();
+    
+    // Start position update timer
+    start_position_update_timer();
+
     println!("[bass] Gapless handoff complete, now playing cached file: {}", cached_url);
 }
 
@@ -719,24 +902,54 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
     println!("[bass] Generated source hash: {} for type: {}", source_hash, spec.source_type);
 
     // OPTIMIZATION: Check cache FIRST before doing any URL resolution
-    // Dedupe rapid repeated calls: if we saw the same track+source very recently, return ack
+    // Dedupe rapid repeated calls: check both active playback and recent processing
     {
         let key = format!("{}:{}:{}", spec.track_id, spec.source_type, source_hash);
         let mut recent = RECENT_STARTS.lock().unwrap();
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
-        if let Some(&ts) = recent.get(&key) {
-            if now.saturating_sub(ts) < 2000 {
-                println!("[bass] Duplicate playback_start_with_source for {}, returning quick ack (last: {}ms ago)", key, now.saturating_sub(ts));
-                let _ = app.emit("playback:start:ack", serde_json::json!({
-                    "trackId": spec.track_id,
-                    "sourceType": spec.source_type,
-                    "sourceHash": source_hash,
-                    "async": true,
-                    "dedup": true,
-                    "clientRequestId": spec.client_request_id
-                }));
-                return Ok(serde_json::json!({ "success": true, "async": true, "dedup": true }));
+        
+        // Check if we're already actively playing this exact track
+        let currently_playing_same_track = {
+            let state = STATE.lock().unwrap();
+            state.playing && 
+            state.current_track_id.as_ref() == Some(&spec.track_id) &&
+            state.current_source_type.as_ref() == Some(&spec.source_type) &&
+            state.current_source_hash.as_ref() == Some(&source_hash)
+        };
+        
+        // For cached files, be less aggressive with deduplication (only 500ms window)
+        // For non-cached files, use 1000ms window to prevent file conflicts
+        let has_cached_file = get_cached_file_path_with_index(&spec.track_id, &spec.source_type, &source_hash, 
+            if let Some(meta) = &spec.source_meta {
+                meta.get("fileIndex").and_then(|v| v.as_u64().map(|v| v as usize))
+            } else {
+                None
             }
+        ).is_some();
+        
+        let dedup_window = if has_cached_file { 500 } else { 1000 };
+        
+        // Check if we've processed this exact track very recently
+        let recently_processed = if let Some(&ts) = recent.get(&key) {
+            now.saturating_sub(ts) < dedup_window
+        } else {
+            false
+        };
+        
+        if currently_playing_same_track || recently_processed {
+            let reason = if currently_playing_same_track { "already playing" } else { "recently processed" };
+            let time_diff = recent.get(&key).map(|ts| now.saturating_sub(*ts)).unwrap_or(0);
+            let file_status = if has_cached_file { "cached" } else { "not cached" };
+            println!("[bass] Duplicate playback_start_with_source for {} ({}, {}), returning quick ack (last: {}ms ago)", key, reason, file_status, time_diff);
+            let _ = app.emit("playback:start:ack", serde_json::json!({
+                "trackId": spec.track_id,
+                "sourceType": spec.source_type,
+                "sourceHash": source_hash,
+                "async": true,
+                "dedup": true,
+                "clientRequestId": spec.client_request_id
+            }));
+            return Ok(serde_json::json!({ "success": true, "async": true, "dedup": true }));
         }
         recent.insert(key, now);
 
@@ -750,11 +963,30 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
             "clientRequestId": spec.client_request_id
         }));
     }
+
+    // Extract file index from source metadata for torrents (needed for cache lookup)
+    println!("[bass] playback_start_with_source called with source_meta: {:?}", spec.source_meta);
+    let file_index = if let Some(meta) = &spec.source_meta {
+        println!("[bass] Extracting file_index from source_meta: {:?}", meta);
+        if let Some(file_idx) = meta.get("fileIndex") {
+            let idx = file_idx.as_u64().map(|v| v as usize);
+            println!("[bass] Extracted file_index: {:?}", idx);
+            idx
+        } else {
+            println!("[bass] No fileIndex found in source_meta");
+            None
+        }
+    } else {
+        println!("[bass] No source_meta found");
+        None
+    };
+    println!("[bass] Final file_index being used: {:?}", file_index);
+
     if spec.prefer_cache.unwrap_or(true) {
         println!("[bass] Checking cache before URL resolution...");
 
-        // Check for cached files directly
-        if let Some(cached_path) = get_cached_file_path(&spec.track_id, &spec.source_type, &source_hash) {
+        // Check for cached files directly (with file index support for torrents)
+        if let Some(cached_path) = get_cached_file_path_with_index(&spec.track_id, &spec.source_type, &source_hash, file_index) {
             println!("[bass] Cache hit! Playing from cached file directly: {}", cached_path.display());
             return playback_start_internal(format!("file://{}", cached_path.display())).await;
         }
@@ -763,8 +995,8 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
     }
 
     // Only resolve URL if we don't have a cached file
-    println!("[bass] Resolving source URL with format information...");
-    let resolved_source = resolve_audio_source_with_format(&spec.source_type, &spec.source_value).await?;
+    println!("[bass] Resolving source URL with format information...{:?}", file_index);
+    let resolved_source = resolve_audio_source_with_format(&spec.source_type, &spec.source_value, file_index).await?;
     println!("[bass] Resolved source URL: {}, format: {:?}", resolved_source.url, resolved_source.format);
 
     // Use the new BASS download callback approach for both streaming and caching
@@ -817,7 +1049,8 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
         // Create stream with download callback using unified function
         let (handle, mut download_state) = {
             let cache_info = Some((spec.track_id.as_str(), spec.source_type.as_str(), source_hash.as_str()));
-            let (handle, download_state) = create_bass_stream(lib, &resolved_source.url, true, cache_info)?;
+            println!("[bass] Calling create_bass_stream with file_index: {:?}", file_index);
+            let (handle, download_state) = create_bass_stream(lib, &resolved_source.url, true, cache_info, file_index)?;
             (handle, download_state.expect("Download state should be present when caching is enabled"))
         };
         // If we know the total file size from resolution, store it in the download state now
@@ -855,7 +1088,6 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
                 stream_free(lib, handle);
                 return Err(error); 
             }
-            println!("[bass] Playback started successfully with download callback");
             
             // Stop and free any existing stream
             if let Some(old_handle) = state.stream.take() {
@@ -863,6 +1095,31 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
                 stream_free(lib, old_handle);
             }
             
+            // Detect codec/format and audio properties from the stream (so UI can show them)
+            let format_info = get_audio_format_info(lib, handle);
+            state.codec = format_info.codec.clone().or_else(|| {
+                // Fallback: use resolved format (e.g., YouTube server-provided)
+                resolved_source
+                    .format
+                    .as_ref()
+                    .and_then(|f| f.acodec.clone())
+                    .or_else(|| resolved_source.format.as_ref().and_then(|f| f.ext.clone()))
+            });
+            state.sample_rate = format_info.sample_rate;
+            state.bits_per_sample = format_info.bits_per_sample;
+
+            if let Some(ref codec) = state.codec {
+                println!("[bass] Detected codec: {}", codec);
+            }
+            if let Some(sample_rate) = state.sample_rate {
+                println!("[bass] Sample rate: {} Hz", sample_rate);
+            }
+            if let Some(bits) = state.bits_per_sample {
+                println!("[bass] Bits per sample: {}", bits);
+            }
+
+            println!("[bass] Audio properties detected, continuing to state setup...");
+
             // Update state
             state.duration = probe_duration_bass(lib, handle);
             state.stream = Some(handle);
@@ -879,7 +1136,25 @@ pub async fn playback_start_with_source_internal(app: tauri::AppHandle, spec: Pl
             state.download_file_state = Some(download_state);
         }
         
-        println!("[bass] Playback started with BASS download callback, audio will be cached automatically");
+        // Emit status update
+        emit_playback_status();
+        
+        // Start position update timer
+        start_position_update_timer();
+        
+        println!("[bass] Emitting playback:start:complete event for track: {}", spec.track_id);
+        
+        // Emit completion event to notify frontend that playback has started successfully
+        let _ = app.emit("playback:start:complete", serde_json::json!({
+            "trackId": spec.track_id,
+            "sourceType": spec.source_type,
+            "sourceHash": source_hash,
+            "caching": true,
+            "clientRequestId": spec.client_request_id
+        }));
+        
+        println!("[bass] Successfully emitted completion event and returning success");
+        
         return Ok(serde_json::json!({"success": true, "data": {"caching": true}}));
     } else {
         // Not preferring cache: start streaming immediately without callback
@@ -922,7 +1197,12 @@ pub async fn playback_pause_internal() -> Result<serde_json::Value, String> {
         st.playing = false; 
         st.paused_at = Some(Instant::now()); 
         println!("[bass] Playback state set to paused, but stream remains active for downloading");
-    } 
+    }
+
+    // Emit status update
+    drop(st); // Release the lock before emitting
+    emit_playback_status();
+    
     Ok(serde_json::json!({"success": true}))
 }
 
@@ -947,7 +1227,15 @@ pub async fn playback_resume_internal() -> Result<serde_json::Value, String> {
         } 
         st.playing = true; 
         //println!("[bass] Playback state set to playing");
-    } 
+    }
+
+    // Emit status update
+    drop(st); // Release the lock before emitting
+    emit_playback_status();
+    
+    // Start position update timer
+    start_position_update_timer();
+    
     Ok(serde_json::json!({"success": true})) 
 }
 
@@ -987,15 +1275,22 @@ pub async fn playback_stop_internal() -> Result<serde_json::Value, String> {
         
         println!("[bass] Finalizing cache file for stopped track: {}", cache_path.display());
         
+        let file_index = download_state.file_index;
+        let download_complete = download_state.download_complete;
+        
         // Drop the download state to ensure file is closed
         drop(download_state);
         
         // Spawn async task to finalize cache (don't block the stop command)
         tokio::spawn(async move {
             let (dl, total) = captured_progress.unwrap_or((0, None));
-            finalize_cache_file(track_id, source_type, source_hash, cache_path, Some(dl), total).await;
+            finalize_cache_file(track_id, source_type, source_hash, file_index, cache_path, Some(dl), total, download_complete).await;
         });
     }
+
+    // Emit status update
+    drop(st); // Release the lock before emitting
+    emit_playback_status();
     
     Ok(serde_json::json!({"success": true})) 
 }
@@ -1136,7 +1431,10 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
                     "position": 0.0,
                     "duration": st.duration,
                     "ended": st.ended,
-                    "error": st.last_error
+                    "error": st.last_error,
+                    "codec": st.codec,
+                    "sampleRate": st.sample_rate,
+                    "bitsPerSample": st.bits_per_sample
                 }
             }));
         }
@@ -1153,22 +1451,65 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
                     "position": 0.0,
                     "duration": st.duration,
                     "ended": st.ended,
-                    "error": st.last_error
+                    "error": st.last_error,
+                    "codec": st.codec,
+                    "sampleRate": st.sample_rate,
+                    "bitsPerSample": st.bits_per_sample
                 }
             }));
         }
     };
     
     // Check if stream is still active
-    let active = channel_is_active(lib, h); 
-    if active == BASS_ACTIVE_STOPPED && st.playing { 
-        st.playing = false; 
-        st.ended = true; 
+    let active = channel_is_active(lib, h);
+    if active == BASS_ACTIVE_STOPPED && st.playing {
+        st.playing = false;
+        st.ended = true;
+
+        // Emit status update for stream end detection immediately
+        drop(st); // Release the lock before emitting
+        emit_playback_status();
+        st = STATE.lock().unwrap(); // Re-acquire the lock
+
+        // If we were caching, finalize the .part file now as a natural end
+        if let Some(mut download_state) = st.download_file_state.take() {
+            let track_id = download_state.track_id.clone();
+            let source_type = download_state.source_type.clone();
+            let source_hash = download_state.source_hash.clone();
+            let cache_path = download_state.cache_path.clone();
+            let file_index = download_state.file_index;
+            // Capture totals accurately for finalization gating
+            let known_total = download_state.total_bytes;
+            let download_complete = download_state.download_complete;
+
+            println!("[bass] Finalizing cache file after BASS stopped: {}", cache_path.display());
+
+            // Drop the download state to ensure file is closed
+            drop(download_state);
+
+            tokio::spawn(async move {
+                // Use current .part size as downloaded, and persist known total if available
+                let downloaded = std::fs::metadata(&cache_path).ok().map(|m| m.len());
+                finalize_cache_file(
+                    track_id,
+                    source_type,
+                    source_hash,
+                    file_index,
+                    cache_path,
+                    downloaded,
+                    known_total,
+                    download_complete
+                ).await;
+            });
+        }
     } 
     
     // Try to get duration if we don't have it yet
     if st.duration.is_none() { 
-        st.duration = probe_duration_bass(lib, h); 
+        st.duration = probe_duration_bass(lib, h);
+        if st.duration.is_some() {
+            println!("[bass] Got duration: {:.2}s", st.duration.unwrap());
+        }
     } 
     
     // Get current position
@@ -1187,7 +1528,59 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
         }
     }; 
     
-    Ok(serde_json::json!({
+    // Check if track has reached the end (position >= duration - 0.1s threshold or stream stopped)
+    if !st.ended && st.playing && st.duration.is_some() {
+        let duration = st.duration.unwrap();
+        let is_near_end = position >= duration - 0.1;
+        let stream_stopped = active == BASS_ACTIVE_STOPPED;
+        // NOTE: Do NOT treat "file_at_end" (CURRENT == END) as finished; that just means we've caught up to the
+        // downloaded bytes and are stalled. Only consider STOPPED or truly near the known duration.
+        if is_near_end || stream_stopped {
+            println!("[bass] Track reached end: position {:.2}s >= duration {:.2}s (near_end: {}, stopped: {})", 
+                    position, duration, is_near_end, stream_stopped);
+            st.playing = false;
+            st.ended = true;
+            // Immediately notify the frontend that playback ended so it can advance the queue
+            drop(st); // Release lock before emitting
+            emit_playback_status();
+            st = STATE.lock().unwrap();
+        
+            // Handle download file state cleanup and cache finalization for natural track ending
+            if let Some(mut download_state) = st.download_file_state.take() {
+                let track_id = download_state.track_id.clone();
+                let source_type = download_state.source_type.clone();
+                let source_hash = download_state.source_hash.clone();
+                let cache_path = download_state.cache_path.clone();
+                let file_index = download_state.file_index;
+                // Capture totals accurately for finalization gating
+                let known_total = download_state.total_bytes;
+                let download_complete = download_state.download_complete;
+
+                println!("[bass] Finalizing cache file for naturally ended track: {}", cache_path.display());
+
+                // Drop the download state to ensure file is closed
+                drop(download_state);
+
+                // Spawn async task to finalize cache (don't block the status check)
+                tokio::spawn(async move {
+                    // Use current .part size as downloaded, and persist known total if available
+                    let downloaded = std::fs::metadata(&cache_path).ok().map(|m| m.len());
+                    finalize_cache_file(
+                        track_id,
+                        source_type,
+                        source_hash,
+                        file_index,
+                        cache_path,
+                        downloaded,
+                        known_total,
+                        download_complete
+                    ).await;
+                });
+            }
+        }
+    }
+    
+    let result = serde_json::json!({
         "success": true,
         "data": {
             "url": st.url,
@@ -1195,9 +1588,102 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
             "position": position,
             "duration": st.duration,
             "ended": st.ended,
-            "error": st.last_error
+            "error": st.last_error,
+            "codec": st.codec,
+            "sampleRate": st.sample_rate,
+            "bitsPerSample": st.bits_per_sample
         }
-    })) 
+    });
+
+    // Emit event for real-time updates
+    if let Ok(app_handle) = crate::APP_HANDLE.lock() {
+        if let Some(handle) = app_handle.as_ref() {
+            let _ = handle.emit("playback:status", result.clone());
+        }
+    }
+
+    Ok(result) 
+}
+
+// Helper function to emit current playback status
+fn emit_playback_status() {
+    let st = STATE.lock().unwrap();
+    
+    // Get library reference safely
+    let position = if let (Some(lib_ptr), Some(h)) = (st.bass_lib.as_ref(), st.stream) {
+        let lib = { &*lib_ptr };
+        // Get current position
+        let pos_bytes = channel_get_position(lib, h, BASS_POS_BYTE); 
+        if pos_bytes == 0xFFFFFFFF {
+            0.0
+        } else {
+            let secs = channel_bytes2seconds(lib, h, pos_bytes); 
+            if secs.is_finite() && secs >= 0.0 { 
+                secs 
+            } else { 
+                0.0 
+            }
+        }
+    } else {
+        0.0
+    };
+
+    let result = serde_json::json!({
+        "success": true,
+        "data": {
+            "url": st.url,
+            "playing": st.playing,
+            "position": position,
+            "duration": st.duration,
+            "ended": st.ended,
+            "error": st.last_error,
+            "codec": st.codec,
+            "sampleRate": st.sample_rate,
+            "bitsPerSample": st.bits_per_sample
+        }
+    });
+
+    // Emit event for real-time updates
+    if let Ok(app_handle) = crate::APP_HANDLE.lock() {
+        if let Some(handle) = app_handle.as_ref() {
+            let _ = handle.emit("playback:status", result);
+        }
+    }
+}
+
+// Start a background task to emit periodic position updates during playback
+static POSITION_UPDATE_ACTIVE: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+
+fn start_position_update_timer() {
+    let mut active = POSITION_UPDATE_ACTIVE.lock().unwrap();
+    if *active {
+        // Timer already running
+        return;
+    }
+    *active = true;
+    
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            
+            // Check if we're still playing
+            let should_continue = {
+                let state = STATE.lock().unwrap();
+                // Keep emitting while playing; once ended or stopped, break so we don't mask the terminal status
+                state.playing && state.stream.is_some() && !state.ended
+            };
+            
+            if should_continue {
+                // Use the full status path so we also perform end-of-track detection
+                let _ = playback_status_internal().await;
+            } else {
+                // If not playing anymore, stop the timer
+                let mut active = POSITION_UPDATE_ACTIVE.lock().unwrap();
+                *active = false;
+                break;
+            }
+        }
+    });
 }
 
 pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
@@ -1230,8 +1716,7 @@ pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
     let lib = state.bass_lib.as_ref().unwrap();
     let mut devices = Vec::new();
     
-    // Enumerate devices via BASS_GetDeviceInfo wrapper
-    
+    // Enumerate devices via BASS_GetDevice and BASS_GetInfo wrappers
     // Enumerate devices starting from device 0
     let mut device_index = 0u32;
     let mut found_default_device = false; // Track if we've already found a default device
@@ -1500,7 +1985,7 @@ pub async fn set_audio_settings_internal(settings: serde_json::Value) -> Result<
         println!("[bass] Volume change detected: {}", volume);
         
         // Apply volume to current stream if playing
-        if let (Some(handle), Some(lib)) = (state.stream, state.bass_lib.as_ref()) {
+        if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
             let current_volume = if state.muted { 0.0 } else { state.volume };
             let _ = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, current_volume);
             println!("[bass] Applied volume to current stream: {}", current_volume);
@@ -1646,10 +2131,6 @@ pub async fn playback_cleanup_internal() -> Result<bool, String> {
     Ok(true)
 }
 
-// Implementation note: The BASS DLL should be placed in the bin/ directory
-// and will be automatically included in the Tauri bundle via the resources configuration.
-// On Windows, the library is loaded dynamically at runtime, so no import library (.lib) is needed.
-
 // Volume control commands
 
 pub async fn playback_set_volume_internal(volume: f32) -> Result<serde_json::Value, String> {
@@ -1754,7 +2235,7 @@ pub async fn playback_toggle_mute_internal() -> Result<serde_json::Value, String
 
 pub async fn get_download_progress_internal() -> Result<serde_json::Value, String> {
     let state = STATE.lock().unwrap();
-    
+
     if let (Some(handle), Some(lib)) = (state.stream, state.bass_lib.as_ref()) {
         // Prefer .part file size if we're actively caching via callback
         let mut downloaded_bytes: Option<u64> = None;
@@ -1787,10 +2268,8 @@ pub async fn get_download_progress_internal() -> Result<serde_json::Value, Strin
         // Connection state (may be 0 for local files)
         let connected = stream_get_file_position(lib, handle, BASS_FILEPOS_CONNECTED);
         let is_connected = connected != 0xFFFFFFFF && connected != 0;
-        
-        println!("[bass] Download progress: downloaded={:?}, total={:?}, connected={}", downloaded_bytes, total_bytes, is_connected);
-        
-        Ok(serde_json::json!({
+
+        let result = serde_json::json!({
             "success": true,
             "data": {
                 "downloaded_bytes": downloaded_bytes,
@@ -1799,7 +2278,16 @@ pub async fn get_download_progress_internal() -> Result<serde_json::Value, Strin
                 "is_connected": is_connected,
                 "is_playing": state.playing
             }
-        }))
+        });
+
+        // Emit event for real-time updates
+        if let Ok(app_handle) = crate::APP_HANDLE.lock() {
+            if let Some(handle) = app_handle.as_ref() {
+                let _ = handle.emit("playback:download:progress", result.clone());
+            }
+        }
+
+        Ok(result)
     } else {
         Ok(serde_json::json!({
             "success": false,

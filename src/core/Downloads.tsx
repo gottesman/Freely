@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { useAlerts } from './alerts';
-import { runTauriCommand } from './tauriCommands';
+import { useAlerts } from './Alerts';
+import { runTauriCommand } from './TauriCommands';
+import { createCachedSpotifyClient } from './SpotifyClient';
 
 // Contract
 // - id: create_cache_filename(trackId, sourceType, sourceHash)
 // - We aggregate two sources of progress:
 //   1) Explicit cache downloads via cache:download:* events
-//   2) Streaming downloads from BASS while playing via get_download_progress polling
+//   2) Streaming downloads from BASS while playing via playback:download:progress events
 // - We expose a map of active items keyed by id with bytes/total, status, and paths
 
 export type DownloadStatus = 'queued' | 'ready' | 'downloading' | 'completed' | 'error';
@@ -62,6 +63,23 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     }
   })();
 
+  const spotifyClient = useMemo(() => createCachedSpotifyClient(), []);
+
+  // Function to get track name from track ID
+  const getTrackName = async (trackId: string): Promise<string> => {
+    try {
+      if (trackId.startsWith('spotify:track:')) {
+        const id = trackId.replace('spotify:track:', '');
+        const track = await spotifyClient.getTrack(id);
+        return track?.name || trackId;
+      }
+      return trackId;
+    } catch (error) {
+      console.error('Error fetching track name:', error);
+      return trackId;
+    }
+  };
+
   // Stable helper to upsert an item
   const upsert = (id: string, patch: Partial<DownloadItem>) => {
     setItems(prev => {
@@ -92,7 +110,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       // First: best-effort fetch of current inflight downloads for initial UI state
       try {
-        const res: any = await (await import('./tauriCommands')).runTauriCommand('cache_list_inflight');
+        const res: any = await (await import('./TauriCommands')).runTauriCommand('cache_list_inflight');
         const items = (res as any)?.items || (res as any)?.data?.items || [];
         if (Array.isArray(items)) {
           for (const it of items) {
@@ -154,8 +172,11 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (typeof total === 'number' && total > 0 && bytes >= total) {
             if (!pendingRemovalRef.current.has(id)) {
               pendingRemovalRef.current.add(id);
-              const name = itemsRef.current[id]?.trackId || 'Download';
-              try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+              const trackId = itemsRef.current[id]?.trackId || 'Download';
+              (async () => {
+                const name = await getTrackName(trackId);
+                try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+              })();
               setTimeout(() => {
                 setItems(prev => {
                   const next = { ...prev };
@@ -182,8 +203,11 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           const { id, trackId } = derive(p);
           if (!pendingRemovalRef.current.has(id)) {
             pendingRemovalRef.current.add(id);
-            const name = itemsRef.current[id]?.trackId || trackId || 'Download';
-            try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+            const currentTrackId = itemsRef.current[id]?.trackId || trackId || 'Download';
+            (async () => {
+              const name = await getTrackName(currentTrackId);
+              try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+            })();
             setTimeout(() => {
               setItems(prev => {
                 const next = { ...prev };
@@ -256,31 +280,14 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           // Avoid upserting here to prevent adding cached items that won't download
         });
         unsubs.push(un6);
-      } catch (e) {
-        // Tauri not available in browser preview; ignore
-        if (process.env.NODE_ENV !== 'production') {
-          console.debug('[Downloads] Event API unavailable', e);
-        }
-      }
-    })();
 
-    return () => {
-      mounted = false;
-      unsubs.forEach(u => { try { u(); } catch {} });
-    };
-  }, []);
-
-  // Poll playback download progress periodically to surface active streaming
-  useEffect(() => {
-    let cancelled = false;
-    let timer: any = null;
-
-    async function tick() {
-      if (cancelled) return;
-      try {
-        const res: any = await runTauriCommand('get_download_progress');
-        const data = res?.data || res?.result || res; // be permissive
-        if (data && data.success !== false) {
+        // Listen for playback download progress events (replaces polling)
+        const un7 = await listen('playback:download:progress', (evt: any) => {
+          if (!mounted) return;
+          const p: any = evt.payload || evt;
+          const data = p?.data || p;
+          if (!data || data.success === false) return;
+          
           const downloaded = data.downloaded_bytes ?? data.data?.downloaded_bytes;
           const total = data.total_bytes ?? data.data?.total_bytes;
           if (typeof downloaded === 'number') {
@@ -293,8 +300,11 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
               if (typeof totalNum === 'number' && totalNum > 0 && bytesNum >= totalNum) {
                 if (!pendingRemovalRef.current.has(id)) {
                   pendingRemovalRef.current.add(id);
-                  const name = itemsRef.current[id]?.trackId || 'Download';
-                  try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+                  const trackId = itemsRef.current[id]?.trackId || 'Download';
+                  (async () => {
+                    const name = await getTrackName(trackId);
+                    try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+                  })();
                   setTimeout(() => {
                     setItems(prev => {
                       const next = { ...prev };
@@ -313,16 +323,20 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
               }
             }
           }
-        }
+        });
+        unsubs.push(un7);
       } catch (e) {
-        // ignore transient errors
-      } finally {
-        if (!cancelled) timer = setTimeout(tick, 800);
+        // Tauri not available in browser preview; ignore
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[Downloads] Event API unavailable', e);
+        }
       }
-    }
+    })();
 
-    timer = setTimeout(tick, 800);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    return () => {
+      mounted = false;
+      unsubs.forEach(u => { try { u(); } catch {} });
+    };
   }, []);
 
   const value = useMemo<DownloadsContextValue>(() => ({

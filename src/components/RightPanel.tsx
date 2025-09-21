@@ -1,9 +1,10 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import MoreFromArtist from './MoreFromArtist';
-import QueueTab from './QueueTab';
-import DownloadsTab from './DownloadsTab';
-import useArtistBuckets from '../core/hooks/useArtistBuckets';
 import { useI18n } from '../core/i18n';
+import useArtistBuckets from '../core/hooks/useArtistBuckets';
+import MoreFromArtist from './RightPanel/MoreFromArtist';
+import QueueTab from './RightPanel/Queue';
+import DownloadsTab from './RightPanel/Downloads';
+import LyricsTab from './RightPanel/LyricsTab';
 
 // Constants for better performance and maintainability
 const PANEL_CONFIG = {
@@ -12,7 +13,8 @@ const PANEL_CONFIG = {
   tabs: {
     artist: 'artist',
     queue: 'queue',
-    downloads: 'downloads'
+    downloads: 'downloads',
+    lyrics: 'lyrics'
   } as const
 } as const;
 
@@ -26,6 +28,12 @@ interface RightPanelProps {
   extraClass?: string;
   onSelectAlbum?: (id: string) => void;
   onSelectPlaylist?: (id: string) => void;
+  // Lyrics props
+  lyricsText?: string;
+  lyricsTitle?: string;
+  lyricsSynced?: any;
+  lyricsLoading?: boolean;
+  onSwitchLyricsToCenterPanel?: () => void;
 }
 
 // Custom hook for tab management
@@ -62,7 +70,11 @@ const PanelHeader = React.memo<{
     ? t('artist.moreFrom') 
     : currentTab === PANEL_CONFIG.tabs.queue
       ? t('queue.title')
-      : t('downloads.title', 'Downloads');
+      : currentTab === PANEL_CONFIG.tabs.downloads
+        ? t('downloads.title', 'Downloads')
+        : currentTab === PANEL_CONFIG.tabs.lyrics
+          ? t('lyrics.title', 'Lyrics')
+          : t('artist.moreFrom');
 
   return (
     <div className="panel-header">
@@ -97,7 +109,25 @@ const TabContent = React.memo<{
   currentArtistName?: string;
   onSelectAlbum?: (id: string) => void;
   onSelectPlaylist?: (id: string) => void;
-}>(({ currentTab, collapsed, buckets, currentArtistName, onSelectAlbum, onSelectPlaylist }) => {
+  // Lyrics props
+  lyricsText?: string;
+  lyricsTitle?: string;
+  lyricsSynced?: any;
+  lyricsLoading?: boolean;
+  onSwitchLyricsToCenterPanel?: () => void;
+}>(({ 
+  currentTab, 
+  collapsed, 
+  buckets, 
+  currentArtistName, 
+  onSelectAlbum, 
+  onSelectPlaylist,
+  lyricsText,
+  lyricsTitle,
+  lyricsSynced,
+  lyricsLoading,
+  onSwitchLyricsToCenterPanel
+}) => {
   if (currentTab === PANEL_CONFIG.tabs.artist) {
     return (
       <MoreFromArtist
@@ -113,8 +143,20 @@ const TabContent = React.memo<{
   if (currentTab === PANEL_CONFIG.tabs.queue) {
     return <QueueTab collapsed={collapsed} />;
   }
+  
   if (currentTab === PANEL_CONFIG.tabs.downloads) {
     return <DownloadsTab collapsed={collapsed} />;
+  }
+  
+  if (currentTab === PANEL_CONFIG.tabs.lyrics) {
+    return (
+      <LyricsTab
+        lyrics={lyricsLoading ? 'Loading...' : lyricsText}
+        title={lyricsTitle}
+        synced={lyricsSynced}
+        onSwitchToCenterPanel={onSwitchLyricsToCenterPanel}
+      />
+    );
   }
   
   return null;
@@ -128,7 +170,12 @@ export default function RightPanel({
   onRightTabChange,
   extraClass,
   onSelectAlbum,
-  onSelectPlaylist
+  onSelectPlaylist,
+  lyricsText,
+  lyricsTitle,
+  lyricsSynced,
+  lyricsLoading,
+  onSwitchLyricsToCenterPanel
 }: RightPanelProps) {
   const { currentTab, setTab } = useTabManagement(activeRightTab, onRightTabChange);
   const { buckets, currentTrack } = useArtistBuckets();
@@ -157,6 +204,11 @@ export default function RightPanel({
           currentArtistName={currentArtistName}
           onSelectAlbum={onSelectAlbum}
           onSelectPlaylist={onSelectPlaylist}
+          lyricsText={lyricsText}
+          lyricsTitle={lyricsTitle}
+          lyricsSynced={lyricsSynced}
+          lyricsLoading={lyricsLoading}
+          onSwitchLyricsToCenterPanel={onSwitchLyricsToCenterPanel}
         />
       </div>
     </aside>

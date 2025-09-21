@@ -1,15 +1,36 @@
 /**
- * Torrent Files Manager - Handles torrent file listing with caching
+ * Torrent Files Manager - Handles torrent file listing with caching and client reuse
  */
-const WebTorrent = require('webtorrent');
 const fs = require('fs');
 const path = require('path');
+const { createWebTorrentClient } = require('../utils/webtorrent-loader');
+
+/**
+ * Sanitize file/directory names for safe filesystem usage
+ */
+function sanitizePath(pathString) {
+  if (!pathString) return pathString;
+  
+  return pathString
+    // Remove or replace invalid Windows filename characters
+    .replace(/[<>:"/\\|?*]/g, '_')
+    // Remove emoji and other Unicode symbols that might cause issues
+    .replace(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '')
+    // Replace multiple spaces/underscores with single ones
+    .replace(/[\s_]+/g, ' ')
+    // Trim whitespace and dots (Windows doesn't like files ending with dots)
+    .trim()
+    .replace(/\.+$/, '')
+    // Ensure it's not empty
+    || 'untitled';
+}
 
 class TorrentFilesManager {
   constructor(dataDir = null) {
     this.dataDir = dataDir || path.join(__dirname, '..', 'data');
     this.cacheFile = path.join(this.dataDir, 'torrent-files-cache.json');
     this.cacheTTL = 24 * 60 * 60 * 1000; // 24 hours
+    this.client = null;
     this.ensureDataDir();
   }
 
@@ -27,6 +48,20 @@ class TorrentFilesManager {
   }
 
   /**
+   * Get or create WebTorrent client
+   */
+  async getClient() {
+    if (!this.client) {
+      this.client = await createWebTorrentClient({ 
+        destroyStoreOnDestroy: true,
+        // Use memory store to avoid filesystem path issues  
+        store: require('memory-chunk-store')
+      });
+    }
+    return this.client;
+  }
+
+  /**
    * Read cache from disk
    */
   readCache() {
@@ -34,7 +69,7 @@ class TorrentFilesManager {
       if (!fs.existsSync(this.cacheFile)) {
         return {};
       }
-      
+
       const raw = fs.readFileSync(this.cacheFile, 'utf8');
       return JSON.parse(raw || '{}');
     } catch (error) {
@@ -51,7 +86,7 @@ class TorrentFilesManager {
       // Atomic write using temp file
       const tempFile = this.cacheFile + '.tmp';
       fs.writeFileSync(tempFile, JSON.stringify(cache, null, 2));
-      
+
       try {
         fs.renameSync(tempFile, this.cacheFile);
       } catch (renameError) {
@@ -67,9 +102,9 @@ class TorrentFilesManager {
    * Get torrent files with caching
    */
   async getTorrentFiles(id, options = {}) {
-    const { 
-      timeout = 20000, 
-      forceRefresh = false 
+    const {
+      timeout = 30000, // Increased timeout to 30 seconds
+      forceRefresh = false
     } = options;
 
     if (!id || typeof id !== 'string') {
@@ -86,10 +121,10 @@ class TorrentFilesManager {
 
     // Fetch from torrent
     const files = await this.fetchTorrentFiles(id, timeout);
-    
+
     // Cache the results
     this.cacheFiles(id, files);
-    
+
     return files;
   }
 
@@ -100,7 +135,7 @@ class TorrentFilesManager {
     try {
       const cache = this.readCache();
       const entry = cache[id];
-      
+
       if (!entry || typeof entry.ts !== 'number' || !Array.isArray(entry.files)) {
         return null;
       }
@@ -134,44 +169,162 @@ class TorrentFilesManager {
   }
 
   /**
-   * Fetch torrent files using WebTorrent
+   * Fetch torrent files using shared WebTorrent client
    */
   async fetchTorrentFiles(id, timeout) {
-    return new Promise((resolve, reject) => {
-      const client = new WebTorrent();
+    return new Promise(async (resolve, reject) => {
+      const client = await this.getClient();
       let timedOut = false;
-      
+
       const timeoutId = setTimeout(() => {
         timedOut = true;
-        client.destroy(() => {
-          reject(new Error(`Timeout after ${timeout}ms`));
-        });
+        reject(new Error(`Timeout after ${timeout}ms`));
       }, timeout);
 
       const cleanup = (callback) => {
         clearTimeout(timeoutId);
-        if (!timedOut) {
-          client.destroy(callback);
+        // Don't destroy the shared client, just remove the torrent
+        if (!timedOut && torrent) {
+          torrent.destroy();
         }
+        if (callback) callback();
       };
 
+      let torrent;
+
       try {
-        client.add(id, { destroyStoreOnDestroy: true }, (torrent) => {
+        // Check if torrent is already in the client
+        const existingTorrent = client.torrents.find(t => 
+          t.infoHash === id || 
+          t.magnetURI === id || 
+          (t.infoHash && id.includes(t.infoHash.toLowerCase())) ||
+          (typeof id === 'string' && id.startsWith('magnet:') && id.toLowerCase().includes(t.infoHash.toLowerCase()))
+        );
+
+        if (existingTorrent) {
+          // Use existing torrent
+          console.log(`[TorrentFilesManager] Using existing torrent ${existingTorrent.infoHash}`);
+          torrent = existingTorrent;
+          
+          if (torrent.files && torrent.files.length > 0) {
+            const files = torrent.files.map(f => ({
+              name: f.name,
+              length: f.length,
+              path: f.path || f.name
+            }));
+
+            cleanup(() => {
+              resolve(files);
+            });
+            return;
+          }
+          
+          // If torrent exists but no files yet, wait for metadata
+          if (!torrent.ready) {
+            const readyTimeout = setTimeout(() => {
+              if (!timedOut) {
+                cleanup(() => {
+                  reject(new Error('Torrent metadata timeout'));
+                });
+              }
+            }, timeout / 2); // Use half the total timeout for metadata
+            
+            torrent.on('ready', () => {
+              if (timedOut) return;
+              clearTimeout(readyTimeout);
+              
+              const files = (torrent.files || []).map(f => ({
+                name: f.name,
+                length: f.length,
+                path: f.path || f.name
+              }));
+
+              cleanup(() => {
+                resolve(files);
+              });
+            });
+            return;
+          }
+        }
+
+        // Add new torrent with better error handling
+        client.add(id, { destroyStoreOnDestroy: true }, (t) => {
           if (timedOut) return;
 
-          const files = (torrent.files || []).map(f => ({
-            name: f.name,
-            length: f.length,
-            path: f.path
-          }));
+          torrent = t;
+          console.log(`[TorrentFilesManager] Successfully added torrent ${torrent.infoHash}`);
+          
+          // Function to configure selective download and get files
+          const processFiles = () => {
+            if (torrent.files && torrent.files.length > 0) {
+              console.log(`[TorrentFilesManager] Deselecting all ${torrent.files.length} files in newly added torrent`);
+              torrent.files.forEach((file, index) => {
+                if (file.deselect) {
+                  file.deselect();
+                  console.log(`[TorrentFilesManager] Deselected file ${index}: ${file.name}`);
+                }
+              });
+              
+              // Verify deselection
+              const selectedFiles = torrent.files.filter(f => f.selected !== false);
+              console.log(`[TorrentFilesManager] Files deselected, ${selectedFiles.length} still selected (should be 0)`);
+            }
+            
+            const files = (torrent.files || []).map(f => ({
+              name: f.name,
+              length: f.length,
+              path: f.path || f.name
+            }));
 
-          cleanup(() => {
-            resolve(files);
-          });
+            cleanup(() => {
+              resolve(files);
+            });
+          };
+          
+          // Process files immediately if ready, otherwise wait
+          if (torrent.ready) {
+            processFiles();
+          } else {
+            const readyTimeout = setTimeout(() => {
+              if (!timedOut) {
+                cleanup(() => {
+                  reject(new Error('Torrent ready timeout'));
+                });
+              }
+            }, timeout / 2);
+            
+            torrent.on('ready', () => {
+              if (timedOut) return;
+              clearTimeout(readyTimeout);
+              console.log(`[TorrentFilesManager] Torrent ${torrent.infoHash} is ready`);
+              processFiles();
+            });
+          }
         });
 
         client.on('error', (error) => {
           if (!timedOut) {
+            console.error(`[TorrentFilesManager] WebTorrent client error:`, error.message);
+            // Check if it's a duplicate torrent error
+            if (error.message && error.message.includes('duplicate torrent')) {
+              // Try to find the existing torrent and use it
+              const hashMatch = error.message.match(/([a-fA-F0-9]{40})/);
+              if (hashMatch) {
+                const hash = hashMatch[1];
+                const existing = client.torrents.find(t => t.infoHash.toLowerCase() === hash.toLowerCase());
+                if (existing) {
+                  console.log(`[TorrentFilesManager] Found existing torrent for duplicate error, using it`);
+                  torrent = existing;
+                  const files = (torrent.files || []).map(f => ({
+                    name: f.name,
+                    length: f.length,
+                    path: f.path || f.name
+                  }));
+                  cleanup(() => resolve(files));
+                  return;
+                }
+              }
+            }
             cleanup(() => {
               reject(new Error(`WebTorrent error: ${error.message}`));
             });
@@ -208,7 +361,7 @@ class TorrentFilesManager {
   clearCacheForId(id) {
     try {
       const cache = this.readCache();
-      
+
       if (cache[id]) {
         delete cache[id];
         this.writeCache(cache);
@@ -229,10 +382,10 @@ class TorrentFilesManager {
       const cache = this.readCache();
       const entries = Object.keys(cache);
       const now = Date.now();
-      
+
       let validEntries = 0;
       let expiredEntries = 0;
-      
+
       for (const id of entries) {
         const entry = cache[id];
         if (entry && typeof entry.ts === 'number') {
@@ -258,6 +411,16 @@ class TorrentFilesManager {
         validEntries: 0,
         expiredEntries: 0
       };
+    }
+  }
+
+  /**
+   * Destroy the client and cleanup
+   */
+  destroy() {
+    if (this.client) {
+      this.client.destroy();
+      this.client = null;
     }
   }
 }

@@ -1,4 +1,4 @@
-import { runTauriCommand } from './tauriCommands';
+import { runTauriCommand } from './TauriCommands';
 
 export interface CacheStats {
   total_size_mb: number;
@@ -95,14 +95,32 @@ export async function startPlaybackWithSource(
 /**
  * Check if a track is cached locally
  */
-export async function getCachedFile(trackId: string, sourceType: string, sourceHash: string): Promise<string | null> {
+export async function getCachedFile(trackId: string, sourceType: string, sourceHash: string, fileIndex?: number): Promise<string | null> {
   try {
-    const result = await runTauriCommand('cache_get_file', {
-      trackId: trackId,
-      sourceType: sourceType,
-      sourceHash: sourceHash
-    });
-    return result?.success ? result.data : null;
+    // Send both camelCase and snake_case keys for maximum compatibility
+    const args: any = {
+      trackId,
+      track_id: trackId,
+      sourceType,
+      source_type: sourceType,
+      sourceHash,
+      source_hash: sourceHash
+    };
+    if (typeof fileIndex === 'number') {
+      args.fileIndex = Math.floor(fileIndex);
+      args.file_index = Math.floor(fileIndex);
+    }
+    const result: any = await runTauriCommand('cache_get_file', args);
+    // Support both direct JSON and { success, data } wrapper forms
+    if (result && typeof result === 'object') {
+      if ('exists' in result) {
+        return result.exists ? (result.cached_path || null) : null;
+      }
+      if ('success' in result) {
+        return result.success ? (result.data || null) : null;
+      }
+    }
+    return null;
   } catch (error) {
     console.warn('[cache] Failed to check cache:', error);
     return null;
@@ -112,15 +130,38 @@ export async function getCachedFile(trackId: string, sourceType: string, sourceH
 /**
  * Download and cache an audio file
  */
-export async function downloadAndCache(trackId: string, sourceType: string, sourceHash: string, url: string): Promise<string | null> {
+export async function downloadAndCache(trackId: string, sourceType: string, sourceHash: string, url: string, fileIndex?: number): Promise<string | null> {
   try {
-    const result = await runTauriCommand('cache_download_and_store', {
+    // Send both camelCase and snake_case keys for maximum compatibility
+    const args: any = {
       trackId: trackId,
+      track_id: trackId,
       sourceType: sourceType,
+      source_type: sourceType,
       sourceHash: sourceHash,
+      source_hash: sourceHash,
       url: url
-    });
-    return result?.success ? result.data : null;
+    };
+    
+    // Only add file_index if it's a valid number
+    if (typeof fileIndex === 'number' && !isNaN(fileIndex)) {
+      args.fileIndex = Math.floor(fileIndex);
+      args.file_index = Math.floor(fileIndex);
+    }
+    
+    // Helpful runtime debug
+    try { console.debug('[audioCache] cache_download_and_store args:', { ...args, url: typeof url === 'string' ? (url.startsWith('magnet:') ? 'magnet:...' : url) : url }); } catch {}
+
+    console.log('[audioCache] About to call runTauriCommand with cache_download_and_store');
+    console.log('[audioCache] Final args being sent:', JSON.stringify(args, null, 2));
+    const result: any = await runTauriCommand('cache_download_and_store', args);
+    console.log('[audioCache] runTauriCommand returned:', result);
+    // Backend returns a plain string ("Download started"); also handle wrapper style
+    if (typeof result === 'string') return result;
+    if (result && typeof result === 'object' && 'success' in result) {
+      return result.success ? (result.data || 'ok') : null;
+    }
+    return result ?? null;
   } catch (error) {
     console.error('[cache] Failed to download and cache:', error);
     return null;

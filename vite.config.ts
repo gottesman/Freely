@@ -26,5 +26,21 @@ export default defineConfig(({}) => ({
     sourcemap: !!process.env.TAURI_DEBUG,
     outDir: 'dist',
     emptyOutDir: true,
+    // Enhanced build optimizations
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          webtorrent: ['webtorrent'],
+          utils: ['buffer', 'cheerio', 'node-fetch']
+        }
+      }
+    },
+    chunkSizeWarningLimit: 1000,
+    cssCodeSplit: true,
+    reportCompressedSize: false, // Faster builds
   },
+  esbuild: {
+    drop: process.env.TAURI_DEBUG ? [] : ['console', 'debugger'],
+  }
 }))

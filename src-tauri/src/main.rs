@@ -19,6 +19,11 @@ use cache::{cache_get_file, cache_download_and_store, cache_get_stats, cache_cle
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+// Global app handle for event emission
+static APP_HANDLE: Lazy<Mutex<Option<tauri::AppHandle>>> = Lazy::new(|| Mutex::new(None));
 
 #[tauri::command]
 async fn save_file_dialog(app: tauri::AppHandle) -> Option<String> {
@@ -45,22 +50,6 @@ async fn save_file_dialog(app: tauri::AppHandle) -> Option<String> {
     }
 }
 
-#[tauri::command]
-async fn close_splashscreen(window: tauri::WebviewWindow) {
-    // Close the splashscreen window
-    if let Some(splashscreen) = window.get_webview_window("splashscreen") {
-        splashscreen.close().unwrap();
-    }
-}
-
-#[tauri::command] 
-async fn show_main_window(window: tauri::WebviewWindow) {
-    // Show the main window
-    if let Some(main_window) = window.get_webview_window("main") {
-        main_window.show().unwrap();
-        main_window.set_focus().unwrap();
-    }
-}
 
 #[tauri::command]
 async fn app_ready(app_handle: tauri::AppHandle) {
@@ -81,16 +70,22 @@ async fn app_ready(app_handle: tauri::AppHandle) {
 }
 
 #[tauri::command]
-async fn update_loading_status(app_handle: tauri::AppHandle, status: String) {
+async fn update_loading_status(app_handle: tauri::AppHandle, status: String, progress: Option<u32>, details: Option<String>) {
     // Send loading status update to splashscreen
     if let Some(splashscreen) = app_handle.get_webview_window("splashscreen") {
-        let _ = splashscreen.emit("loading-status", &status);
+        let payload = serde_json::json!({
+            "status": status,
+            "progress": progress.unwrap_or(0),
+            "details": details.unwrap_or_default()
+        });
+        let _ = splashscreen.emit("loading-status", payload);
     }
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_prevent_default::init()) // ::init() makes the app ignore default browser shortcuts and context menu, ::debug() enables them in dev mode
         .setup(|app| {
             // Initialize application directories
             let resource_dir = app.path().resource_dir()
@@ -129,6 +124,10 @@ fn main() {
 
             // Start initialization tasks and handle splashscreen
             let app_handle = app.handle().clone();
+            
+            // Store global app handle for event emission
+            *APP_HANDLE.lock().unwrap() = Some(app_handle.clone());
+            
             tauri::async_runtime::spawn(async move {
                 // Start server in background
                 let paths_state = app_handle.state::<PathState>();
@@ -148,8 +147,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             // Window commands
-            close_splashscreen,
-            show_main_window,
             app_ready,
             save_file_dialog,
             save_file_and_write,

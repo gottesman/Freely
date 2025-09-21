@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
-import type { SpotifyAlbum, SpotifyPlaylist } from '../../core/spotify';
-import SpotifyClient from '../../core/spotify';
-import { useSpotifyClient } from '../spotify-client';
-import { useAlerts } from '../../core/alerts';
-import { ArtistBuckets } from '../../components/MoreFromArtist';
-import { usePlaybackSelector } from '../../core/playback';
+import { SpotifyAlbum, SpotifyPlaylist, useSpotifyClient } from '../SpotifyClient';
+import { useAlerts } from '../Alerts';
+import { ArtistBuckets } from '../../components/RightPanel/MoreFromArtist';
+import { usePlaybackSelector } from '../Playback';
 
 export function useArtistBuckets() {
   const currentTrack = usePlaybackSelector(s => s.currentTrack);

@@ -3,7 +3,7 @@
 .track-player .controls { position:absolute; left:50%; transform:translateX(-50%); display:flex; gap:6px; align-items:center; }
 .track-player .controls .small { padding:6px; border-radius:6px; }
 .track-player .controls .play { padding:6px 10px; border-radius:8px; }
-.track-player .meta { flex:1 1 auto; color:var(--text); opacity:.9; display:flex; align-items:center; gap:10px; max-width: 28vw; }
+.track-player .meta{ border: solid 1px #fff0;flex:1 1 auto; color:var(--text); opacity:.9; display:flex; align-items:center; gap:10px; max-width: min(28vw, 250px); }
 .track-player .meta[role="button"] { cursor:pointer; transition: transform var(--dur-med), background var(--dur-med); border-radius:8px; padding:4px 6px 4px 4px; }
 .track-player .meta[role="button"]:hover { transform:scale(1.03); background:rgba(255,255,255,0.06); }
 .track-player .meta[role="button"]:active { transform:scale(.97); }
@@ -15,6 +15,57 @@
 .track-player .song-album { font-size:11px; opacity:.6; }
 .track-player .add-playlist { padding:6px 8px; border-radius:6px; margin-left:auto; }
 .track-player .extras { display:flex; gap:8px; align-items:center; }
+
+/* Custom Icon for format indicators */
+.custom-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: bold;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+/* Format information display */
+.format-info { 
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11px;
+    opacity: 0.8;
+    flex-direction: column;
+ }
+.format-details{
+  --main: hsla(0, 0%, 0%, 0);
+  --highlight: #ffffff00;
+  --text: #ffffff;
+  --border: color-mix(in oklab, var(--main) 50%, var(--text));
+  background: var(--main);
+  background: linear-gradient(45deg,var(--main) 2%, color-mix(in oklab, var(--highlight) 70%, var(--main)) 50%, var(--main) 98%);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 200;
+  text-transform: none;
+}
+
+.format-details.medium{
+  --main: hsl(0, 0%, 64%);
+  --highlight: #fff;
+  --text: #111;
+  font-weight: 600;
+}
+
+.format-details.high{
+  --main: hsl(52, 95%, 36%);
+  --highlight: #fff;
+  --text: #111;
+  font-weight: 600;
+}
 
 /* Track progress bar */
 .track-progress { display:flex; align-items:center; gap:12px; padding:5px 18px 0 18px; font-size:10px; font-weight:500; letter-spacing:.5px; user-select:none; }
