@@ -18,3 +18,4 @@ src-tauri/Cargo.lock
 src-tauri/server-dist
 deprecated*
 COMMIT_MESSAGE.md
+tsconfig.tsbuildinfo

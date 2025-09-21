@@ -28,6 +28,10 @@ export default defineConfig(({}) => ({
     emptyOutDir: true,
     // Enhanced build optimizations
     rollupOptions: {
+      input: {
+        main: 'index.html',
+        splashscreen: 'splashscreen.html'
+      },
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom'],

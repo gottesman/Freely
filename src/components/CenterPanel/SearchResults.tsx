@@ -412,11 +412,11 @@ const useTabManager = () => {
   const { t } = useI18n();
 
   const tabButtons = useMemo(() => [
-    { key: 'all', label: t('search.tab.all', 'All') },
-    { key: 'songs', label: t('search.songs', 'Songs') },
-    { key: 'artists', label: t('search.artists', 'Artists') },
-    { key: 'albums', label: t('search.albums', 'Albums') },
-    { key: 'playlists', label: t('search.playlists', 'Playlists') }
+    { key: 'all', label: t('search.all') },
+    { key: 'songs', label: t('search.songs') },
+    { key: 'artists', label: t('search.artists') },
+    { key: 'albums', label: t('search.albums') },
+    { key: 'playlists', label: t('search.playlists') }
   ] as const, [t]);
 
   const tabActions = useMemo(() =>
