@@ -13,7 +13,10 @@ pub struct ServerPidInfo {
 
 impl Default for ServerPidInfo {
     fn default() -> Self {
-        Self { pid: None, port: None }
+        Self {
+            pid: None,
+            port: None,
+        }
     }
 }
 
@@ -38,11 +41,10 @@ impl PathState {
         let raw_content = std::fs::read_to_string(&self.pid_file)
             .map_err(|e| format!("Failed to read PID file: {}", e))?;
 
-        let info: ServerPidInfo = serde_json::from_str(&raw_content)
-            .map_err(|e| {
-                eprintln!("Failed to parse PID file: {}", e);
-                return format!("Malformed PID file: {}", e);
-            })?;
+        let info: ServerPidInfo = serde_json::from_str(&raw_content).map_err(|e| {
+            eprintln!("Failed to parse PID file: {}", e);
+            return format!("Malformed PID file: {}", e);
+        })?;
 
         // Validate server is responding if port is available
         if let Some(port) = info.port {
@@ -52,13 +54,16 @@ impl PathState {
         }
 
         // Server not responding, return PID without port
-        Ok(ServerPidInfo { pid: info.pid, port: None })
+        Ok(ServerPidInfo {
+            pid: info.pid,
+            port: None,
+        })
     }
 
     /// Pings the server to check if it's responsive
     async fn ping_server(&self, port: u16) -> bool {
         let url = format!("http://localhost:{}/ping", port);
-        
+
         reqwest::Client::new()
             .get(&url)
             .timeout(Duration::from_millis(1500))
@@ -75,10 +80,15 @@ impl PathState {
 
         // Validate paths
         if !self.server_script.exists() {
-            return Err(format!("Server script not found: {}", self.server_script.display()));
+            return Err(format!(
+                "Server script not found: {}",
+                self.server_script.display()
+            ));
         }
 
-        let working_dir = self.server_script.parent()
+        let working_dir = self
+            .server_script
+            .parent()
             .ok_or("Could not get server script directory")?;
 
         // Create and configure command
@@ -86,7 +96,8 @@ impl PathState {
         cmd.env("PID_FILE_PATH", &self.pid_file);
 
         // Spawn process
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to spawn server: {}", e))?;
 
         let pid = child.id();
@@ -105,12 +116,12 @@ impl PathState {
 
         for _ in 0..MAX_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(WAIT_MS)).await;
-            
+
             if let Ok(status) = self.get_server_status().await {
                 if status.port.is_some() {
-                    return Ok(ServerPidInfo { 
-                        pid: Some(pid), 
-                        port: status.port 
+                    return Ok(ServerPidInfo {
+                        pid: Some(pid),
+                        port: status.port,
                     });
                 }
             }

@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "1.1.1-test",
+  "version": "1.1.2-test",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -26,6 +26,7 @@
     "postinstall": "prebuild-install --verbose || echo 'Prebuilds not available, will use source'"
   },
   "dependencies": {
+    "@tauri-apps/plugin-notification": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.1",
     "buffer": "^6.0.3",
     "cheerio": "^1.0.0-rc.12",

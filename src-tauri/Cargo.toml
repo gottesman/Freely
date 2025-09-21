@@ -1,6 +1,6 @@
 [package]
 name = "freely"
-version = "1.1.1-test"
+version = "1.1.2-test"
 description = "A local music player with torrent streaming support."
 authors = ["Gottesman <gottesman@example.com>"]
 edition = "2021"
@@ -10,7 +10,7 @@ rust-version = "1.70"
 tauri-build = { version = "2.0.0-beta.18", features = [] }
 
 [dependencies]
-tauri = { version = "2.0.0-beta.23", features = ["protocol-asset"] }
+tauri = { version = "2.0.0-beta.23", features = ["protocol-asset", "tray-icon", "image-png"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.37.0", features = ["rt-multi-thread", "macros", "time"] }
@@ -25,6 +25,7 @@ libloading = "0.8"
 futures-util = "0.3"
 tauri-plugin-dialog = "2.0.0-beta.3"
 tauri-plugin-prevent-default = "3"
+tauri-plugin-notification = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features = [

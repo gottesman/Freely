@@ -1,9 +1,9 @@
+use crate::bass::{bass_init, ensure_bass_loaded, probe_audio_format_for_url, BASS_DEVICE_DEFAULT};
+use reqwest;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use tokio::sync::mpsc;
-use reqwest;
-use std::path::PathBuf;
-use crate::bass::{ensure_bass_loaded, bass_init, probe_audio_format_for_url, BASS_DEVICE_DEFAULT};
 
 /// Spawns a background thread to capture and log process output
 pub fn spawn_logger(
@@ -26,11 +26,15 @@ pub fn spawn_logger(
 }
 
 /// Captures both stdout and stderr from a child process
-pub fn capture_process_output(child: &mut Child, log_file: std::path::PathBuf, err_file: std::path::PathBuf) {
+pub fn capture_process_output(
+    child: &mut Child,
+    log_file: std::path::PathBuf,
+    err_file: std::path::PathBuf,
+) {
     if let Some(stdout) = child.stdout.take() {
         spawn_logger(stdout, log_file.clone());
     }
-    
+
     if let Some(stderr) = child.stderr.take() {
         spawn_logger(stderr, err_file);
     }
@@ -39,26 +43,29 @@ pub fn capture_process_output(child: &mut Child, log_file: std::path::PathBuf, e
 /// Kills a process by PID using platform-specific commands
 pub fn kill_process_by_pid(pid: u32) -> Result<(), std::io::Error> {
     let pid_str = pid.to_string();
-    
+
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("taskkill")
             .args(["/PID", &pid_str, "/T", "/F"])
             .output()?;
     }
-    
+
     #[cfg(not(target_os = "windows"))]
     {
         std::process::Command::new("kill")
             .args(["-9", &pid_str])
             .output()?;
     }
-    
+
     Ok(())
 }
 
 /// Creates a Node.js command with common settings
-pub fn create_node_command(script_path: &std::path::Path, working_dir: &std::path::Path) -> std::process::Command {
+pub fn create_node_command(
+    script_path: &std::path::Path,
+    working_dir: &std::path::Path,
+) -> std::process::Command {
     let node_path = if cfg!(target_os = "windows") {
         "C:\\Program Files\\nodejs\\node.exe"
     } else {
@@ -96,7 +103,10 @@ pub async fn resolve_http_source(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-pub async fn resolve_torrent_source_with_index(value: &str, file_index: Option<usize>) -> Result<String, String> {
+pub async fn resolve_torrent_source_with_index(
+    value: &str,
+    file_index: Option<usize>,
+) -> Result<String, String> {
     // Extract infoHash from magnetURI if needed
     let info_hash = if value.starts_with("magnet:") {
         if let Some(start) = value.find("xt=urn:btih:") {
@@ -113,9 +123,12 @@ pub async fn resolve_torrent_source_with_index(value: &str, file_index: Option<u
         // Assume it's already an infoHash
         value.to_lowercase()
     };
-    
+
     let index = file_index.unwrap_or(0);
-    Ok(format!("http://localhost:9000/stream/{}/{}", info_hash, index))
+    Ok(format!(
+        "http://localhost:9000/stream/{}/{}",
+        info_hash, index
+    ))
 }
 
 pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
@@ -136,7 +149,12 @@ pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
     }
 
     // If not a local URL, check if value is already a video ID
-    if video_id_opt.is_none() && value.len() == 11 && value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if video_id_opt.is_none()
+        && value.len() == 11
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         video_id_opt = Some(value.to_string());
     }
 
@@ -163,20 +181,31 @@ pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
     };
 
     // Get the info to extract the direct YouTube CDN URL
-    let info_url = format!("http://localhost:9000/source/youtube?id={}&get=info", video_id);
-    println!("[resolve] Fetching YouTube info for direct URL: {}", info_url);
+    let info_url = format!(
+        "http://localhost:9000/source/youtube?id={}&get=info",
+        video_id
+    );
+    println!(
+        "[resolve] Fetching YouTube info for direct URL: {}",
+        info_url
+    );
 
     let client = reqwest::Client::new();
-    let response = client.get(&info_url)
+    let response = client
+        .get(&info_url)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch YouTube info: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("YouTube info request failed with status: {}", response.status()));
+        return Err(format!(
+            "YouTube info request failed with status: {}",
+            response.status()
+        ));
     }
 
-    let data: serde_json::Value = response.json()
+    let data: serde_json::Value = response
+        .json()
         .await
         .map_err(|e| format!("Failed to parse YouTube info response: {}", e))?;
 
@@ -186,7 +215,10 @@ pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
         if success {
             if let Some(format_data) = data.get("data").and_then(|d| d.get("format")) {
                 if let Some(url) = format_data.get("url").and_then(|u| u.as_str()) {
-                    println!("[resolve] Successfully extracted direct YouTube CDN URL: {}", url);
+                    println!(
+                        "[resolve] Successfully extracted direct YouTube CDN URL: {}",
+                        url
+                    );
                     return Ok(url.to_string());
                 }
             }
@@ -194,11 +226,19 @@ pub async fn resolve_youtube_source(value: &str) -> Result<String, String> {
     }
 
     // Fallback to streaming endpoint if direct URL extraction fails
-    println!("[resolve] Falling back to streaming endpoint for video ID: {}", video_id);
-    Ok(format!("http://localhost:9000/source/youtube?id={}&get=stream", video_id))
+    println!(
+        "[resolve] Falling back to streaming endpoint for video ID: {}",
+        video_id
+    );
+    Ok(format!(
+        "http://localhost:9000/source/youtube?id={}&get=stream",
+        video_id
+    ))
 }
 
-pub async fn resolve_youtube_source_with_format(value: &str) -> Result<ResolvedAudioSource, String> {
+pub async fn resolve_youtube_source_with_format(
+    value: &str,
+) -> Result<ResolvedAudioSource, String> {
     // Determine the video ID from several possible input formats
     let mut video_id_opt: Option<String> = None;
 
@@ -215,7 +255,12 @@ pub async fn resolve_youtube_source_with_format(value: &str) -> Result<ResolvedA
     }
 
     // If not a local URL, check if value is already a video ID
-    if video_id_opt.is_none() && value.len() == 11 && value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if video_id_opt.is_none()
+        && value.len() == 11
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         video_id_opt = Some(value.to_string());
     }
 
@@ -242,20 +287,31 @@ pub async fn resolve_youtube_source_with_format(value: &str) -> Result<ResolvedA
     };
 
     // Get the info to extract the direct YouTube CDN URL and format information
-    let info_url = format!("http://localhost:9000/source/youtube?id={}&get=info", video_id);
-    println!("[resolve] Fetching YouTube info for direct URL with format: {}", info_url);
+    let info_url = format!(
+        "http://localhost:9000/source/youtube?id={}&get=info",
+        video_id
+    );
+    println!(
+        "[resolve] Fetching YouTube info for direct URL with format: {}",
+        info_url
+    );
 
     let client = reqwest::Client::new();
-    let response = client.get(&info_url)
+    let response = client
+        .get(&info_url)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch YouTube info: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("YouTube info request failed with status: {}", response.status()));
+        return Err(format!(
+            "YouTube info request failed with status: {}",
+            response.status()
+        ));
     }
 
-    let data: serde_json::Value = response.json()
+    let data: serde_json::Value = response
+        .json()
         .await
         .map_err(|e| format!("Failed to parse YouTube info response: {}", e))?;
 
@@ -267,12 +323,21 @@ pub async fn resolve_youtube_source_with_format(value: &str) -> Result<ResolvedA
                 if let Some(url) = format_data.get("url").and_then(|u| u.as_str()) {
                     // Extract format information
                     let audio_format = AudioFormat {
-                        acodec: format_data.get("acodec").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        ext: format_data.get("ext").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        acodec: format_data
+                            .get("acodec")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        ext: format_data
+                            .get("ext")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                         filesize: format_data.get("filesize").and_then(|v| v.as_u64()),
-                        mime_type: format_data.get("mime_type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        mime_type: format_data
+                            .get("mime_type")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                     };
-                    
+
                     println!("[resolve] Successfully extracted YouTube CDN URL");
                     return Ok(ResolvedAudioSource {
                         url: url.to_string(),
@@ -284,9 +349,15 @@ pub async fn resolve_youtube_source_with_format(value: &str) -> Result<ResolvedA
     }
 
     // Fallback to streaming endpoint if direct URL extraction fails
-    println!("[resolve] Falling back to streaming endpoint for video ID: {}", video_id);
+    println!(
+        "[resolve] Falling back to streaming endpoint for video ID: {}",
+        video_id
+    );
     Ok(ResolvedAudioSource {
-        url: format!("http://localhost:9000/source/youtube?id={}&get=stream", video_id),
+        url: format!(
+            "http://localhost:9000/source/youtube?id={}&get=stream",
+            video_id
+        ),
         format: None,
     })
 }
@@ -306,8 +377,11 @@ pub struct ResolvedAudioSource {
 }
 
 pub async fn resolve_audio_source(source_type: &str, value: &str) -> Result<String, String> {
-    println!("[bass] resolve_audio_source called with type: '{}', value: '{}'", source_type, value);
-    
+    println!(
+        "[bass] resolve_audio_source called with type: '{}', value: '{}'",
+        source_type, value
+    );
+
     let result = match source_type {
         "local" => resolve_local_source(value).await,
         "http" => resolve_http_source(value).await,
@@ -316,20 +390,27 @@ pub async fn resolve_audio_source(source_type: &str, value: &str) -> Result<Stri
         _ => {
             println!("[bass] Unsupported source type: {}", source_type);
             Err(format!("Unsupported source type: {}", source_type))
-        },
+        }
     };
-    
+
     match &result {
         Ok(url) => println!("[bass] Source resolution successful: {}", url),
         Err(error) => println!("[bass] Source resolution failed: {}", error),
     }
-    
+
     result
 }
 
-pub async fn resolve_audio_source_with_format(source_type: &str, value: &str, file_index: Option<usize>) -> Result<ResolvedAudioSource, String> {
-    println!("[bass] resolve_audio_source_with_format called with type: '{}', value: '{}'", source_type, value);
-    
+pub async fn resolve_audio_source_with_format(
+    source_type: &str,
+    value: &str,
+    file_index: Option<usize>,
+) -> Result<ResolvedAudioSource, String> {
+    println!(
+        "[bass] resolve_audio_source_with_format called with type: '{}', value: '{}'",
+        source_type, value
+    );
+
     // First, resolve the final URL for the source type
     let resolved = match source_type {
         "local" => resolve_local_source(value).await?,
@@ -339,11 +420,11 @@ pub async fn resolve_audio_source_with_format(source_type: &str, value: &str, fi
             // For YouTube we already extract format when possible via server info
             let yt = resolve_youtube_source_with_format(value).await?;
             return Ok(yt);
-        },
+        }
         _ => {
             println!("[bass] Unsupported source type: {}", source_type);
             return Err(format!("Unsupported source type: {}", source_type));
-        },
+        }
     };
 
     // Try probing format using BASS (shared helper) without starting full playback
@@ -363,8 +444,11 @@ pub async fn resolve_audio_source_with_format(source_type: &str, value: &str, fi
         println!("[bass] Unable to load BASS library for format probing");
     }
 
-    let result = ResolvedAudioSource { url: resolved, format };
-    
+    let result = ResolvedAudioSource {
+        url: resolved,
+        format,
+    };
+
     println!("[bass] Source resolution successful");
     Ok(result)
 }

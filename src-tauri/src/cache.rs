@@ -1,19 +1,19 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::io::Write;
+use crate::downloads;
+use crate::utils::resolve_audio_source;
+use once_cell::sync::Lazy;
+use reqwest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
-use tokio::sync::mpsc;
-use reqwest;
-use tokio::io::AsyncWriteExt;
-use tokio::fs as tokio_fs;
-use tauri::Manager;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
-use crate::utils::resolve_audio_source;
-use crate::downloads;
+use tauri::Manager;
+use tokio::fs as tokio_fs;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct CacheDownloadResult {
@@ -91,9 +91,20 @@ impl AudioCache {
         })
     }
 
-    fn generate_cache_key_with_index(track_id: &str, source_type: &str, source_hash: &str, file_index: Option<usize>) -> String {
+    fn generate_cache_key_with_index(
+        track_id: &str,
+        source_type: &str,
+        source_hash: &str,
+        file_index: Option<usize>,
+    ) -> String {
         if source_type == "torrent" && file_index.is_some() {
-            format!("{}:{}:{}:{}", track_id, source_type, source_hash, file_index.unwrap())
+            format!(
+                "{}:{}:{}:{}",
+                track_id,
+                source_type,
+                source_hash,
+                file_index.unwrap()
+            )
         } else {
             format!("{}:{}:{}", track_id, source_type, source_hash)
         }
@@ -102,25 +113,31 @@ impl AudioCache {
     fn load_index(index_file: &Path) -> Result<CacheIndex, String> {
         let content = fs::read_to_string(index_file)
             .map_err(|e| format!("Failed to read cache index: {}", e))?;
-        
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse cache index: {}", e))
+
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse cache index: {}", e))
     }
 
     fn save_index(&self) -> Result<(), String> {
         let content = serde_json::to_string_pretty(&self.index)
             .map_err(|e| format!("Failed to serialize cache index: {}", e))?;
-        
+
         fs::write(&self.index_file, content)
             .map_err(|e| format!("Failed to write cache index: {}", e))
     }
 
-    pub fn get_cached_file_with_index(&mut self, track_id: &str, source_type: &str, source_hash: &str, file_index: Option<usize>) -> Option<PathBuf> {
-        let cache_key = Self::generate_cache_key_with_index(track_id, source_type, source_hash, file_index);
-        
+    pub fn get_cached_file_with_index(
+        &mut self,
+        track_id: &str,
+        source_type: &str,
+        source_hash: &str,
+        file_index: Option<usize>,
+    ) -> Option<PathBuf> {
+        let cache_key =
+            Self::generate_cache_key_with_index(track_id, source_type, source_hash, file_index);
+
         if let Some(entry) = self.index.entries.get_mut(&cache_key) {
             let file_path = self.cache_dir.join(&entry.file_path);
-            
+
             // Check if file actually exists
             if file_path.exists() {
                 // Update last accessed time
@@ -128,34 +145,73 @@ impl AudioCache {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                
+
                 return Some(file_path);
             } else {
                 // File doesn't exist, remove from index
-                println!("[cache] Cached file missing, removing from index: {} ({}:{}) index {:?}", track_id, source_type, source_hash, file_index);
+                println!(
+                    "[cache] Cached file missing, removing from index: {} ({}:{}) index {:?}",
+                    track_id, source_type, source_hash, file_index
+                );
                 self.index.total_size = self.index.total_size.saturating_sub(entry.file_size);
                 self.index.entries.remove(&cache_key);
                 let _ = self.save_index();
             }
         }
-        
+
         // Debounce frequent cache miss logs to avoid spamming when frontend polls repeatedly
-        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let mut recent = RECENT_MISSES.lock().unwrap();
         let last = recent.get(&cache_key).cloned().unwrap_or(0);
         if now_secs.saturating_sub(last) >= MISS_LOG_DEBOUNCE_SECS {
-            println!("[cache] Cache miss for track: {} ({}:{}) index {:?}", track_id, source_type, source_hash, file_index);
+            println!(
+                "[cache] Cache miss for track: {} ({}:{}) index {:?}",
+                track_id, source_type, source_hash, file_index
+            );
             recent.insert(cache_key.clone(), now_secs);
         }
         None
     }
 
-    pub fn add_cached_file_with_index(&mut self, track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64, file_index: Option<usize>) -> Result<(), String> {
-        self.add_cached_file_with_index_and_format(track_id, source_type, source_hash, file_path, file_size, file_index, None, None, None)
+    pub fn add_cached_file_with_index(
+        &mut self,
+        track_id: String,
+        source_type: String,
+        source_hash: String,
+        file_path: String,
+        file_size: u64,
+        file_index: Option<usize>,
+    ) -> Result<(), String> {
+        self.add_cached_file_with_index_and_format(
+            track_id,
+            source_type,
+            source_hash,
+            file_path,
+            file_size,
+            file_index,
+            None,
+            None,
+            None,
+        )
     }
 
-    pub fn add_cached_file_with_index_and_format(&mut self, track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64, file_index: Option<usize>, codec: Option<String>, sample_rate: Option<u32>, bits_per_sample: Option<u32>) -> Result<(), String> {
-        let cache_key = Self::generate_cache_key_with_index(&track_id, &source_type, &source_hash, file_index);
+    pub fn add_cached_file_with_index_and_format(
+        &mut self,
+        track_id: String,
+        source_type: String,
+        source_hash: String,
+        file_path: String,
+        file_size: u64,
+        file_index: Option<usize>,
+        codec: Option<String>,
+        sample_rate: Option<u32>,
+        bits_per_sample: Option<u32>,
+    ) -> Result<(), String> {
+        let cache_key =
+            Self::generate_cache_key_with_index(&track_id, &source_type, &source_hash, file_index);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -196,7 +252,10 @@ impl AudioCache {
             .as_secs();
 
         // Remove entries that are too old in one pass
-        let mut keys_to_remove: Vec<String> = self.index.entries.iter()
+        let mut keys_to_remove: Vec<String> = self
+            .index
+            .entries
+            .iter()
             .filter(|(_, entry)| now.saturating_sub(entry.cached_at) > max_age_seconds)
             .map(|(key, _)| key.clone())
             .collect();
@@ -208,14 +267,20 @@ impl AudioCache {
                     let _ = fs::remove_file(file_path);
                 }
                 self.index.total_size = self.index.total_size.saturating_sub(entry.file_size);
-                println!("[cache] Removed old cached file: {} ({}:{})", entry.track_id, entry.source_type, entry.source_hash);
+                println!(
+                    "[cache] Removed old cached file: {} ({}:{})",
+                    entry.track_id, entry.source_type, entry.source_hash
+                );
             }
         }
 
         // If still over size limit, remove least recently accessed files
         if self.index.total_size > max_size_bytes {
             // Sort by access time (oldest first) and collect with sizes
-            let mut entries_by_access: Vec<(String, u64)> = self.index.entries.iter()
+            let mut entries_by_access: Vec<(String, u64)> = self
+                .index
+                .entries
+                .iter()
                 .map(|(key, entry)| (key.clone(), entry.file_size))
                 .collect();
             entries_by_access.sort_by(|a, b| {
@@ -235,7 +300,10 @@ impl AudioCache {
                         let _ = fs::remove_file(file_path);
                     }
                     self.index.total_size = self.index.total_size.saturating_sub(entry.file_size);
-                    println!("[cache] Removed LRU cached file: {} ({}:{})", entry.track_id, entry.source_type, entry.source_hash);
+                    println!(
+                        "[cache] Removed LRU cached file: {} ({}:{})",
+                        entry.track_id, entry.source_type, entry.source_hash
+                    );
                 }
             }
         }
@@ -270,14 +338,31 @@ pub fn create_cache_filename(track_id: &str, source_type: &str, source_hash: &st
     create_cache_filename_with_index(track_id, source_type, source_hash, None)
 }
 
-pub fn create_cache_filename_with_index(track_id: &str, source_type: &str, source_hash: &str, file_index: Option<usize>) -> String {
+pub fn create_cache_filename_with_index(
+    track_id: &str,
+    source_type: &str,
+    source_hash: &str,
+    file_index: Option<usize>,
+) -> String {
     let safe_track: String = track_id
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let safe_hash: String = source_hash
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
     // Include file index for torrents to avoid cache conflicts
@@ -295,9 +380,11 @@ pub fn create_cache_filename_with_index(track_id: &str, source_type: &str, sourc
 static CACHE: Lazy<Mutex<Option<AudioCache>>> = Lazy::new(|| Mutex::new(None));
 
 // Track inflight downloads: map cache_key -> (bytes_written, optional_total_bytes)
-static INFLIGHT_DOWNLOADS: Lazy<Mutex<HashMap<String, (u64, Option<u64>)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static INFLIGHT_DOWNLOADS: Lazy<Mutex<HashMap<String, (u64, Option<u64>)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 // Track inflight metadata to recover identifiers for UI listing: cache_key -> (track_id, source_type, source_hash)
-static INFLIGHT_META: Lazy<Mutex<HashMap<String, (String, String, String)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static INFLIGHT_META: Lazy<Mutex<HashMap<String, (String, String, String)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Recent cache miss log debouncing: map cache_key -> last_logged_unix_seconds
 const MISS_LOG_DEBOUNCE_SECS: u64 = 5;
@@ -311,25 +398,32 @@ static NEGATIVE_CACHE: Lazy<Mutex<HashMap<String, u64>>> = Lazy::new(|| Mutex::n
 fn is_valid_audio_content(bytes: &[u8]) -> bool {
     // Check minimum size (audio files should be at least a few KB)
     if bytes.len() < 1024 {
-        println!("[cache] Content too small to be audio: {} bytes", bytes.len());
+        println!(
+            "[cache] Content too small to be audio: {} bytes",
+            bytes.len()
+        );
         return false;
     }
 
     // Check for HTML content (indicates error page)
     let content_start = &bytes[..std::cmp::min(bytes.len(), 512)];
     let content_str = String::from_utf8_lossy(content_start);
-    
-    if content_str.contains("<html") || content_str.contains("<HTML") ||
-       content_str.contains("<!DOCTYPE") || content_str.contains("doctype") {
+
+    if content_str.contains("<html")
+        || content_str.contains("<HTML")
+        || content_str.contains("<!DOCTYPE")
+        || content_str.contains("doctype")
+    {
         println!("[cache] Content appears to be HTML error page");
         return false;
     }
 
     // Check for common error messages in content
-    if content_str.contains("Video unavailable") || 
-       content_str.contains("This video is unavailable") ||
-       content_str.contains("ERROR") ||
-       content_str.contains("error") {
+    if content_str.contains("Video unavailable")
+        || content_str.contains("This video is unavailable")
+        || content_str.contains("ERROR")
+        || content_str.contains("error")
+    {
         println!("[cache] Content contains error messages");
         return false;
     }
@@ -339,10 +433,10 @@ fn is_valid_audio_content(bytes: &[u8]) -> bool {
     if bytes.len() > 8 {
         // Look for 'ftyp' box which is common in MP4/M4A files
         for i in 4..std::cmp::min(bytes.len() - 4, 64) {
-            if &bytes[i..i+4] == b"ftyp" {
+            if &bytes[i..i + 4] == b"ftyp" {
                 return true;
             }
-        }        
+        }
         // If we don't find ftyp, it might still be valid audio, so we'll be permissive
     }
 
@@ -358,12 +452,21 @@ pub fn init_cache(app_config_dir: &Path) -> Result<(), String> {
 }
 
 /// Get a cached file path if it exists
-pub fn get_cached_file_path(track_id: &str, source_type: &str, source_hash: &str) -> Option<PathBuf> {
+pub fn get_cached_file_path(
+    track_id: &str,
+    source_type: &str,
+    source_hash: &str,
+) -> Option<PathBuf> {
     get_cached_file_path_with_index(track_id, source_type, source_hash, None)
 }
 
 /// Get a cached file path if it exists (with file index support for torrents)
-pub fn get_cached_file_path_with_index(track_id: &str, source_type: &str, source_hash: &str, file_index: Option<usize>) -> Option<PathBuf> {
+pub fn get_cached_file_path_with_index(
+    track_id: &str,
+    source_type: &str,
+    source_hash: &str,
+    file_index: Option<usize>,
+) -> Option<PathBuf> {
     let mut cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_mut() {
         cache.get_cached_file_with_index(track_id, source_type, source_hash, file_index)
@@ -379,39 +482,94 @@ pub fn get_cache_dir() -> Option<PathBuf> {
 }
 
 /// Add a cached file to the cache index (with file index support for torrents)
-pub fn add_cached_file_to_index_with_index(track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64, file_index: Option<usize>) -> Result<(), String> {
+pub fn add_cached_file_to_index_with_index(
+    track_id: String,
+    source_type: String,
+    source_hash: String,
+    file_path: String,
+    file_size: u64,
+    file_index: Option<usize>,
+) -> Result<(), String> {
     let mut cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_mut() {
-        cache.add_cached_file_with_index(track_id, source_type, source_hash, file_path, file_size, file_index)
+        cache.add_cached_file_with_index(
+            track_id,
+            source_type,
+            source_hash,
+            file_path,
+            file_size,
+            file_index,
+        )
     } else {
         Err("Cache not initialized".to_string())
     }
 }
 
 /// Add a cached file to the cache index
-pub fn add_cached_file_to_index(track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64) -> Result<(), String> {
-    add_cached_file_to_index_with_index(track_id, source_type, source_hash, file_path, file_size, None)
+pub fn add_cached_file_to_index(
+    track_id: String,
+    source_type: String,
+    source_hash: String,
+    file_path: String,
+    file_size: u64,
+) -> Result<(), String> {
+    add_cached_file_to_index_with_index(
+        track_id,
+        source_type,
+        source_hash,
+        file_path,
+        file_size,
+        None,
+    )
 }
 
 /// Add a cached file with optional format info
-pub fn add_cached_file_to_index_with_format(track_id: String, source_type: String, source_hash: String, file_path: String, file_size: u64, file_index: Option<usize>, codec: Option<String>, sample_rate: Option<u32>, bits_per_sample: Option<u32>) -> Result<(), String> {
+pub fn add_cached_file_to_index_with_format(
+    track_id: String,
+    source_type: String,
+    source_hash: String,
+    file_path: String,
+    file_size: u64,
+    file_index: Option<usize>,
+    codec: Option<String>,
+    sample_rate: Option<u32>,
+    bits_per_sample: Option<u32>,
+) -> Result<(), String> {
     let mut cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_mut() {
-        cache.add_cached_file_with_index_and_format(track_id, source_type, source_hash, file_path, file_size, file_index, codec, sample_rate, bits_per_sample)
+        cache.add_cached_file_with_index_and_format(
+            track_id,
+            source_type,
+            source_hash,
+            file_path,
+            file_size,
+            file_index,
+            codec,
+            sample_rate,
+            bits_per_sample,
+        )
     } else {
         Err("Cache not initialized".to_string())
     }
 }
 
 // Return current inflight download status (bytes_downloaded, optional total) for a given key
-pub fn get_inflight_status(track_id: &str, source_type: &str, source_hash: &str) -> Option<(u64, Option<u64>)> {
+pub fn get_inflight_status(
+    track_id: &str,
+    source_type: &str,
+    source_hash: &str,
+) -> Option<(u64, Option<u64>)> {
     let cache_key = create_cache_filename(track_id, source_type, source_hash);
     let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
     inflight.get(&cache_key).cloned()
 }
 
 // Return the expected final (extension-less) path for a given cache key, if the cache is initialized.
-pub fn get_final_cache_path(track_id: &str, source_type: &str, source_hash: &str) -> Option<PathBuf> {
+pub fn get_final_cache_path(
+    track_id: &str,
+    source_type: &str,
+    source_hash: &str,
+) -> Option<PathBuf> {
     let cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_ref() {
         let base = create_cache_filename(track_id, source_type, source_hash);
@@ -422,11 +580,24 @@ pub fn get_final_cache_path(track_id: &str, source_type: &str, source_hash: &str
 
 // Tauri commands
 #[tauri::command]
-pub async fn cache_get_file(track_id: String, source_type: String, source_hash: String, file_index: Option<usize>) -> Result<serde_json::Value, String> {
+pub async fn cache_get_file(
+    track_id: String,
+    source_type: String,
+    source_hash: String,
+    file_index: Option<usize>,
+) -> Result<serde_json::Value, String> {
     println!("[cache] cache_get_file called with: track_id='{}', source_type='{}', source_hash='{}', file_index={:?}", track_id, source_type, source_hash, file_index);
     // If we recently answered a miss for this key, return quickly to avoid repeated work
-    let cache_key = AudioCache::generate_cache_key_with_index(&track_id, &source_type, &source_hash, file_index);
-    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let cache_key = AudioCache::generate_cache_key_with_index(
+        &track_id,
+        &source_type,
+        &source_hash,
+        file_index,
+    );
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     {
         let neg = NEGATIVE_CACHE.lock().unwrap();
         if let Some(&ts) = neg.get(&cache_key) {
@@ -440,14 +611,26 @@ pub async fn cache_get_file(track_id: String, source_type: String, source_hash: 
     let mut cache_guard = CACHE.lock().unwrap();
     if let Some(cache) = cache_guard.as_mut() {
         // Try to resolve entry and path together for returning extra metadata
-        let entry_opt_key = AudioCache::generate_cache_key_with_index(&track_id, &source_type, &source_hash, file_index);
+        let entry_opt_key = AudioCache::generate_cache_key_with_index(
+            &track_id,
+            &source_type,
+            &source_hash,
+            file_index,
+        );
         if let Some(entry) = cache.index.entries.get(&entry_opt_key).cloned() {
             let file_path = cache.cache_dir.join(&entry.file_path);
             if file_path.exists() {
                 // Found a cached file; clear any negative cache entry and return with format metadata
                 let mut neg = NEGATIVE_CACHE.lock().unwrap();
                 neg.remove(&cache_key);
-                println!("[cache] Found cached file for {}:{}:{} (index: {:?}) -> {}", track_id, source_type, source_hash, file_index, file_path.display());
+                println!(
+                    "[cache] Found cached file for {}:{}:{} (index: {:?}) -> {}",
+                    track_id,
+                    source_type,
+                    source_hash,
+                    file_index,
+                    file_path.display()
+                );
                 return Ok(serde_json::json!({
                     "cached_path": file_path.to_string_lossy().to_string(),
                     "exists": true,
@@ -457,7 +640,10 @@ pub async fn cache_get_file(track_id: String, source_type: String, source_hash: 
                 }));
             } else {
                 // File missing -> drop from index
-                println!("[cache] Cached file missing, removing from index: {} ({}:{}) index {:?}", track_id, source_type, source_hash, file_index);
+                println!(
+                    "[cache] Cached file missing, removing from index: {} ({}:{}) index {:?}",
+                    track_id, source_type, source_hash, file_index
+                );
                 cache.index.total_size = cache.index.total_size.saturating_sub(entry.file_size);
                 cache.index.entries.remove(&entry_opt_key);
                 let _ = cache.save_index();
@@ -475,11 +661,18 @@ pub async fn cache_get_file(track_id: String, source_type: String, source_hash: 
 }
 
 #[tauri::command]
-pub async fn cache_download_and_store(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String, url: String, file_index: Option<usize>) -> Result<String, String> {
+pub async fn cache_download_and_store(
+    app: tauri::AppHandle,
+    track_id: String,
+    source_type: String,
+    source_hash: String,
+    url: String,
+    file_index: Option<usize>,
+) -> Result<String, String> {
     println!("[cache] cache_download_and_store called with track_id: '{}', source_type: '{}', source_hash: '{}', url: '{}', file_index: {:?}", track_id, source_type, source_hash, &url[..50.min(url.len())], file_index);
-    
+
     let (tx, _rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
-    
+
     // spawn background task to avoid blocking the command
     let app_clone = app.clone();
     tokio::spawn(async move {
@@ -488,85 +681,155 @@ pub async fn cache_download_and_store(app: tauri::AppHandle, track_id: String, s
             let mut retry_count = 0;
             let max_retries = 10; // Try for up to 10 times
             let mut last_progress: Option<u64> = None; // Track progress between retries
-            
+
             loop {
-                println!("[cache] Torrent download attempt {} of {} for {}", retry_count + 1, max_retries, track_id);
-                
+                println!(
+                    "[cache] Torrent download attempt {} of {} for {}",
+                    retry_count + 1,
+                    max_retries,
+                    track_id
+                );
+
                 // Check current progress before attempting download
                 let current_progress = {
-                    let cache_key = create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
+                    let cache_key = create_cache_filename_with_index(
+                        &track_id,
+                        &source_type,
+                        &source_hash,
+                        file_index,
+                    );
                     let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                    inflight.get(&cache_key).map(|(bytes, _)| *bytes).unwrap_or(0)
+                    inflight
+                        .get(&cache_key)
+                        .map(|(bytes, _)| *bytes)
+                        .unwrap_or(0)
                 };
-                
+
                 // If we have made progress since last attempt, reset retry count to be more patient
                 if let Some(last_bytes) = last_progress {
                     if current_progress > last_bytes {
-                        let progress_mb = (current_progress - last_bytes) as f64 / (1024.0 * 1024.0);
+                        let progress_mb =
+                            (current_progress - last_bytes) as f64 / (1024.0 * 1024.0);
                         println!("[cache] Progress detected: +{:.2}MB downloaded since last attempt, resetting retry patience", progress_mb);
                         retry_count = 0; // Reset retry count when we see progress
                     }
                 }
                 last_progress = Some(current_progress);
-                
-                download_and_cache_audio(Some(app_clone.clone()), track_id.clone(), source_type.clone(), source_hash.clone(), url.clone(), file_index, tx.clone()).await;
-                
+
+                download_and_cache_audio(
+                    Some(app_clone.clone()),
+                    track_id.clone(),
+                    source_type.clone(),
+                    source_hash.clone(),
+                    url.clone(),
+                    file_index,
+                    tx.clone(),
+                )
+                .await;
+
                 // Check if the file was successfully cached
                 let cache_key = if file_index.is_some() {
-                    format!("{}:{}:{}:{}", track_id, source_type, source_hash, file_index.unwrap())
+                    format!(
+                        "{}:{}:{}:{}",
+                        track_id,
+                        source_type,
+                        source_hash,
+                        file_index.unwrap()
+                    )
                 } else {
                     format!("{}:{}:{}", track_id, source_type, source_hash)
                 };
-                
+
                 // Quick check if file exists in cache
                 let is_cached = {
                     let mut cache = crate::cache::CACHE.lock().unwrap();
                     if let Some(cache_ref) = cache.as_mut() {
-                        cache_ref.get_cached_file_with_index(&track_id, &source_type, &source_hash, file_index).is_some()
+                        cache_ref
+                            .get_cached_file_with_index(
+                                &track_id,
+                                &source_type,
+                                &source_hash,
+                                file_index,
+                            )
+                            .is_some()
                     } else {
                         false
                     }
                 };
-                
+
                 if is_cached {
-                    println!("[cache] Torrent download completed successfully for {}", track_id);
+                    println!(
+                        "[cache] Torrent download completed successfully for {}",
+                        track_id
+                    );
                     break;
                 }
-                
+
                 // Check if we're making progress even if not complete
                 let final_progress = {
-                    let cache_key = create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
+                    let cache_key = create_cache_filename_with_index(
+                        &track_id,
+                        &source_type,
+                        &source_hash,
+                        file_index,
+                    );
                     let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                    inflight.get(&cache_key).map(|(bytes, _)| *bytes).unwrap_or(0)
+                    inflight
+                        .get(&cache_key)
+                        .map(|(bytes, _)| *bytes)
+                        .unwrap_or(0)
                 };
-                
+
                 // If file is actively downloading (has significant progress), be more patient
-                if final_progress > 1024 * 1024 { // More than 1MB downloaded
-                    println!("[cache] Torrent has significant progress ({:.2}MB), extending patience", final_progress as f64 / (1024.0 * 1024.0));
+                if final_progress > 1024 * 1024 {
+                    // More than 1MB downloaded
+                    println!(
+                        "[cache] Torrent has significant progress ({:.2}MB), extending patience",
+                        final_progress as f64 / (1024.0 * 1024.0)
+                    );
                     // Don't increment retry count if we have substantial data
                 } else {
                     retry_count += 1;
                 }
-                
+
                 if retry_count >= max_retries {
                     println!("[cache] Max retries exceeded for torrent download: {} (final progress: {:.2}MB)", track_id, final_progress as f64 / (1024.0 * 1024.0));
-                    let _ = app_clone.emit("cache:download:error", serde_json::json!({
-                        "trackId": track_id,
-                        "sourceType": source_type,
-                        "sourceHash": source_hash,
-                        "message": "Torrent download timeout after multiple retries"
-                    }));
+                    let _ = app_clone.emit(
+                        "cache:download:error",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "message": "Torrent download timeout after multiple retries"
+                        }),
+                    );
                     break;
                 }
-                
+
                 // Wait before retrying (exponential backoff: 2, 4, 8, 16 seconds, then 30 seconds)
-                let delay_secs = if retry_count <= 4 { 2_u64.pow(retry_count as u32) } else { 30 };
-                println!("[cache] Waiting {} seconds before retry for torrent: {}", delay_secs, track_id);
+                let delay_secs = if retry_count <= 4 {
+                    2_u64.pow(retry_count as u32)
+                } else {
+                    30
+                };
+                println!(
+                    "[cache] Waiting {} seconds before retry for torrent: {}",
+                    delay_secs, track_id
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
             }
         } else {
             // Non-torrent downloads: single attempt
-            download_and_cache_audio(Some(app_clone), track_id, source_type, source_hash, url, file_index, tx).await;
+            download_and_cache_audio(
+                Some(app_clone),
+                track_id,
+                source_type,
+                source_hash,
+                url,
+                file_index,
+                tx,
+            )
+            .await;
         }
     });
 
@@ -574,7 +837,15 @@ pub async fn cache_download_and_store(app: tauri::AppHandle, track_id: String, s
     Ok("Download started".to_string())
 }
 
-pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: String, source_type: String, source_hash: String, url: String, file_index: Option<usize>, tx: mpsc::UnboundedSender<CacheDownloadResult>) {
+pub async fn download_and_cache_audio(
+    app: Option<tauri::AppHandle>,
+    track_id: String,
+    source_type: String,
+    source_hash: String,
+    url: String,
+    file_index: Option<usize>,
+    tx: mpsc::UnboundedSender<CacheDownloadResult>,
+) {
     println!("[cache] Incoming params -> track: '{}', source_type: '{}', hash: '{}', url: '{}', file_index: {:?}", track_id, source_type, source_hash, url, file_index);
 
     // Resolve the provided URL to a direct download URL when possible. This avoids
@@ -588,18 +859,35 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 let hash_start = start + 12;
                 if let Some(end) = url[hash_start..].find('&') {
                     let info_hash = &url[hash_start..hash_start + end];
-                    format!("http://localhost:9000/stream/{}/{}?magnet={}", info_hash.to_lowercase(), file_idx, urlencoding::encode(&url))
+                    format!(
+                        "http://localhost:9000/stream/{}/{}?magnet={}",
+                        info_hash.to_lowercase(),
+                        file_idx,
+                        urlencoding::encode(&url)
+                    )
                 } else {
                     let info_hash = &url[hash_start..];
-                    format!("http://localhost:9000/stream/{}/{}?magnet={}", info_hash.to_lowercase(), file_idx, urlencoding::encode(&url))
+                    format!(
+                        "http://localhost:9000/stream/{}/{}?magnet={}",
+                        info_hash.to_lowercase(),
+                        file_idx,
+                        urlencoding::encode(&url)
+                    )
                 }
             } else {
-                println!("[cache] Invalid magnet URI for torrent with file index: {}", url);
+                println!(
+                    "[cache] Invalid magnet URI for torrent with file index: {}",
+                    url
+                );
                 url.clone()
             }
         } else {
             // Assume it's already an infoHash
-            format!("http://localhost:9000/stream/{}/{}", url.to_lowercase(), file_idx)
+            format!(
+                "http://localhost:9000/stream/{}/{}",
+                url.to_lowercase(),
+                file_idx
+            )
         }
     } else {
         match resolve_audio_source(&source_type, &url).await {
@@ -618,58 +906,82 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         .unwrap();
 
     // Issue request
-    println!("[cache] Downloading for {} ({}:{}) from: {} (file_index: {:?})", track_id, source_type, source_hash, resolved, file_index);
-    
+    println!(
+        "[cache] Downloading for {} ({}:{}) from: {} (file_index: {:?})",
+        track_id, source_type, source_hash, resolved, file_index
+    );
+
     // Check if it's a localhost request and verify server is running
     if resolved.starts_with("http://localhost:9000") {
         if let Some(app_ref) = app.as_ref() {
-            match app_ref.state::<crate::server::PathState>().get_server_status().await {
+            match app_ref
+                .state::<crate::server::PathState>()
+                .get_server_status()
+                .await
+            {
                 Ok(status) => {
                     let is_running = status.pid.is_some();
-                    println!("[cache] Server status: running={}, pid={:?}, port={:?}", is_running, status.pid, status.port);
+                    println!(
+                        "[cache] Server status: running={}, pid={:?}, port={:?}",
+                        is_running, status.pid, status.port
+                    );
                     if !is_running {
-                        println!("[cache] Server is not running, cannot download from localhost:9000");
+                        println!(
+                            "[cache] Server is not running, cannot download from localhost:9000"
+                        );
                         if let Some(app_ref) = app.as_ref() {
-                            let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                                "trackId": track_id,
-                                "sourceType": source_type,
-                                "sourceHash": source_hash,
-                                "message": "Torrent streaming server is not running"
-                            }));
+                            let _ = app_ref.emit(
+                                "cache:download:error",
+                                serde_json::json!({
+                                    "trackId": track_id,
+                                    "sourceType": source_type,
+                                    "sourceHash": source_hash,
+                                    "message": "Torrent streaming server is not running"
+                                }),
+                            );
                         }
                         return;
                     }
-                },
+                }
                 Err(e) => {
                     println!("[cache] Server status check failed: {}", e);
                     if let Some(app_ref) = app.as_ref() {
-                        let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                            "trackId": track_id,
-                            "sourceType": source_type,
-                            "sourceHash": source_hash,
-                            "message": format!("Server status check failed: {}", e)
-                        }));
+                        let _ = app_ref.emit(
+                            "cache:download:error",
+                            serde_json::json!({
+                                "trackId": track_id,
+                                "sourceType": source_type,
+                                "sourceHash": source_hash,
+                                "message": format!("Server status check failed: {}", e)
+                            }),
+                        );
                     }
                     return;
                 }
             }
         }
     }
-    
+
     let resp = match client.get(&resolved).send().await {
         Ok(r) => {
             println!("[cache] HTTP request successful, status: {}", r.status());
             r
-        },
+        }
         Err(e) => {
-            println!("[cache] Download request failed for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            println!(
+                "[cache] Download request failed for {} ({}:{}): {}",
+                track_id, source_type, source_hash, e
+            );
             if let Some(app_ref) = app.as_ref() {
-                let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                    "trackId": track_id,
-                    "sourceType": source_type,
-                    "sourceHash": source_hash,
-                    "message": format!("Request failed: {}", e)
-                }));
+                let _ = app_ref.emit(
+                    "cache:download:error",
+                    serde_json::json!({
+                        "trackId": track_id,
+                        "sourceType": source_type,
+                        "sourceHash": source_hash,
+                        "message": format!("Request failed: {}", e)
+                    }),
+                );
             }
             return;
         }
@@ -677,48 +989,66 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
 
     // Handle special case for torrents: 202 means file is downloading but not ready yet
     if resp.status() == 202 && source_type == "torrent" {
-        println!("[cache] Torrent file not ready yet (HTTP 202), will retry later for {} ({}:{})", track_id, source_type, source_hash);
-        
+        println!(
+            "[cache] Torrent file not ready yet (HTTP 202), will retry later for {} ({}:{})",
+            track_id, source_type, source_hash
+        );
+
         // Try to get progress information from the response
         if let Ok(response_text) = resp.text().await {
             if let Ok(response_json) = serde_json::from_str::<serde_json::Value>(&response_text) {
                 if let Some(progress) = response_json.get("progress").and_then(|p| p.as_f64()) {
-                    println!("[cache] Torrent file download progress: {:.2}%", progress * 100.0);
+                    println!(
+                        "[cache] Torrent file download progress: {:.2}%",
+                        progress * 100.0
+                    );
                 }
             }
         }
-        
+
         // Emit a specific event for torrent download in progress
         if let Some(app_ref) = app.as_ref() {
-            let _ = app_ref.emit("cache:download:progress", serde_json::json!({
-                "trackId": track_id,
-                "sourceType": source_type,
-                "sourceHash": source_hash,
-                "message": "Torrent file downloading, please wait...",
-                "status": "downloading"
-            }));
+            let _ = app_ref.emit(
+                "cache:download:progress",
+                serde_json::json!({
+                    "trackId": track_id,
+                    "sourceType": source_type,
+                    "sourceHash": source_hash,
+                    "message": "Torrent file downloading, please wait...",
+                    "status": "downloading"
+                }),
+            );
         }
         return;
     }
 
     if !resp.status().is_success() {
-        
-        println!("[cache] Download failed with status {} for {} ({}:{})", resp.status(), track_id, source_type, source_hash);
+        println!(
+            "[cache] Download failed with status {} for {} ({}:{})",
+            resp.status(),
+            track_id,
+            source_type,
+            source_hash
+        );
         if let Some(app_ref) = app.as_ref() {
-            let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                "trackId": track_id,
-                "sourceType": source_type,
-                "sourceHash": source_hash,
-                "message": format!("HTTP status {}", resp.status())
-            }));
+            let _ = app_ref.emit(
+                "cache:download:error",
+                serde_json::json!({
+                    "trackId": track_id,
+                    "sourceType": source_type,
+                    "sourceHash": source_hash,
+                    "message": format!("HTTP status {}", resp.status())
+                }),
+            );
         }
         return;
     }
     // Use shared helper for consistent base name
-    let base_name = create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
+    let base_name =
+        create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
     // Ensure we have a control handle for this download
     downloads::ensure_control_for(&base_name);
-    
+
     // We'll write to a .part file and then rename to final (extension-less) name on success
     let cache_file_name = format!("{}.part", base_name);
 
@@ -728,7 +1058,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         if let Some(c) = cache_guard.as_ref() {
             c.cache_dir.clone()
         } else {
-            println!("[cache] Cache not initialized, cannot cache {} ({}:{})", track_id, source_type, source_hash);
+            println!(
+                "[cache] Cache not initialized, cannot cache {} ({}:{})",
+                track_id, source_type, source_hash
+            );
             return;
         }
     };
@@ -739,35 +1072,47 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     // Stream response into part file while collecting initial bytes for validation
     // Capture content length before consuming the response
     let content_len_opt = resp.content_length();
-    
+
     // Check for custom X-Expected-Length header for torrents using chunked encoding
-    let expected_length_opt = resp.headers()
+    let expected_length_opt = resp
+        .headers()
         .get("X-Expected-Length")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
-    
+
     // Use expected length if content length is not available (for chunked transfers)
     let total_size_opt = content_len_opt.or(expected_length_opt);
-    
+
     if source_type == "torrent" && content_len_opt.is_none() && expected_length_opt.is_some() {
-        println!("[cache] Using expected length {} for chunked torrent transfer {} ({}:{})", 
-            expected_length_opt.unwrap(), track_id, source_type, source_hash);
+        println!(
+            "[cache] Using expected length {} for chunked torrent transfer {} ({}:{})",
+            expected_length_opt.unwrap(),
+            track_id,
+            source_type,
+            source_hash
+        );
     }
-    
+
     let mut stream = resp.bytes_stream();
 
     // Open async file for writing
     let mut file = match tokio_fs::File::create(&cache_path).await {
         Ok(f) => f,
-            Err(e) => {
-            println!("[cache] Failed to create cache file {:?}: {}", cache_path, e);
+        Err(e) => {
+            println!(
+                "[cache] Failed to create cache file {:?}: {}",
+                cache_path, e
+            );
             if let Some(app_ref) = app.as_ref() {
-                let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                    "trackId": track_id,
-                    "sourceType": source_type,
-                    "sourceHash": source_hash,
-                    "message": format!("Failed to create cache file: {}", e)
-                }));
+                let _ = app_ref.emit(
+                    "cache:download:error",
+                    serde_json::json!({
+                        "trackId": track_id,
+                        "sourceType": source_type,
+                        "sourceHash": source_hash,
+                        "message": format!("Failed to create cache file: {}", e)
+                    }),
+                );
             }
             return;
         }
@@ -777,6 +1122,7 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     let mut prefix_buf: Vec<u8> = Vec::with_capacity(VALIDATION_BYTES);
     let mut total_written: u64 = 0;
     let mut ready_emitted = false;
+    #[allow(unused_assignments)]
     let mut download_complete = false; // Track if download completed successfully
 
     use futures_util::StreamExt;
@@ -786,19 +1132,25 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
         inflight.insert(base_name.clone(), (0u64, total_size_opt));
         let mut meta = INFLIGHT_META.lock().unwrap();
-        meta.insert(base_name.clone(), (track_id.clone(), source_type.clone(), source_hash.clone()));
+        meta.insert(
+            base_name.clone(),
+            (track_id.clone(), source_type.clone(), source_hash.clone()),
+        );
     }
 
     // Emit initial progress event
     if let Some(app_ref) = app.as_ref() {
-        let _ = app_ref.emit("cache:download:progress", serde_json::json!({
-            "trackId": track_id,
-            "sourceType": source_type,
-            "sourceHash": source_hash,
-            "bytes_downloaded": 0u64,
-            "total_bytes": total_size_opt,
-            "inflight": true
-        }));
+        let _ = app_ref.emit(
+            "cache:download:progress",
+            serde_json::json!({
+                "trackId": track_id,
+                "sourceType": source_type,
+                "sourceHash": source_hash,
+                "bytes_downloaded": 0u64,
+                "total_bytes": total_size_opt,
+                "inflight": true
+            }),
+        );
     }
 
     // For torrents, start a progress polling task to get real-time server-side progress
@@ -809,39 +1161,48 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         let file_index_clone = file_index;
         let app_clone = app.clone();
         let base_name_clone = base_name.clone();
-        
+
         Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
             interval.tick().await; // Skip first tick (immediate)
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // Poll server for progress
-                if let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build() {
-                    let progress_url = format!("http://localhost:9000/progress/{}/{}", 
-                        source_hash_clone, file_index_clone.unwrap_or(0));
-                    
+                if let Ok(client) = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                {
+                    let progress_url = format!(
+                        "http://localhost:9000/progress/{}/{}",
+                        source_hash_clone,
+                        file_index_clone.unwrap_or(0)
+                    );
+
                     if let Ok(resp) = client.get(&progress_url).send().await {
                         if let Ok(progress_data) = resp.json::<serde_json::Value>().await {
                             if let Some(data) = progress_data.get("data") {
                                 if let (Some(progress), Some(downloaded), Some(total)) = (
                                     data.get("progress").and_then(|v| v.as_f64()),
                                     data.get("downloaded").and_then(|v| v.as_u64()),
-                                    data.get("total").and_then(|v| v.as_u64())
+                                    data.get("total").and_then(|v| v.as_u64()),
                                 ) {
                                     if let Some(app_ref) = app_clone.as_ref() {
-                                        let _ = app_ref.emit("cache:download:progress", serde_json::json!({
-                                            "trackId": track_id_clone,
-                                            "sourceType": source_type_clone,
-                                            "sourceHash": source_hash_clone,
-                                            "bytes_downloaded": downloaded,
-                                            "total_bytes": total,
-                                            "inflight": progress < 1.0, // Mark as inflight until 100% complete
-                                            "source": "torrent_polling"
-                                        }));
+                                        let _ = app_ref.emit(
+                                            "cache:download:progress",
+                                            serde_json::json!({
+                                                "trackId": track_id_clone,
+                                                "sourceType": source_type_clone,
+                                                "sourceHash": source_hash_clone,
+                                                "bytes_downloaded": downloaded,
+                                                "total_bytes": total,
+                                                "inflight": progress < 1.0, // Mark as inflight until 100% complete
+                                                "source": "torrent_polling"
+                                            }),
+                                        );
                                     }
-                                    
+
                                     // Stop polling when file is 100% complete
                                     if progress >= 1.0 {
                                         break;
@@ -872,17 +1233,23 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     while let Some(item) = stream.next().await {
         // Respect pause/cancel controls
         if downloads::is_cancelled(&base_name) {
-            println!("[cache] Cancel requested for {} ({}:{})", track_id, source_type, source_hash);
+            println!(
+                "[cache] Cancel requested for {} ({}:{})",
+                track_id, source_type, source_hash
+            );
             let _ = tokio_fs::remove_file(&cache_path).await;
             let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
             inflight.remove(&base_name);
             if let Some(app_ref) = app.as_ref() {
-                let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                    "trackId": track_id,
-                    "sourceType": source_type,
-                    "sourceHash": source_hash,
-                    "message": "cancelled"
-                }));
+                let _ = app_ref.emit(
+                    "cache:download:error",
+                    serde_json::json!({
+                        "trackId": track_id,
+                        "sourceType": source_type,
+                        "sourceHash": source_hash,
+                        "message": "cancelled"
+                    }),
+                );
             }
             // Clear control state
             downloads::clear_control(&base_name);
@@ -891,7 +1258,9 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         // If paused, wait until resumed or cancelled
         if downloads::is_paused(&base_name) {
             downloads::wait_while_paused_or_until_cancel(&base_name).await;
-            if downloads::is_cancelled(&base_name) { continue; }
+            if downloads::is_cancelled(&base_name) {
+                continue;
+            }
         }
         match item {
             Ok(chunk) => {
@@ -904,7 +1273,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
 
                 // Write chunk to part file
                 if let Err(e) = file.write_all(&chunk).await {
-                    println!("[cache] Failed to write to part file {:?}: {}", cache_path, e);
+                    println!(
+                        "[cache] Failed to write to part file {:?}: {}",
+                        cache_path, e
+                    );
                     let _ = tokio_fs::remove_file(&cache_path).await;
                     // clear inflight
                     let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
@@ -912,12 +1284,15 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                     let mut meta = INFLIGHT_META.lock().unwrap();
                     meta.remove(&base_name);
                     if let Some(app_ref) = app.as_ref() {
-                        let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                            "trackId": track_id,
-                            "sourceType": source_type,
-                            "sourceHash": source_hash,
-                            "message": format!("Write failed: {}", e)
-                        }));
+                        let _ = app_ref.emit(
+                            "cache:download:error",
+                            serde_json::json!({
+                                "trackId": track_id,
+                                "sourceType": source_type,
+                                "sourceHash": source_hash,
+                                "message": format!("Write failed: {}", e)
+                            }),
+                        );
                     }
                     // Clear control state on error
                     downloads::clear_control(&base_name);
@@ -938,60 +1313,73 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                         ready_emitted = true;
                         if let Some(app_ref) = app.as_ref() {
                             let tmp_path_str = cache_path.to_string_lossy().to_string();
-                            let _ = app_ref.emit("cache:download:ready", serde_json::json!({
-                                "trackId": track_id,
-                                "sourceType": source_type,
-                                "sourceHash": source_hash,
-                                "tmpPath": tmp_path_str,
-                                "bytes_downloaded": total_written,
-                                "total_bytes": total_size_opt,
-                                "inflight": true
-                            }));
+                            let _ = app_ref.emit(
+                                "cache:download:ready",
+                                serde_json::json!({
+                                    "trackId": track_id,
+                                    "sourceType": source_type,
+                                    "sourceHash": source_hash,
+                                    "tmpPath": tmp_path_str,
+                                    "bytes_downloaded": total_written,
+                                    "total_bytes": total_size_opt,
+                                    "inflight": true
+                                }),
+                            );
                         }
                     }
                 }
 
                 // emit progress event
                 if let Some(app_ref) = app.as_ref() {
-                    let _ = app_ref.emit("cache:download:progress", serde_json::json!({
-                        "trackId": track_id,
-                        "sourceType": source_type,
-                        "sourceHash": source_hash,
-                        "bytes_downloaded": total_written,
-                        "total_bytes": total_size_opt,
-                        "inflight": true
-                    }));
+                    let _ = app_ref.emit(
+                        "cache:download:progress",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "bytes_downloaded": total_written,
+                            "total_bytes": total_size_opt,
+                            "inflight": true
+                        }),
+                    );
                 }
             }
             Err(e) => {
                 // For torrents with significant progress, don't immediately fail on streaming errors
-                if source_type == "torrent" && total_written > 1024 * 1024 { // More than 1MB downloaded
+                if source_type == "torrent" && total_written > 1024 * 1024 {
+                    // More than 1MB downloaded
                     println!("[cache] Streaming error for torrent {} ({}:{}) but have {:.2}MB progress, preserving partial download: {}", 
                         track_id, source_type, source_hash, total_written as f64 / (1024.0 * 1024.0), e);
-                    
+
                     // Break from stream loop - download_complete remains false
                     // The partial file will be preserved but not marked as complete
                     break;
                 } else {
-                    println!("[cache] Error while streaming download for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                    println!(
+                        "[cache] Error while streaming download for {} ({}:{}): {}",
+                        track_id, source_type, source_hash, e
+                    );
                     let _ = tokio_fs::remove_file(&cache_path).await;
                     let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
                     inflight.remove(&base_name);
                     let mut meta = INFLIGHT_META.lock().unwrap();
                     meta.remove(&base_name);
-                    
+
                     // Cancel progress polling task
                     if let Some(handle) = progress_task_handle {
                         handle.abort();
                     }
-                    
+
                     if let Some(app_ref) = app.as_ref() {
-                        let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                            "trackId": track_id,
-                            "sourceType": source_type,
-                            "sourceHash": source_hash,
-                            "message": format!("Streaming error: {}", e)
-                        }));
+                        let _ = app_ref.emit(
+                            "cache:download:error",
+                            serde_json::json!({
+                                "trackId": track_id,
+                                "sourceType": source_type,
+                                "sourceHash": source_hash,
+                                "message": format!("Streaming error: {}", e)
+                            }),
+                        );
                     }
                     // Clear control state on error
                     downloads::clear_control(&base_name);
@@ -1004,8 +1392,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     // If we reach here, the stream ended normally - check if download is actually complete
     // For chunked transfers, server might close early even if not all data was sent
     if let Some(expected_size) = total_size_opt {
-        println!("[cache] Checking download completion: got {} bytes, expected {} bytes for {} ({}:{})", 
-            total_written, expected_size, track_id, source_type, source_hash);
+        println!(
+            "[cache] Checking download completion: got {} bytes, expected {} bytes for {} ({}:{})",
+            total_written, expected_size, track_id, source_type, source_hash
+        );
         if total_written < expected_size {
             println!("[cache] Stream ended early - expected {} bytes but only got {} bytes for {} ({}:{})", 
                 expected_size, total_written, track_id, source_type, source_hash);
@@ -1020,8 +1410,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 track_id, source_type, source_hash);
             download_complete = false; // Treat torrent streams without size info as incomplete
         } else {
-            println!("[cache] No content length available, assuming complete for {} ({}:{})", 
-                track_id, source_type, source_hash);
+            println!(
+                "[cache] No content length available, assuming complete for {} ({}:{})",
+                track_id, source_type, source_hash
+            );
             download_complete = true;
         }
     }
@@ -1037,9 +1429,14 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
 
     // If download is not complete, handle as partial download
     if !download_complete {
-        println!("[cache] Partial download preserved for {} ({}:{}) - {:.2}MB downloaded", 
-            track_id, source_type, source_hash, total_written as f64 / (1024.0 * 1024.0));
-        
+        println!(
+            "[cache] Partial download preserved for {} ({}:{}) - {:.2}MB downloaded",
+            track_id,
+            source_type,
+            source_hash,
+            total_written as f64 / (1024.0 * 1024.0)
+        );
+
         // Clean up inflight tracking
         {
             let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
@@ -1047,38 +1444,45 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             let mut meta = INFLIGHT_META.lock().unwrap();
             meta.remove(&base_name);
         }
-        
+
         // Cancel progress polling task
         if let Some(handle) = progress_task_handle {
             handle.abort();
         }
-        
+
         // Clear control state
         downloads::clear_control(&base_name);
-        
+
         // Don't mark as completed - preserve partial file for future retry
         // The partial file remains at cache_path for potential resume
         return;
-    }    // Validate collected prefix bytes
+    } // Validate collected prefix bytes
     if !is_valid_audio_content(&prefix_buf) {
         // For torrents with substantial progress, be more lenient on validation
-        if source_type == "torrent" && total_written > 5 * 1024 * 1024 { // More than 5MB
+        if source_type == "torrent" && total_written > 5 * 1024 * 1024 {
+            // More than 5MB
             println!("[cache] Content validation failed for {} ({}:{}) but torrent has substantial progress ({:.2}MB), proceeding anyway", 
                 track_id, source_type, source_hash, total_written as f64 / (1024.0 * 1024.0));
         } else {
-            println!("[cache] Downloaded content is not valid audio for {} ({}:{}), size: {} bytes", track_id, source_type, source_hash, total_written);
+            println!(
+                "[cache] Downloaded content is not valid audio for {} ({}:{}), size: {} bytes",
+                track_id, source_type, source_hash, total_written
+            );
             let _ = tokio_fs::remove_file(&cache_path).await;
             let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
             inflight.remove(&base_name);
             let mut meta = INFLIGHT_META.lock().unwrap();
             meta.remove(&base_name);
             if let Some(app_ref) = app.as_ref() {
-                let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                    "trackId": track_id,
-                    "sourceType": source_type,
-                    "sourceHash": source_hash,
-                    "message": "Validation failed: content is not valid audio"
-                }));
+                let _ = app_ref.emit(
+                    "cache:download:error",
+                    serde_json::json!({
+                        "trackId": track_id,
+                        "sourceType": source_type,
+                        "sourceHash": source_hash,
+                        "message": "Validation failed: content is not valid audio"
+                    }),
+                );
             }
             // Clear control on finalize error
             downloads::clear_control(&base_name);
@@ -1088,7 +1492,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
 
     // Atomically rename temp file to final name
     if let Err(e) = tokio_fs::rename(&cache_path, &final_path).await {
-        println!("[cache] Failed to rename cache file to final cache file {:?} -> {:?}: {}", cache_path, final_path, e);
+        println!(
+            "[cache] Failed to rename cache file to final cache file {:?} -> {:?}: {}",
+            cache_path, final_path, e
+        );
 
         // It's possible another concurrent task already moved/created the final file.
         // If the final file exists, treat this as success and ensure the index contains it.
@@ -1099,7 +1506,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             let file_size = match tokio_fs::metadata(&final_path).await {
                 Ok(meta) => meta.len(),
                 Err(err) => {
-                    println!("[cache] Failed to stat existing final file {:?}: {}", final_path, err);
+                    println!(
+                        "[cache] Failed to stat existing final file {:?}: {}",
+                        final_path, err
+                    );
                     // Try to remove temp file if present, then abort
                     let _ = tokio_fs::remove_file(&cache_path).await;
                     return;
@@ -1112,9 +1522,21 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             {
                 let mut cache_guard = CACHE.lock().unwrap();
                 if let Some(cache) = cache_guard.as_mut() {
-                    let cache_key = AudioCache::generate_cache_key_with_index(&track_id, &source_type, &source_hash, file_index);
+                    let cache_key = AudioCache::generate_cache_key_with_index(
+                        &track_id,
+                        &source_type,
+                        &source_hash,
+                        file_index,
+                    );
                     if !cache.index.entries.contains_key(&cache_key) {
-                        if let Err(e) = cache.add_cached_file_with_index(track_id.clone(), source_type.clone(), source_hash.clone(), base_name.clone(), file_size, file_index) {
+                        if let Err(e) = cache.add_cached_file_with_index(
+                            track_id.clone(),
+                            source_type.clone(),
+                            source_hash.clone(),
+                            base_name.clone(),
+                            file_size,
+                            file_index,
+                        ) {
                             add_failed = Some(e);
                         }
                     }
@@ -1122,7 +1544,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             }
 
             if let Some(e) = add_failed {
-                println!("[cache] Failed to add existing final file to index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                println!(
+                    "[cache] Failed to add existing final file to index for {} ({}:{}): {}",
+                    track_id, source_type, source_hash, e
+                );
                 // Nothing else we can do; clean up cache file and return
                 let _ = tokio_fs::remove_file(&cache_path).await;
                 let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
@@ -1131,12 +1556,15 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 meta.remove(&base_name);
 
                 if let Some(app_ref) = app.as_ref() {
-                    let _ = app_ref.emit("cache:download:error", serde_json::json!({
-                        "trackId": track_id,
-                        "sourceType": source_type,
-                        "sourceHash": source_hash,
-                        "message": format!("Failed to add cache index: {}", e)
-                    }));
+                    let _ = app_ref.emit(
+                        "cache:download:error",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "message": format!("Failed to add cache index: {}", e)
+                        }),
+                    );
                 }
 
                 return;
@@ -1153,20 +1581,29 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
             };
 
             if let Err(e) = tx.send(result) {
-                println!("[cache] Failed to send cache completion notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+                println!(
+                    "[cache] Failed to send cache completion notification for {} ({}:{}): {}",
+                    track_id, source_type, source_hash, e
+                );
             } else {
-                println!("[cache] Cache download completed (race-resolved) for {} ({}:{}) -> {}", track_id, source_type, source_hash, cached_path);
+                println!(
+                    "[cache] Cache download completed (race-resolved) for {} ({}:{}) -> {}",
+                    track_id, source_type, source_hash, cached_path
+                );
             }
 
             // emit complete event
             if let Some(app_ref) = app.as_ref() {
-                let _ = app_ref.emit("cache:download:complete", serde_json::json!({
-                    "trackId": track_id,
-                    "sourceType": source_type,
-                    "sourceHash": source_hash,
-                    "cachedPath": cached_path,
-                    "fileSize": file_size
-                }));
+                let _ = app_ref.emit(
+                    "cache:download:complete",
+                    serde_json::json!({
+                        "trackId": track_id,
+                        "sourceType": source_type,
+                        "sourceHash": source_hash,
+                        "cachedPath": cached_path,
+                        "fileSize": file_size
+                    }),
+                );
             }
 
             // Clean up temp if it still exists
@@ -1184,25 +1621,38 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         inflight.remove(&base_name);
         let mut meta = INFLIGHT_META.lock().unwrap();
         meta.remove(&base_name);
-            if let Some(app_ref) = app.as_ref() {
-                let _ = app_ref.emit("cache:download:error", serde_json::json!({
+        if let Some(app_ref) = app.as_ref() {
+            let _ = app_ref.emit(
+                "cache:download:error",
+                serde_json::json!({
                     "trackId": track_id,
                     "sourceType": source_type,
                     "sourceHash": source_hash,
                     "message": "Failed to finalize cache file"
-                }));
-            }
+                }),
+            );
+        }
         return;
     }
-    
+
     let file_size = total_written;
 
     // Add to cache index under lock
     {
         let mut cache_guard = CACHE.lock().unwrap();
         if let Some(cache) = cache_guard.as_mut() {
-            if let Err(e) = cache.add_cached_file_with_index(track_id.clone(), source_type.clone(), source_hash.clone(), base_name.clone(), file_size, file_index) {
-                println!("[cache] Failed to add to cache index for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+            if let Err(e) = cache.add_cached_file_with_index(
+                track_id.clone(),
+                source_type.clone(),
+                source_hash.clone(),
+                base_name.clone(),
+                file_size,
+                file_index,
+            ) {
+                println!(
+                    "[cache] Failed to add to cache index for {} ({}:{}): {}",
+                    track_id, source_type, source_hash, e
+                );
                 // On failure remove the cached file
                 let _ = std::fs::remove_file(&final_path);
                 let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
@@ -1212,7 +1662,10 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
                 return;
             }
         } else {
-            println!("[cache] Cache not initialized during finalization, removing file: {:?}", final_path);
+            println!(
+                "[cache] Cache not initialized during finalization, removing file: {:?}",
+                final_path
+            );
             let _ = std::fs::remove_file(&final_path);
             let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
             inflight.remove(&base_name);
@@ -1234,20 +1687,29 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
     };
 
     if let Err(e) = tx.send(result) {
-        println!("[cache] Failed to send cache completion notification for {} ({}:{}): {}", track_id, source_type, source_hash, e);
+        println!(
+            "[cache] Failed to send cache completion notification for {} ({}:{}): {}",
+            track_id, source_type, source_hash, e
+        );
     } else {
-        println!("[cache] Cache download completed for {} ({}:{}) -> {}", track_id, source_type, source_hash, cached_path);
+        println!(
+            "[cache] Cache download completed for {} ({}:{}) -> {}",
+            track_id, source_type, source_hash, cached_path
+        );
     }
 
     // emit complete event
     if let Some(app_ref) = app.as_ref() {
-        let _ = app_ref.emit("cache:download:complete", serde_json::json!({
-            "trackId": track_id,
-            "sourceType": source_type,
-            "sourceHash": source_hash,
-            "cachedPath": cached_path,
-            "fileSize": file_size
-        }));
+        let _ = app_ref.emit(
+            "cache:download:complete",
+            serde_json::json!({
+                "trackId": track_id,
+                "sourceType": source_type,
+                "sourceHash": source_hash,
+                "cachedPath": cached_path,
+                "fileSize": file_size
+            }),
+        );
     }
 
     // clear inflight
@@ -1257,23 +1719,22 @@ pub async fn download_and_cache_audio(app: Option<tauri::AppHandle>, track_id: S
         let mut meta = INFLIGHT_META.lock().unwrap();
         meta.remove(&base_name);
     }
-    
+
     // Cancel progress polling task
     if let Some(handle) = progress_task_handle {
         handle.abort();
     }
-    
+
     // Clear control on success
     downloads::clear_control(&base_name);
 }
-
 
 #[tauri::command]
 pub async fn cache_download_status(
     track_id: String,
     source_type: String,
     source_hash: String,
-    file_index: Option<usize>
+    file_index: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     /*
     println!(
@@ -1282,7 +1743,8 @@ pub async fn cache_download_status(
     );
     */
     // Prefer the index-aware key for torrents/multi-file sources
-    let key_with_index = create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
+    let key_with_index =
+        create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
     let key_without_index = create_cache_filename(&track_id, &source_type, &source_hash);
 
     let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
@@ -1291,7 +1753,9 @@ pub async fn cache_download_status(
         let (b, t) = (*bytes, *total_opt);
         drop(inflight);
         // Also check if final file already exists (race resolution)
-        if let Some(path) = get_cached_file_path_with_index(&track_id, &source_type, &source_hash, file_index) {
+        if let Some(path) =
+            get_cached_file_path_with_index(&track_id, &source_type, &source_hash, file_index)
+        {
             if path.exists() {
                 return Ok(serde_json::json!({
                     "bytes_downloaded": b,
@@ -1313,7 +1777,9 @@ pub async fn cache_download_status(
         // Copy values out before releasing the lock
         let (b, t) = (*bytes, *total_opt);
         drop(inflight);
-        if let Some(path) = get_cached_file_path_with_index(&track_id, &source_type, &source_hash, file_index) {
+        if let Some(path) =
+            get_cached_file_path_with_index(&track_id, &source_type, &source_hash, file_index)
+        {
             if path.exists() {
                 return Ok(serde_json::json!({
                     "bytes_downloaded": b,
@@ -1331,7 +1797,9 @@ pub async fn cache_download_status(
     }
 
     // Not inflight; check if completed exists
-    if let Some(path) = get_cached_file_path_with_index(&track_id, &source_type, &source_hash, file_index) {
+    if let Some(path) =
+        get_cached_file_path_with_index(&track_id, &source_type, &source_hash, file_index)
+    {
         if path.exists() {
             return Ok(serde_json::json!({ "inflight": false, "completed": true }));
         }

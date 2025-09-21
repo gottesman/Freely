@@ -1,7 +1,7 @@
 use crate::server::PathState;
+use base64::Engine;
 use serde::Deserialize;
 use tauri::State;
-use base64::Engine;
 
 /// Database operations
 pub mod db {
@@ -16,14 +16,19 @@ pub mod db {
             return Ok(None);
         }
 
-        let data = std::fs::read(&paths.db_file)
-            .map_err(|e| format!("Failed to read database: {}", e))?;
+        let data =
+            std::fs::read(&paths.db_file).map_err(|e| format!("Failed to read database: {}", e))?;
 
-        Ok(Some(base64::engine::general_purpose::STANDARD.encode(&data)))
+        Ok(Some(
+            base64::engine::general_purpose::STANDARD.encode(&data),
+        ))
     }
 
     #[tauri::command]
-    pub async fn db_write(base64_data: String, paths: State<'_, PathState>) -> Result<bool, String> {
+    pub async fn db_write(
+        base64_data: String,
+        paths: State<'_, PathState>,
+    ) -> Result<bool, String> {
         // Ensure parent directory exists
         if let Some(parent) = paths.db_file.parent() {
             std::fs::create_dir_all(parent)
@@ -49,32 +54,39 @@ pub mod torrent {
     pub async fn torrent_get_files(
         id: String,
         timeout_ms: Option<u64>,
-        paths: State<'_, PathState>
+        paths: State<'_, PathState>,
     ) -> Result<serde_json::Value, serde_json::Value> {
         let timeout = timeout_ms.unwrap_or(20000);
-        
+
         // Get server status to check if it's running
-        let status = paths.get_server_status().await
-            .map_err(|e| serde_json::json!({
+        let status = paths.get_server_status().await.map_err(|e| {
+            serde_json::json!({
                 "error": "server_check_failed",
                 "message": e
-            }))?;
+            })
+        })?;
 
-        let port = status.port.ok_or_else(|| serde_json::json!({
-            "error": "server_not_running",
-            "message": "Server is not currently running"
-        }))?;
+        let port = status.port.ok_or_else(|| {
+            serde_json::json!({
+                "error": "server_not_running",
+                "message": "Server is not currently running"
+            })
+        })?;
 
         // Make request to server endpoint
-        let url = format!("http://localhost:{}/api/torrent-files/{}?timeout={}", port, 
-                         urlencoding::encode(&id), timeout);
-        
-        let response = reqwest::get(&url)
-            .await
-            .map_err(|e| serde_json::json!({
+        let url = format!(
+            "http://localhost:{}/api/torrent-files/{}?timeout={}",
+            port,
+            urlencoding::encode(&id),
+            timeout
+        );
+
+        let response = reqwest::get(&url).await.map_err(|e| {
+            serde_json::json!({
                 "error": "request_failed",
                 "message": e.to_string()
-            }))?;
+            })
+        })?;
 
         if !response.status().is_success() {
             let status_code = response.status().as_u16();
@@ -86,24 +98,28 @@ pub mod torrent {
             }));
         }
 
-        response.json()
-            .await
-            .map_err(|e| serde_json::json!({
+        response.json().await.map_err(|e| {
+            serde_json::json!({
                 "error": "response_parse_failed",
                 "message": e.to_string()
-            }))
+            })
+        })
     }
 
     #[tauri::command]
-    pub async fn torrent_list_scrapers(paths: State<'_, PathState>) -> Result<serde_json::Value, String> {
+    pub async fn torrent_list_scrapers(
+        paths: State<'_, PathState>,
+    ) -> Result<serde_json::Value, String> {
         let status = paths.get_server_status().await?;
-        
+
         if let Some(port) = status.port {
             let url = format!("http://localhost:{}/ping", port);
-            let response = reqwest::get(&url).await
+            let response = reqwest::get(&url)
+                .await
                 .map_err(|e| format!("Failed to contact server: {}", e))?;
-            
-            response.json()
+
+            response
+                .json()
                 .await
                 .map_err(|e| format!("Failed to parse response: {}", e))
         } else {
@@ -130,11 +146,11 @@ pub mod search {
         paths: State<'_, PathState>,
     ) -> Result<serde_json::Value, String> {
         let status = paths.get_server_status().await?;
-        
+
         let port = status.port.ok_or("Server not running")?;
-        
+
         let url = build_search_url(port, &payload);
-        
+
         reqwest::get(&url)
             .await
             .map_err(|e| format!("Search request failed: {}", e))?
@@ -158,7 +174,10 @@ pub mod search {
         }
 
         let query_string = params.join("&");
-        format!("http://localhost:{}/api/source-search?{}", port, query_string)
+        format!(
+            "http://localhost:{}/api/source-search?{}",
+            port, query_string
+        )
     }
 }
 
@@ -182,11 +201,11 @@ pub mod youtube {
         paths: State<'_, PathState>,
     ) -> Result<serde_json::Value, String> {
         let status = paths.get_server_status().await?;
-        
+
         let port = status.port.ok_or("Server not running")?;
-        
+
         let url = build_youtube_url(port, &payload);
-        
+
         let mut response: serde_json::Value = reqwest::get(&url)
             .await
             .map_err(|e| format!("YouTube request failed: {}", e))?
@@ -221,11 +240,14 @@ pub mod youtube {
 pub mod external {
 
     #[tauri::command]
-    pub async fn charts_get_weekly_tops(opts: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub async fn charts_get_weekly_tops(
+        opts: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let endpoint = std::env::var("CHARTS_SPOTIFY_ENDPOINT")
             .map_err(|_| "CHARTS_SPOTIFY_ENDPOINT not configured")?;
-        
-        let url = opts.get("url")
+
+        let url = opts
+            .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or(&endpoint);
 
@@ -241,9 +263,12 @@ pub mod external {
     pub async fn genius_search(query: String) -> Result<serde_json::Value, String> {
         let token = std::env::var("GENIUS_ACCESS_TOKEN")
             .map_err(|_| "GENIUS_ACCESS_TOKEN not configured")?;
-        
-        let url = format!("https://api.genius.com/search?q={}", urlencoding::encode(&query));
-        
+
+        let url = format!(
+            "https://api.genius.com/search?q={}",
+            urlencoding::encode(&query)
+        );
+
         reqwest::Client::new()
             .get(&url)
             .bearer_auth(token)
@@ -256,7 +281,10 @@ pub mod external {
     }
 
     #[tauri::command]
-    pub async fn spotify_search(query: String, type_or_types: String) -> Result<serde_json::Value, String> {
+    pub async fn spotify_search(
+        query: String,
+        type_or_types: String,
+    ) -> Result<serde_json::Value, String> {
         let token_endpoint = std::env::var("SPOTIFY_TOKEN_ENDPOINT")
             .map_err(|_| "SPOTIFY_TOKEN_ENDPOINT not configured")?;
 
@@ -296,79 +324,112 @@ pub mod external {
         artist: String,
         paths: tauri::State<'_, crate::server::PathState>,
     ) -> Result<serde_json::Value, String> {
-    use sha2::{Digest, Sha256};
-    use std::path::PathBuf;
-    use std::fs;
+        use sha2::{Digest, Sha256};
+        use std::fs;
+        use std::path::PathBuf;
 
-    // Normalize a string for cache key (lowercase, collapse whitespace)
-    fn norm(s: &str) -> String {
-        s.to_lowercase()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    // Compute cache file path under app config dir
-    let base_dir: PathBuf = paths
-        .db_file
-        .parent()
-        .ok_or("Invalid app config path")?
-        .join("lyrics_cache");
-    let key = format!("v1|musixmatch|{}|{}", norm(&title), norm(&artist));
-    let mut hasher = Sha256::new();
-    hasher.update(key.as_bytes());
-    let hash_hex = format!("{:x}", hasher.finalize());
-    let file_path = base_dir.join(format!("{}.json", hash_hex));
-
-    // Try cache first
-    if let Ok(data) = fs::read_to_string(&file_path) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-            return Ok(json);
+        // Normalize a string for cache key (lowercase, collapse whitespace)
+        fn norm(s: &str) -> String {
+            s.to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         }
-    }
-    use reqwest::header::{HeaderMap, HeaderValue, HeaderName, USER_AGENT, ACCEPT};
 
-    // Build client with browser-like headers + cookies (as used by onetagger)
-    let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36"));
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json, text/plain, */*"));
-    headers.insert(HeaderName::from_static("accept-language"), HeaderValue::from_static("en-US,en;q=0.9"));
-    headers.insert(HeaderName::from_static("origin"), HeaderValue::from_static("https://www.musixmatch.com"));
-    headers.insert(HeaderName::from_static("referer"), HeaderValue::from_static("https://www.musixmatch.com/"));
-    headers.insert(HeaderName::from_static("cookie"), HeaderValue::from_static("AWSELBCORS=0; AWSELB=0"));
-    headers.insert(HeaderName::from_static("x-requested-with"), HeaderValue::from_static("XMLHttpRequest"));
+        // Compute cache file path under app config dir
+        let base_dir: PathBuf = paths
+            .db_file
+            .parent()
+            .ok_or("Invalid app config path")?
+            .join("lyrics_cache");
+        let key = format!("v1|musixmatch|{}|{}", norm(&title), norm(&artist));
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        let hash_hex = format!("{:x}", hasher.finalize());
+        let file_path = base_dir.join(format!("{}.json", hash_hex));
+
+        // Try cache first
+        if let Ok(data) = fs::read_to_string(&file_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                return Ok(json);
+            }
+        }
+        use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, USER_AGENT};
+
+        // Build client with browser-like headers + cookies (as used by onetagger)
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36"));
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/plain, */*"),
+        );
+        headers.insert(
+            HeaderName::from_static("accept-language"),
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        headers.insert(
+            HeaderName::from_static("origin"),
+            HeaderValue::from_static("https://www.musixmatch.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("referer"),
+            HeaderValue::from_static("https://www.musixmatch.com/"),
+        );
+        headers.insert(
+            HeaderName::from_static("cookie"),
+            HeaderValue::from_static("AWSELBCORS=0; AWSELB=0"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-requested-with"),
+            HeaderValue::from_static("XMLHttpRequest"),
+        );
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
         // Simple redirect-following GET -> JSON helper (limit 5 hops)
-        async fn get_json_follow_redirects(client: &reqwest::Client, mut url: reqwest::Url) -> Result<serde_json::Value, String> {
+        async fn get_json_follow_redirects(
+            client: &reqwest::Client,
+            mut url: reqwest::Url,
+        ) -> Result<serde_json::Value, String> {
             let mut hops = 0usize;
             loop {
-                let resp = client.get(url.clone()).send().await
+                let resp = client
+                    .get(url.clone())
+                    .send()
+                    .await
                     .map_err(|e| format!("request failed: {}", e))?;
                 if resp.status().is_redirection() {
-                    if hops >= 5 { return Err("too many redirects".into()); }
-                    let location = resp.headers().get(reqwest::header::LOCATION)
+                    if hops >= 5 {
+                        return Err("too many redirects".into());
+                    }
+                    let location = resp
+                        .headers()
+                        .get(reqwest::header::LOCATION)
                         .and_then(|v| v.to_str().ok())
                         .ok_or_else(|| "redirect without Location".to_string())?;
                     // Build next URL relative to previous
-                    url = url.join(location).map_err(|e| format!("redirect URL join failed: {}", e))?;
+                    url = url
+                        .join(location)
+                        .map_err(|e| format!("redirect URL join failed: {}", e))?;
                     hops += 1;
                     continue;
                 }
                 if !resp.status().is_success() {
                     return Err(format!("HTTP {}", resp.status()));
                 }
-                return resp.json::<serde_json::Value>().await
+                return resp
+                    .json::<serde_json::Value>()
+                    .await
                     .map_err(|e| format!("response parse failed: {}", e));
             }
         }
 
         async fn get_token(client: &reqwest::Client) -> Result<String, String> {
-            let mut url = reqwest::Url::parse("https://apic-desktop.musixmatch.com/ws/1.1/token.get")
-                .map_err(|e| format!("URL parse error: {}", e))?;
+            let mut url =
+                reqwest::Url::parse("https://apic-desktop.musixmatch.com/ws/1.1/token.get")
+                    .map_err(|e| format!("URL parse error: {}", e))?;
             let t_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| "SystemTime before UNIX_EPOCH".to_string())?
@@ -378,17 +439,31 @@ pub mod external {
                 .append_pair("user_language", "en")
                 .append_pair("app_id", "web-desktop-app-v1.0")
                 .append_pair("t", &t_ms);
-            let resp = get_json_follow_redirects(client, url).await
+            let resp = get_json_follow_redirects(client, url)
+                .await
                 .map_err(|e| format!("Musixmatch token request failed: {}", e))?;
-            let status = resp["message"]["header"]["status_code"].as_i64().unwrap_or(0);
-            if status == 401 { return Err("Unauthorized (token)".to_string()); }
-            let token = resp["message"]["body"]["user_token"].as_str().ok_or("Missing user_token")?;
+            let status = resp["message"]["header"]["status_code"]
+                .as_i64()
+                .unwrap_or(0);
+            if status == 401 {
+                return Err("Unauthorized (token)".to_string());
+            }
+            let token = resp["message"]["body"]["user_token"]
+                .as_str()
+                .ok_or("Missing user_token")?;
             Ok(token.to_string())
         }
 
-        async fn macro_call(client: &reqwest::Client, token: &str, title: &str, artist: &str) -> Result<serde_json::Value, String> {
-            let mut url = reqwest::Url::parse("https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get")
-                .map_err(|e| format!("URL parse error: {}", e))?;
+        async fn macro_call(
+            client: &reqwest::Client,
+            token: &str,
+            title: &str,
+            artist: &str,
+        ) -> Result<serde_json::Value, String> {
+            let mut url = reqwest::Url::parse(
+                "https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get",
+            )
+            .map_err(|e| format!("URL parse error: {}", e))?;
             let t_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| "SystemTime before UNIX_EPOCH".to_string())?
@@ -404,7 +479,8 @@ pub mod external {
                 .append_pair("app_id", "web-desktop-app-v1.0")
                 .append_pair("usertoken", token)
                 .append_pair("t", &t_ms);
-            let resp = get_json_follow_redirects(client, url).await
+            let resp = get_json_follow_redirects(client, url)
+                .await
                 .map_err(|e| format!("Musixmatch macro request failed: {}", e))?;
             Ok(resp)
         }
@@ -412,7 +488,9 @@ pub mod external {
         // Try token + macro, with one retry on 401 at macro stage
         let mut token = get_token(&client).await?;
         let mut macro_resp = macro_call(&client, &token, &title, &artist).await?;
-        let status = macro_resp["message"]["header"]["status_code"].as_i64().unwrap_or(0);
+        let status = macro_resp["message"]["header"]["status_code"]
+            .as_i64()
+            .unwrap_or(0);
         if status == 401 {
             // refresh token once and retry macro
             token = get_token(&client).await?;
@@ -421,7 +499,8 @@ pub mod external {
 
         // Return the inner body (macro_calls payload) if present; else the whole response
         let body = macro_resp
-            .get("message").and_then(|m| m.get("body"))
+            .get("message")
+            .and_then(|m| m.get("body"))
             .cloned()
             .unwrap_or(macro_resp);
         // Persist to cache (best-effort)
@@ -441,7 +520,10 @@ pub mod external {
 
     // Lightweight file-based cache for lyrics (text/JSON) stored under app config dir
     #[tauri::command]
-    pub async fn lyrics_cache_get(key: String, paths: tauri::State<'_, crate::server::PathState>) -> Result<Option<String>, String> {
+    pub async fn lyrics_cache_get(
+        key: String,
+        paths: tauri::State<'_, crate::server::PathState>,
+    ) -> Result<Option<String>, String> {
         use sha2::{Digest, Sha256};
         use std::path::PathBuf;
 
@@ -467,10 +549,14 @@ pub mod external {
     }
 
     #[tauri::command]
-    pub async fn lyrics_cache_set(key: String, content: String, paths: tauri::State<'_, crate::server::PathState>) -> Result<bool, String> {
+    pub async fn lyrics_cache_set(
+        key: String,
+        content: String,
+        paths: tauri::State<'_, crate::server::PathState>,
+    ) -> Result<bool, String> {
         use sha2::{Digest, Sha256};
-        use std::path::PathBuf;
         use std::fs;
+        use std::path::PathBuf;
 
         let base_dir: PathBuf = paths
             .db_file
@@ -479,7 +565,8 @@ pub mod external {
             .join("lyrics_cache");
 
         // Ensure cache directory exists
-        fs::create_dir_all(&base_dir).map_err(|e| format!("Failed creating lyrics cache dir: {}", e))?;
+        fs::create_dir_all(&base_dir)
+            .map_err(|e| format!("Failed creating lyrics cache dir: {}", e))?;
 
         // Hash key -> filename
         let mut hasher = Sha256::new();
@@ -487,7 +574,8 @@ pub mod external {
         let hash_hex = format!("{:x}", hasher.finalize());
         let file_path = base_dir.join(format!("{}.json", hash_hex));
 
-        fs::write(&file_path, content).map_err(|e| format!("Failed writing lyrics cache: {}", e))?;
+        fs::write(&file_path, content)
+            .map_err(|e| format!("Failed writing lyrics cache: {}", e))?;
         Ok(true)
     }
 }
@@ -495,15 +583,13 @@ pub mod external {
 /// Playback operations
 pub mod playback {
     use crate::playback::{
-        PlaybackSourceSpec, PlaybackStatus, 
-        playback_start_internal, playback_start_with_source_internal,
-        playback_pause_internal, playback_resume_internal, playback_stop_internal,
-        playback_seek_internal, playback_status_internal, 
-        get_audio_devices_internal, get_audio_settings_internal, set_audio_settings_internal,
-        reinitialize_audio_internal, playback_cleanup_internal,
-        playback_set_volume_internal, playback_get_volume_internal, 
-        playback_set_mute_internal, playback_toggle_mute_internal,
-        get_download_progress_internal,
+        get_audio_devices_internal, get_audio_settings_internal, get_download_progress_internal,
+        playback_cleanup_internal, playback_get_volume_internal, playback_pause_internal,
+        playback_resume_internal, playback_seek_internal, playback_set_mute_internal,
+        playback_set_volume_internal, playback_start_internal, playback_start_with_source_internal,
+        playback_status_internal, playback_stop_internal, playback_toggle_mute_internal,
+        reinitialize_audio_internal, set_audio_settings_internal, PlaybackSourceSpec,
+        PlaybackStatus,
     };
     use tauri::Emitter;
 
@@ -515,7 +601,10 @@ pub mod playback {
     }
 
     #[tauri::command]
-    pub async fn playback_start_with_source(app: tauri::AppHandle, spec: PlaybackSourceSpec) -> Result<serde_json::Value, String> {
+    pub async fn playback_start_with_source(
+        app: tauri::AppHandle,
+        spec: PlaybackSourceSpec,
+    ) -> Result<serde_json::Value, String> {
         playback_start_with_source_internal(app, spec).await
     }
 
@@ -555,12 +644,18 @@ pub mod playback {
     }
 
     #[tauri::command]
-    pub async fn set_audio_settings(settings: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub async fn set_audio_settings(
+        settings: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         set_audio_settings_internal(settings).await
     }
 
     #[tauri::command]
-    pub async fn reinitialize_audio(device_id: i32, sample_rate: u32, buffer_size: u32) -> Result<serde_json::Value, String> {
+    pub async fn reinitialize_audio(
+        device_id: i32,
+        sample_rate: u32,
+        buffer_size: u32,
+    ) -> Result<serde_json::Value, String> {
         reinitialize_audio_internal(device_id, sample_rate, buffer_size).await
     }
 
@@ -601,17 +696,32 @@ pub mod downloads {
     use crate::downloads as dl;
 
     #[tauri::command]
-    pub async fn downloads_pause(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String) -> Result<bool, String> {
+    pub async fn downloads_pause(
+        app: tauri::AppHandle,
+        track_id: String,
+        source_type: String,
+        source_hash: String,
+    ) -> Result<bool, String> {
         dl::downloads_pause(app, track_id, source_type, source_hash).await
     }
 
     #[tauri::command]
-    pub async fn downloads_resume(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String) -> Result<bool, String> {
+    pub async fn downloads_resume(
+        app: tauri::AppHandle,
+        track_id: String,
+        source_type: String,
+        source_hash: String,
+    ) -> Result<bool, String> {
         dl::downloads_resume(app, track_id, source_type, source_hash).await
     }
 
     #[tauri::command]
-    pub async fn downloads_remove(app: tauri::AppHandle, track_id: String, source_type: String, source_hash: String) -> Result<bool, String> {
+    pub async fn downloads_remove(
+        app: tauri::AppHandle,
+        track_id: String,
+        source_type: String,
+        source_hash: String,
+    ) -> Result<bool, String> {
         dl::downloads_remove(app, track_id, source_type, source_hash).await
     }
 }

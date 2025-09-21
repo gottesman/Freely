@@ -19,3 +19,4 @@ src-tauri/server-dist
 deprecated*
 COMMIT_MESSAGE.md
 tsconfig.tsbuildinfo
+package-lock.json

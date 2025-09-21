@@ -23,13 +23,13 @@ pub fn handle_window_resize(window: &Window) {
     // Only emit if state actually changed
     if *maximized != new_maximized_state {
         *maximized = new_maximized_state;
-        
+
         let event_name = if new_maximized_state {
             "window:maximize"
         } else {
             "window:unmaximize"
         };
-        
+
         let _ = window.emit(event_name, new_maximized_state);
     }
 }

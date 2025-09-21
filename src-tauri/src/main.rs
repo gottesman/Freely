@@ -6,21 +6,27 @@
 mod bass;
 mod cache;
 mod commands;
-mod playback;
 mod downloads;
+mod playback;
 mod server;
 mod utils;
 mod window;
 
+use cache::{cache_clear, cache_download_and_store, cache_get_file, cache_get_stats};
 use commands::{db, external, search, torrent, youtube};
 use server::{server_start, server_status, PathState};
 use window::{handle_window_resize, WindowState};
-use cache::{cache_get_file, cache_download_and_store, cache_get_stats, cache_clear};
 
-use tauri::{Emitter, Manager};
-use tauri_plugin_dialog::DialogExt;
-use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use std::path::PathBuf;
+use tauri::{
+    Emitter,
+    Manager,
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+};
+use tauri_plugin_dialog::DialogExt;
 
 // Global app handle for event emission
 static APP_HANDLE: Lazy<Mutex<Option<tauri::AppHandle>>> = Lazy::new(|| Mutex::new(None));
@@ -50,12 +56,11 @@ async fn save_file_dialog(app: tauri::AppHandle) -> Option<String> {
     }
 }
 
-
 #[tauri::command]
 async fn app_ready(app_handle: tauri::AppHandle) {
     // Called when the React app is fully ready
     println!("App is ready, transitioning from splashscreen to main window");
-    
+
     // Close splashscreen and show main window
     if let Some(splashscreen) = app_handle.get_webview_window("splashscreen") {
         let _ = splashscreen.emit("close-splashscreen", ());
@@ -70,7 +75,12 @@ async fn app_ready(app_handle: tauri::AppHandle) {
 }
 
 #[tauri::command]
-async fn update_loading_status(app_handle: tauri::AppHandle, status: String, progress: Option<u32>, details: Option<String>) {
+async fn update_loading_status(
+    app_handle: tauri::AppHandle,
+    status: String,
+    progress: Option<u32>,
+    details: Option<String>,
+) {
     // Send loading status update to splashscreen
     if let Some(splashscreen) = app_handle.get_webview_window("splashscreen") {
         let payload = serde_json::json!({
@@ -84,15 +94,22 @@ async fn update_loading_status(app_handle: tauri::AppHandle, status: String, pro
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_prevent_default::init()) // ::init() makes the app ignore default browser shortcuts and context menu, ::debug() enables them in dev mode
         .setup(|app| {
             // Initialize application directories
-            let resource_dir = app.path().resource_dir()
+            let resource_dir = app
+                .path()
+                .resource_dir()
                 .expect("Failed to find resource directory");
-            let app_log_dir = app.path().app_log_dir()
+            let app_log_dir = app
+                .path()
+                .app_log_dir()
                 .expect("Failed to find app log directory");
-            let app_config_dir = app.path().app_config_dir()
+            let app_config_dir = app
+                .path()
+                .app_config_dir()
                 .expect("Failed to find app config directory");
 
             // Ensure directories exist
@@ -124,10 +141,10 @@ fn main() {
 
             // Start initialization tasks and handle splashscreen
             let app_handle = app.handle().clone();
-            
+
             // Store global app handle for event emission
             *APP_HANDLE.lock().unwrap() = Some(app_handle.clone());
-            
+
             tauri::async_runtime::spawn(async move {
                 // Start server in background
                 let paths_state = app_handle.state::<PathState>();
@@ -142,6 +159,24 @@ fn main() {
                 // Note: No longer auto-closing splashscreen here
                 // The React app will call app_ready() when it's fully loaded
             });
+
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_i])?;
+
+            let tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => {
+                        println!("quit menu item was clicked");
+                        app.exit(0);
+                    }
+                    _ => {
+                        println!("menu item {:?} not handled", event.id);
+                    }
+                })
+                .menu(&menu)
+                .menu_on_left_click(false)
+                .build(app)?;
 
             Ok(())
         })
@@ -214,7 +249,7 @@ fn main() {
                     if window.label() == "main" {
                         let paths = window.app_handle().state::<PathState>();
                         paths.kill_server();
-                        
+
                         // Cleanup BASS resources before closing
                         tauri::async_runtime::spawn(async move {
                             let _ = crate::playback::playback_cleanup_internal().await;
@@ -231,7 +266,11 @@ fn main() {
 // Show a native save dialog and write the provided contents to the selected path.
 // Returns the saved path as a String on success or None if cancelled / failed.
 #[tauri::command]
-async fn save_file_and_write(app: tauri::AppHandle, default_file_name: Option<String>, contents: String) -> Option<String> {
+async fn save_file_and_write(
+    app: tauri::AppHandle,
+    default_file_name: Option<String>,
+    contents: String,
+) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
 
     // Show save dialog with optional default filename and restrict to JSON files
@@ -265,7 +304,9 @@ async fn save_file_and_write(app: tauri::AppHandle, default_file_name: Option<St
         match fp_clone.into_path() {
             Ok(mut pathbuf) => {
                 // Ensure the file has a .json extension; if not, append it.
-                if pathbuf.extension().is_none() || pathbuf.extension().and_then(|s| s.to_str()) != Some("json") {
+                if pathbuf.extension().is_none()
+                    || pathbuf.extension().and_then(|s| s.to_str()) != Some("json")
+                {
                     pathbuf.set_extension("json");
                 }
 
