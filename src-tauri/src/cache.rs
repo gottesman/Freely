@@ -899,9 +899,13 @@ pub async fn download_and_cache_audio(
         }
     };
 
-    // Use a single reqwest client for better performance with timeout
+    // Build a reqwest client tuned for long-running media downloads:
+    // - No global request timeout (downloads can be long); use a short connect timeout instead
+    // - Disable automatic body decompression to avoid "error decoding response body" when servers mislabel encodings
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30)) // 30 second timeout
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .gzip(false)
+        .brotli(false)
         .build()
         .unwrap();
 
@@ -962,7 +966,18 @@ pub async fn download_and_cache_audio(
         }
     }
 
-    let resp = match client.get(&resolved).send().await {
+    // Issue request with explicit identity encoding to receive raw bytes as-is
+    let resp = match client
+        .get(&resolved)
+        .header("Accept-Encoding", "identity")
+        .header(
+            "User-Agent",
+            // Stable UA to reduce chance of odd server responses
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+        )
+        .send()
+        .await
+    {
         Ok(r) => {
             println!("[cache] HTTP request successful, status: {}", r.status());
             r
@@ -1073,6 +1088,27 @@ pub async fn download_and_cache_audio(
     // Capture content length before consuming the response
     let content_len_opt = resp.content_length();
 
+    // Log a few headers to aid diagnostics when downloads fail
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let ce = resp
+        .headers()
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let te = resp
+        .headers()
+        .get("transfer-encoding")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    println!(
+        "[cache] Response headers: content-type='{}', content-encoding='{}', transfer-encoding='{}', content-length={:?}",
+        ct, ce, te, content_len_opt
+    );
+
     // Check for custom X-Expected-Length header for torrents using chunked encoding
     let expected_length_opt = resp
         .headers()
@@ -1080,8 +1116,25 @@ pub async fn download_and_cache_audio(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
+    // Attempt to parse YouTube's 'clen' query parameter as a total size hint if needed
+    let clen_from_url: Option<u64> = {
+        if let Some(pos) = resolved.find("clen=") {
+            let digits = resolved[pos + 5..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>();
+            if !digits.is_empty() {
+                digits.parse::<u64>().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     // Use expected length if content length is not available (for chunked transfers)
-    let total_size_opt = content_len_opt.or(expected_length_opt);
+    let total_size_opt = content_len_opt.or(expected_length_opt).or(clen_from_url);
 
     if source_type == "torrent" && content_len_opt.is_none() && expected_length_opt.is_some() {
         println!(

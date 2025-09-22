@@ -14,9 +14,13 @@ module.exports = {
     filename: '[name].js',
   },
   externals: {
-    // Only exclude native modules that must be loaded dynamically
-    'utp-native': 'commonjs utp-native',
-    // Bundle webtorrent instead of externalizing it for packaged apps
+    // Externalize native modules we cannot bundle; utp-native is aliased to a shim instead
+    'node-datachannel': 'commonjs node-datachannel'
+  },
+  resolve: {
+    alias: {
+      'utp-native': path.resolve(__dirname, 'server', 'utils', 'shims', 'utp-native.js')
+    }
   },
   module: {
     parser: {

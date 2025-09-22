@@ -232,7 +232,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
   primaryArtist?: SpotifyArtist;
 }) {
   const { t } = useI18n();
-  const { getSetting, setSetting } = useDB();
+  const { getSetting, setSetting, getSource, setSource } = useDB();
   const [state, setState] = useState<SourceState>(initialState);
   const wtClientRef = useRef<any | null>(null);
   const fetchedQueriesRef = useRef<Record<string, boolean>>({});
@@ -469,7 +469,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
         // Try persisted cache first (DB-backed), then warm memory cache
         try {
-          const persisted = await getSetting?.(`sources:cache:${cacheKey}`);
+          const persisted = await getSource?.(`cache:${cacheKey}`);
           if (persisted) {
             try {
               const parsed = JSON.parse(persisted);
@@ -479,7 +479,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                 searchCache.set(cacheKey, arr);
               } else if (Array.isArray(arr)) {
                 // Expired; lazily clear
-                await setSetting?.(`sources:cache:${cacheKey}`, '');
+                await setSource?.(`cache:${cacheKey}`, '');
               }
             } catch {
               // ignore malformed persisted value
@@ -531,8 +531,8 @@ export default function TrackSources({ track, album, primaryArtist }: {
               // Persist successful results with timestamp for future sessions
               if (combined && combined.length > 0) {
                 try {
-                  await setSetting?.(
-                    `sources:cache:${cacheKey}`,
+                  await setSource?.(
+                    `cache:${cacheKey}`,
                     JSON.stringify({ ts: Date.now(), results: combined })
                   );
                 } catch {
@@ -588,7 +588,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
           // Restore previously selected source
           if (track?.id) {
             try {
-              const saved = await getSetting?.(`source:selected:${track.id}`);
+              const saved = await getSource?.(`selected:${track.id}`);
               if (saved) {
                 const parsed = JSON.parse(saved);
                 const match = subset.find(s =>
@@ -1275,7 +1275,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
             title: source.title,
             fileIndex: fileIndex
           });
-          await setSetting?.(`source:selected:${track.id}`, minimal);
+          await setSource?.(`selected:${track.id}`, minimal);
 
           // Start playback using the cache-aware backend entrypoint so the backend will
           // prefer caching, play the .part while downloading and gaplessly hand off to
@@ -1289,7 +1289,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
             detail: { trackId: track.id, source: minimal }
           }));
         } else {
-          await setSetting?.(`source:selected:${track.id}`, '');
+          await setSource?.(`selected:${track.id}`, '');
 
           // Stop playback by clearing selection; existing playback handlers listen for this event
           window.dispatchEvent(new CustomEvent('freely:track:sourceChanged', {

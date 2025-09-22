@@ -12,6 +12,8 @@ type DBContext = {
   importDB: (data: Uint8Array | ArrayBuffer) => Promise<void>;
   getSetting: (key: string) => Promise<string | null>;
   setSetting: (key: string, value: string) => Promise<void>;
+  getSource: (key: string) => Promise<string | null>;
+  setSource: (key: string, value: string) => Promise<void>;
   getApiCache: (key: string) => Promise<any | null>;
   setApiCache: (key: string, data: any) => Promise<void>;
   clearCache: () => Promise<void>;
@@ -27,7 +29,7 @@ type DBContext = {
 const DB_CONFIG = {
   NAME: 'freely-db',
   VERSION: 3,
-  STORES: ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'api_cache'] as const
+  STORES: ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'sources', 'api_cache', 'followed_artists'] as const
 } as const;
 
 type StoreName = typeof DB_CONFIG.STORES[number];
@@ -59,13 +61,14 @@ const STORE_CONFIGS = {
   },
   plugins: { keyPath: 'id', autoIncrement: true },
   settings: { keyPath: 'k' },
+  sources: { keyPath: 'k' },
   api_cache: { keyPath: 'cache_key' },
   followed_artists: { 
     keyPath: 'id',
     indexes: [
       { name: 'followed_at', keyPath: 'followed_at' }
     ]
-  }
+  },
 } as const;
 
 // Default context with no-ops
@@ -78,6 +81,8 @@ const DEFAULT_CONTEXT: DBContext = {
   importDB: async () => {},
   getSetting: async () => null,
   setSetting: async () => {},
+  getSource: async () => null,
+  setSource: async () => {},
   getApiCache: async () => null,
   setApiCache: async () => {},
   clearCache: async () => {},
@@ -133,6 +138,70 @@ const DatabaseSetup = {
     } catch (e) {
       console.warn('Failed to ensure default data:', e);
     }
+  }
+};
+
+// Migration function to move source data from settings to sources store
+const migrateSourceData = async (db: IDBDatabase): Promise<void> => {
+  try {
+    console.log('[DB] Starting source data migration...');
+    
+    const tx = db.transaction(['settings', 'sources'], 'readwrite');
+    const settingsStore = tx.objectStore('settings');
+    const sourcesStore = tx.objectStore('sources');
+    
+    // Get all settings
+    const settingsRequest = settingsStore.getAll();
+    const settings = await new Promise<any[]>((resolve, reject) => {
+      settingsRequest.onsuccess = () => resolve(settingsRequest.result);
+      settingsRequest.onerror = () => reject(settingsRequest.error);
+    });
+    
+    let migratedCount = 0;
+    
+    for (const setting of settings) {
+      if (setting.key && typeof setting.key === 'string') {
+        let newKey: string | null = null;
+        
+        // Migrate source:selected:* to selected:*
+        if (setting.key.startsWith('source:selected:')) {
+          newKey = setting.key.replace('source:selected:', 'selected:');
+        }
+        // Migrate sources:cache:* to cache:*
+        else if (setting.key.startsWith('sources:cache:')) {
+          newKey = setting.key.replace('sources:cache:', 'cache:');
+        }
+        
+        if (newKey) {
+          // Add to sources store
+          const sourceRecord = {
+            key: newKey,
+            value: setting.value,
+            updated_at: setting.updated_at || Date.now()
+          };
+          
+          await new Promise<void>((resolve, reject) => {
+            const addRequest = sourcesStore.put(sourceRecord);
+            addRequest.onsuccess = () => resolve();
+            addRequest.onerror = () => reject(addRequest.error);
+          });
+          
+          // Remove from settings store
+          await new Promise<void>((resolve, reject) => {
+            const deleteRequest = settingsStore.delete(setting.key);
+            deleteRequest.onsuccess = () => resolve();
+            deleteRequest.onerror = () => reject(deleteRequest.error);
+          });
+          
+          migratedCount++;
+        }
+      }
+    }
+    
+    console.log(`[DB] Source data migration completed: ${migratedCount} records migrated`);
+  } catch (error) {
+    console.error('[DB] Source data migration failed:', error);
+    // Don't throw - migration failures shouldn't break the app
   }
 };
 
@@ -201,6 +270,15 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         
         setDb(dbInst);
         setReady(true);
+        
+        // Run source data migration if needed
+        setTimeout(() => {
+          if (mounted) {
+            migrateSourceData(dbInst).catch(e => 
+              console.warn('Source data migration failed:', e)
+            );
+          }
+        }, 100);
       }
     };
 
@@ -272,6 +350,17 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
   const setSetting = useCallback((key: string, value: string): Promise<void> => 
     performTx('settings', 'readwrite', async ({ settings }) => {
       await promisifyRequest(settings.put({ k: key, v: value }));
+    }), [performTx, promisifyRequest]);
+
+  const getSource = useCallback((key: string): Promise<string | null> => 
+    performTx('sources', 'readonly', async ({ sources }) => {
+      const res = await promisifyRequest(sources.get(key));
+      return res ? res.v : null;
+    }), [performTx, promisifyRequest]);
+
+  const setSource = useCallback((key: string, value: string): Promise<void> => 
+    performTx('sources', 'readwrite', async ({ sources }) => {
+      await promisifyRequest(sources.put({ k: key, v: value }));
     }), [performTx, promisifyRequest]);
 
   const getApiCache = useCallback((key: string): Promise<any | null> => 
@@ -464,6 +553,8 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
     importDB,
     getSetting,
     setSetting,
+    getSource,
+    setSource,
     getApiCache,
     setApiCache,
     clearCache,
@@ -475,7 +566,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
     getTopPlayed
   }), [
     db, ready, exportJSON, importJSON, exportDB, importDB,
-    getSetting, setSetting, getApiCache, setApiCache,
+    getSetting, setSetting, getSource, setSource, getApiCache, setApiCache,
     clearCache, clearLocalData, saveNow,
     addPlay, getPlayCountForTrack, getRecentPlays, getTopPlayed
   ]);

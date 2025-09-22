@@ -2,6 +2,7 @@
 /* Now Playing Lyrics Overlay */
 .np-lyrics-scroll {
   height: 100%;
+  width: 100%;
   position: relative; /* anchor for absolutely positioned close button */
   overflow-y: auto;
 }
@@ -152,6 +153,7 @@
 }
 .np-lyrics-container{
     height:100%;
+    width: 100%;
     position:relative;
     overflow:hidden;
 }

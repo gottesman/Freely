@@ -5,7 +5,7 @@ const { booleanParam } = require('../utils');
 const router = express.Router();
 
 // Initialize the torrent files manager
-const torrentFilesManager = new TorrentFilesManager();
+const TorrentFilesManagerSingleton = TorrentFilesManager.getInstance();
 
 /**
  * Get files for a torrent
@@ -13,9 +13,24 @@ const torrentFilesManager = new TorrentFilesManager();
  */
 router.get('/torrent-files/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    let { id } = req.params;
     const timeout = parseInt(req.query.timeout || '20000', 10);
     const forceRefresh = booleanParam(req.query.force || req.query.f);
+    // Accept magnet passed via query (?magnet= or ?id=) and decode percent-encoding
+    const qMagnet = req.query.magnet || req.query.id;
+    if (qMagnet && typeof qMagnet === 'string') {
+      try { id = decodeURIComponent(qMagnet); } catch (_) { id = qMagnet; }
+    } else if (id && id.toLowerCase().startsWith('magnet')) {
+      // Some clients request /torrent-files/magnet:?xt=... where Express splits at '?'
+      // Recover the full magnet from originalUrl if needed
+      if (!id.startsWith('magnet:?')) {
+        const idx = req.originalUrl.indexOf('magnet:');
+        if (idx >= 0) {
+          const magnet = req.originalUrl.substring(idx);
+          try { id = decodeURIComponent(magnet); } catch (_) { id = magnet; }
+        }
+      }
+    }
 
     if (!id) {
       return res.status(400).json({
@@ -24,9 +39,12 @@ router.get('/torrent-files/:id', async (req, res) => {
       });
     }
 
+  // Keep the effective ID for error responses/logging
+  req._effectiveTorrentId = id;
+
     console.log(`[TorrentFiles] Getting files for ${id} (timeout: ${timeout}, force: ${forceRefresh})`);
 
-    const files = await torrentFilesManager.getTorrentFiles(id, {
+    const files = await TorrentFilesManagerSingleton.getTorrentFiles(id, {
       timeout,
       forceRefresh
     });
@@ -39,12 +57,32 @@ router.get('/torrent-files/:id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('[TorrentFiles] Error getting files:', error.message);
-    
+    const msg = String(error && error.message || error || 'Unknown error');
+    console.error('[TorrentFiles] Error getting files:', msg);
+
+    // Handle invalid magnet/id format explicitly
+    if (/invalid torrent identifier/i.test(msg)) {
+      return res.status(400).json({
+        error: 'invalid_id',
+        message: msg,
+        id: req._effectiveTorrentId || req.params.id
+      });
+    }
+
+    // Gracefully signal service unavailability for missing native dependency issues
+    if (/native dependenc/i.test(msg)) {
+      return res.status(503).json({
+        error: 'service_unavailable',
+        message: 'WebTorrent is not available on this system',
+        details: msg,
+        id: req._effectiveTorrentId || req.params.id
+      });
+    }
+
     res.status(500).json({
       error: 'fetch_failed',
-      message: error.message,
-      id: req.params.id
+      message: msg,
+      id: req._effectiveTorrentId || req.params.id
     });
   }
 });
@@ -60,14 +98,14 @@ router.delete('/torrent-files/cache/:id?', async (req, res) => {
 
     if (id) {
       // Clear specific ID
-      const result = torrentFilesManager.clearCacheForId(id);
+  const result = TorrentFilesManagerSingleton.clearCacheForId(id);
       res.json({
         success: true,
         ...result
       });
     } else {
       // Clear entire cache
-      const result = torrentFilesManager.clearCache();
+  const result = TorrentFilesManagerSingleton.clearCache();
       res.json({
         success: true,
         ...result
@@ -90,7 +128,7 @@ router.delete('/torrent-files/cache/:id?', async (req, res) => {
  */
 router.get('/torrent-files/cache/stats', (req, res) => {
   try {
-    const stats = torrentFilesManager.getCacheStats();
+  const stats = TorrentFilesManagerSingleton.getCacheStats();
     res.json({
       success: true,
       stats

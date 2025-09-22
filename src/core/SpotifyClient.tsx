@@ -424,7 +424,7 @@ export class SpotifyClient {
     // Prefer instance token if valid
     const bufferTime = SPOTIFY_CONSTANTS.TIMING.TOKEN_BUFFER_MS;
     if (this.cfg.accessToken && this.cfg.tokenExpiresAt && Date.now() < this.cfg.tokenExpiresAt - bufferTime) return;
-    if (this.cfg.accessToken && !this.cfg.tokenExpiresAt) return; // static injected
+    // If token has no known expiry, treat it as invalid and refresh
     
     // Try shared token if instance lacks/expired
     const { token } = SharedState;
@@ -463,9 +463,11 @@ export class SpotifyClient {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), SPOTIFY_CONSTANTS.TIMING.FETCH_TIMEOUT_MS);
-
-        const r = await fetch(String(externalEndpoint), {
+        // Bust intermediary caches on the token endpoint to avoid stale tokens
+        const url = String(externalEndpoint) + (externalEndpoint.includes('?') ? '&' : '?') + 'ts=' + Date.now();
+        const r = await fetch(url, {
           headers: { 'Accept': 'application/json' },
+          cache: 'no-store',
           signal: controller.signal
         });
         clearTimeout(timeout);
@@ -484,9 +486,11 @@ export class SpotifyClient {
           throw new Error('token_ct:' + ct + ' snippet:' + raw.slice(0, 40));
         }
         
-        const j = await r.json();
+  const j = await r.json();
         
-        if (!j.access_token) throw new Error('token_missing_access_token');
+  if (!j.access_token) throw new Error('token_missing_access_token');
+  // Normalize token in case endpoint returns with a 'Bearer ' prefix
+  const normalizedToken = String(j.access_token).replace(/^Bearer\s+/i, '').trim();
         
         // Calculate expiry time
         let expiresInSec: number;
@@ -498,7 +502,7 @@ export class SpotifyClient {
           expiresInSec = Number(j.expires_in || 3600);
         }
         
-        this.setAccessToken(j.access_token, expiresInSec);
+  this.setAccessToken(normalizedToken, expiresInSec);
         return;
       } catch (e) {
         throw new Error('❌ External token endpoint failed: ' + (e as any)?.message);
@@ -510,6 +514,10 @@ export class SpotifyClient {
 
   private async get(path: string, params?: Record<string, string | number | undefined>) {
     await this.ensureToken();
+    try {
+      const status = this.getTokenStatus();
+      console.log('🎫 Spotify request token status before fetch', { path, hasToken: status.hasToken, timeUntilExpiry: status.timeUntilExpiry });
+    } catch {}
     
     // Merge locale if not explicitly provided
     const merged: Record<string, string | number | undefined> = { ...(params || {}) };
@@ -535,7 +543,59 @@ export class SpotifyClient {
       Object.entries(merged).filter(([, v]) => v !== undefined) as any
     ) : '');
     
-    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + this.cfg.accessToken } });
+    // Helper to execute the authorized request
+    const doFetch = async (): Promise<Response> => {
+      const headers: Record<string, string> = {
+        Authorization: 'Bearer ' + (this.cfg.accessToken || ''),
+        Accept: 'application/json'
+      };
+      return fetch(url, { headers });
+    };
+
+  // Initial request
+  let res = await doFetch();
+
+    // If unauthorized/forbidden, refresh token once and retry
+    if (res.status === 401 || res.status === 403) {
+      try {
+        // Try to read a small snippet of the error for diagnostics
+        try {
+          const text = await res.clone().text();
+          console.warn('Spotify 401/403 response snippet (pre-refresh):', text.slice(0, 160));
+        } catch {}
+        console.warn('Spotify token likely expired. Refreshing token and retrying request:', path);
+        this.clearTokenCache();
+        await this.ensureToken();
+        res = await doFetch();
+      } catch (e) {
+        throw new Error('Spotify auth refresh failed: ' + (e as any)?.message);
+      }
+    }
+
+    // If still unauthorized, force-fetch a brand new token and try one last time
+    if ((res.status === 401 || res.status === 403)) {
+      console.warn('Spotify still unauthorized after refresh. Forcing new token and retrying once more:', path);
+      try {
+        try {
+          const text = await res.clone().text();
+          console.warn('Spotify 401/403 response snippet (post-ensureToken):', text.slice(0, 160));
+        } catch {}
+        this.clearTokenCache();
+        // Force a fresh token fetch bypassing any shared cache states
+        await (this as any).fetchNewToken();
+        res = await doFetch();
+      } catch (e) {
+        throw new Error('Spotify forced auth refresh failed: ' + (e as any)?.message);
+      }
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      try {
+        const text = await res.clone().text();
+        console.error('Spotify unauthorized after forced refresh. Final response snippet:', text.slice(0, 200));
+      } catch {}
+    }
+
     if (!res.ok) throw new Error('Spotify HTTP ' + res.status);
     const json = await res.json();
 

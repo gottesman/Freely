@@ -5,25 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { createWebTorrentClient } = require('../utils/webtorrent-loader');
 
-/**
- * Sanitize file/directory names for safe filesystem usage
- */
-function sanitizePath(pathString) {
-  if (!pathString) return pathString;
-  
-  return pathString
-    // Remove or replace invalid Windows filename characters
-    .replace(/[<>:"/\\|?*]/g, '_')
-    // Remove emoji and other Unicode symbols that might cause issues
-    .replace(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '')
-    // Replace multiple spaces/underscores with single ones
-    .replace(/[\s_]+/g, ' ')
-    // Trim whitespace and dots (Windows doesn't like files ending with dots)
-    .trim()
-    .replace(/\.+$/, '')
-    // Ensure it's not empty
-    || 'untitled';
-}
+// Note: previously had a sanitizePath helper here; it was unused, so removed to avoid dead code.
 
 class TorrentFilesManager {
   constructor(dataDir = null) {
@@ -32,6 +14,14 @@ class TorrentFilesManager {
     this.cacheTTL = 24 * 60 * 60 * 1000; // 24 hours
     this.client = null;
     this.ensureDataDir();
+  }
+
+  // Provide a shared singleton instance so routes/managers use a single cache and client
+  static getInstance() {
+    if (!this._instance) {
+      this._instance = new TorrentFilesManager();
+    }
+    return this._instance;
   }
 
   /**
@@ -175,6 +165,8 @@ class TorrentFilesManager {
     return new Promise(async (resolve, reject) => {
       const client = await this.getClient();
       let timedOut = false;
+      // Predeclare handler references to avoid TDZ in cleanup when timeouts/errors fire early
+      let onClientError = null;
 
       const timeoutId = setTimeout(() => {
         timedOut = true;
@@ -187,6 +179,10 @@ class TorrentFilesManager {
         if (!timedOut && torrent) {
           torrent.destroy();
         }
+        // Detach the client error handler if it was attached
+        try {
+          if (client && typeof onClientError === 'function') client.off('error', onClientError);
+        } catch (_) {}
         if (callback) callback();
       };
 
@@ -302,7 +298,8 @@ class TorrentFilesManager {
           }
         });
 
-        client.on('error', (error) => {
+        // Use a detachable error handler and remove it on cleanup to avoid accumulating listeners
+        onClientError = (error) => {
           if (!timedOut) {
             console.error(`[TorrentFilesManager] WebTorrent client error:`, error.message);
             // Check if it's a duplicate torrent error
@@ -329,7 +326,8 @@ class TorrentFilesManager {
               reject(new Error(`WebTorrent error: ${error.message}`));
             });
           }
-        });
+        };
+        client.on('error', onClientError);
 
       } catch (error) {
         cleanup(() => {
@@ -337,6 +335,29 @@ class TorrentFilesManager {
         });
       }
     });
+  }
+
+  /**
+   * Get a single file length for a torrent id with cache-first strategy.
+   * Returns 0 if not determinable within the timeout.
+   */
+  async getFileLength(id, fileIndex, options = {}) {
+    try {
+      const idx = Number(fileIndex) || 0;
+      const cached = this.getCachedFiles(id);
+      if (Array.isArray(cached) && cached[idx] && typeof cached[idx].length === 'number') {
+        return Number(cached[idx].length) || 0;
+      }
+
+      const { timeout = 5000, forceRefresh = false } = options;
+      const files = await this.getTorrentFiles(id, { timeout, forceRefresh });
+      if (Array.isArray(files) && files[idx] && typeof files[idx].length === 'number') {
+        return Number(files[idx].length) || 0;
+      }
+    } catch (_) {
+      // swallow and return 0
+    }
+    return 0;
   }
 
   /**

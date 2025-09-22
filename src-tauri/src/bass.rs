@@ -19,7 +19,6 @@ pub type BassSetConfig = unsafe extern "system" fn(option: c_uint, value: c_uint
 // Pointer variant used for string-based settings like HTTP User-Agent
 pub type BassSetConfigPtr = unsafe extern "system" fn(option: c_uint, value: *const u8) -> c_uint;
 pub type BassPluginLoad = unsafe extern "system" fn(file: *const c_char, flags: c_uint) -> u32;
-pub type BassPluginGetInfo = unsafe extern "system" fn(handle: u32) -> *const BassPluginInfo;
 pub type BassStreamCreateFile = unsafe extern "system" fn(
     mem: c_int,
     file: *const std::ffi::c_void,
@@ -53,8 +52,6 @@ pub type BassChannelSetAttribute =
 pub type BassChannelGetInfo =
     unsafe extern "system" fn(handle: u32, info: *mut BassChannelInfo) -> c_int;
 pub type BassChannelGetTags = unsafe extern "system" fn(handle: u32, tags: c_uint) -> *const c_char;
-pub type BassGetVolume = unsafe extern "system" fn() -> f32;
-pub type BassSetVolume = unsafe extern "system" fn(volume: f32) -> c_int;
 pub type BassGetDeviceInfo =
     unsafe extern "system" fn(device: c_uint, info: *mut BassDeviceInfo) -> c_int;
 pub type BassGetInfo = unsafe extern "system" fn(info: *mut BassInfo) -> c_int;
@@ -113,21 +110,11 @@ pub const BASS_TAG_APE: c_uint = 6; // APE tags : series of null-terminated UTF-
 pub const BASS_TAG_MP4: c_uint = 7; // MP4/iTunes metadata : series of null-terminated UTF-8 strings
 pub const BASS_TAG_WMA: c_uint = 8; // WMA tags : series of null-terminated UTF-8 strings
 pub const BASS_TAG_VENDOR: c_uint = 9; // OGG encoder : UTF-8 string
-pub const BASS_TAG_LYRICS3: c_uint = 10; // Lyric3v2 tag : ANSI string
 pub const BASS_TAG_CA_CODEC: c_uint = 11; // CoreAudio codec info : TAG_CA_CODEC structure
 pub const BASS_TAG_MF: c_uint = 13; // Media Foundation tags : series of null-terminated UTF-8 strings
 pub const BASS_TAG_WAVEFORMAT: c_uint = 14; // WAVE format : WAVEFORMATEX structure
-pub const BASS_TAG_RIFF_INFO: c_uint = 0x100; // RIFF "INFO" tags : series of null-terminated ANSI strings
-pub const BASS_TAG_RIFF_BEXT: c_uint = 0x101; // RIFF "BEXT" tags : TAG_BEXT structure
-pub const BASS_TAG_RIFF_CART: c_uint = 0x102; // RIFF "CART" tags : TAG_CART structure
-pub const BASS_TAG_RIFF_DISP: c_uint = 0x103; // RIFF "DISP" tags : TAG_DISP structure
-pub const BASS_TAG_APE_BINARY: c_uint = 0x1000; // + index #, binary APE tag : TAG_APE_BINARY structure
-pub const BASS_TAG_MUSIC_NAME: c_uint = 0x10000; // MOD music name : ANSI string
-pub const BASS_TAG_MUSIC_MESSAGE: c_uint = 0x10001; // MOD message : ANSI string
-pub const BASS_TAG_MUSIC_ORDERS: c_uint = 0x10002; // MOD order list : BYTE array of size length
-pub const BASS_TAG_MUSIC_AUTH: c_uint = 0x10003; // MOD author : UTF-8 string
-pub const BASS_TAG_MUSIC_INST: c_uint = 0x10100; // + instrument #, MOD instrument name : ANSI string
-pub const BASS_TAG_MUSIC_SAMPLE: c_uint = 0x10300; // + sample #, MOD sample name : ANSI string
+
+// Structure definitions
 
 // Plugin info structs for BASS_PluginGetInfo
 #[repr(C)]
@@ -221,19 +208,145 @@ pub struct BassChannelInfo {
     pub filename: *const c_char, // filename (NULL=live stream)
 }
 
-// Dynamic loading helper functions
-pub fn load_bass_library() -> Result<Library, String> {
-    // Try to load BASS DLL from different locations
-    let possible_paths = ["bass.dll", "./bass.dll", "./bin/bass.dll", "bin/bass.dll"];
+// Platform-specific library extensions
+#[cfg(target_os = "windows")]
+const LIB_EXTENSION: &str = ".dll";
+#[cfg(target_os = "macos")]
+const LIB_EXTENSION: &str = ".dylib";
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const LIB_EXTENSION: &str = ".so";
 
-    for path in &possible_paths {
-        if let Ok(lib) = unsafe { Library::new(path) } {
-            println!("[bass] Successfully loaded BASS library from: {}", path);
-            return Ok(lib);
+/// Get the bin directory path dynamically based on the current executable location
+pub fn get_bin_directory() -> Result<std::path::PathBuf, String> {
+    let bin_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current executable path: {}", e))?
+        .parent()
+        .ok_or("Failed to get parent directory")?
+        .parent()
+        .ok_or("Failed to get grandparent directory")?
+        .join("bin");
+    
+    Ok(bin_path)
+}
+
+/// Get the full path to a library file in the bin directory
+pub fn get_bin_path(lib: &str, prefix: &str) -> Result<String, String> {
+    let bin_dir = get_bin_directory()?;
+    let filename = format!("{}{}{}", prefix, lib, LIB_EXTENSION);
+    let full_path = bin_dir.join(filename);
+    
+    full_path
+        .to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Failed to convert path to string".to_string())
+}
+
+/// Check if a library file exists in the bin directory
+pub fn library_exists(lib: &str, prefix: &str) -> bool {
+    match get_bin_path(lib, prefix) {
+        Ok(path) => std::path::Path::new(&path).exists(),
+        Err(_) => false,
+    }
+}
+
+/// Get alternative library search paths for fallback loading
+pub fn get_fallback_paths(lib: &str, prefix: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    // Construct filename once
+    let filename = format!("{}{}{}", prefix, lib, LIB_EXTENSION);
+
+    // Primary path in bin directory using our original heuristic (exe/../.. /bin)
+    if let Ok(path) = get_bin_path(lib, prefix) {
+        paths.push(path);
+    }
+
+    // Additional Tauri-friendly locations relative to the executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // 1) exe_dir/bin/<file>
+            let p1 = exe_dir.join("bin").join(&filename);
+            if let Some(s) = p1.to_str() {
+                paths.push(s.to_string());
+            }
+            // 2) exe_dir/resources/bin/<file> (typical Tauri bundle layout on Windows/Linux)
+            let p2 = exe_dir.join("resources").join("bin").join(&filename);
+            if let Some(s) = p2.to_str() {
+                paths.push(s.to_string());
+            }
+            // 3) exe_dir/../resources/bin/<file> (safety for nested exe dirs)
+            if let Some(parent) = exe_dir.parent() {
+                let p3 = parent.join("resources").join("bin").join(&filename);
+                if let Some(s) = p3.to_str() {
+                    paths.push(s.to_string());
+                }
+                // 4) exe_dir/../bin/<file>
+                let p4 = parent.join("bin").join(&filename);
+                if let Some(s) = p4.to_str() {
+                    paths.push(s.to_string());
+                }
+                // 5) exe_dir/../../bin/<file> (dev: src-tauri/bin)
+                if let Some(grand) = parent.parent() {
+                    let p5 = grand.join("bin").join(&filename);
+                    if let Some(s) = p5.to_str() {
+                        paths.push(s.to_string());
+                    }
+                }
+            }
         }
     }
 
-    Err("Could not load bass.dll. Make sure the BASS library is available.".to_string())
+    // Fallback: current working directory
+    paths.push(filename.clone());
+
+    // Fallback: system library directories (Unix-like systems)
+    #[cfg(not(target_os = "windows"))]
+    {
+        paths.push(format!("/usr/lib/{}", filename));
+        paths.push(format!("/usr/local/lib/{}", filename));
+        paths.push(format!("/opt/lib/{}", filename));
+    }
+
+    // Fallback: common Windows library locations
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(program_files) = std::env::var("PROGRAMFILES") {
+            paths.push(format!("{}\\BASS\\{}", program_files, filename));
+        }
+        if let Ok(program_files_x86) = std::env::var("PROGRAMFILES(X86)") {
+            paths.push(format!("{}\\BASS\\{}", program_files_x86, filename));
+        }
+    }
+
+    paths
+}
+
+// Dynamic loading helper functions
+pub fn load_bass_library() -> Result<Library, String> {
+    let fallback_paths = get_fallback_paths("bass", "");
+    let mut last_error = String::new();
+    
+    for (i, lib_path) in fallback_paths.iter().enumerate() {
+        println!("[bass] Attempting to load BASS library from: {}", lib_path);
+        
+        match unsafe { Library::new(lib_path) } {
+            Ok(lib) => {
+                println!("[bass] Successfully loaded BASS library from: {}", lib_path);
+                return Ok(lib);
+            }
+            Err(e) => {
+                let error = format!("Failed to load from '{}': {}", lib_path, e);
+                println!("[bass] {}", error);
+                last_error = error;
+            }
+        }
+    }
+    
+    Err(format!(
+        "Failed to load BASS library after trying {} paths. Last error: {}",
+        fallback_paths.len(),
+        last_error
+    ))
 }
 
 pub fn ensure_bass_loaded() -> Result<Library, String> {
@@ -246,9 +359,6 @@ pub fn ensure_bass_loaded() -> Result<Library, String> {
             return Err("BASS library loaded but BASS_Free function not found".to_string());
         }
     };
-
-    // Load plugins after BASS is initialized
-    load_bass_plugins(&lib)?;
 
     Ok(lib)
 }
@@ -265,59 +375,56 @@ pub fn load_bass_plugins(lib: &Library) -> Result<(), String> {
         }
     };
 
-    // List of plugins to try loading with their paths
-    let plugin_configs = [
-        (
-            "bass_aac.dll",
-            vec!["bass_aac.dll", "./bin/bass_aac.dll", "bin/bass_aac.dll"],
-        ),
-        (
-            "bassflac.dll",
-            vec!["bassflac.dll", "./bin/bassflac.dll", "bin/bassflac.dll"],
-        ),
-        (
-            "bassopus.dll",
-            vec!["bassopus.dll", "./bin/bassopus.dll", "bin/bassopus.dll"],
-        ),
-        (
-            "basshls.dll",
-            vec!["basshls.dll", "./bin/basshls.dll", "bin/basshls.dll"],
-        ),
-        (
-            "bassaac.dll",
-            vec!["bassaac.dll", "./bin/bassaac.dll", "bin/bassaac.dll"],
-        ),
-        (
-            "bassdsd.dll",
-            vec!["bassdsd.dll", "./bin/bassdsd.dll", "bin/bassdsd.dll"],
-        ),
-        (
-            "basswebm.dll",
-            vec!["basswebm.dll", "./bin/basswebm.dll", "bin/basswebm.dll"],
-        ),
-        (
-            "bassalac.dll",
-            vec!["bassalac.dll", "./bin/bassalac.dll", "bin/bassalac.dll"],
-        ),
-        (
-            "basswv.dll",
-            vec!["basswv.dll", "./bin/basswv.dll", "bin/basswv.dll"],
-        ),
+    // List of plugins to try loading
+    let plugin_names = [
+        "bass_aac",
+        "bassflac", 
+        "bassopus",
+        "basshls",
+        "bassdsd",
+        "basswebm",
+        "bassalac",
+        "basswv"
     ];
 
-    for (plugin_name, paths) in &plugin_configs {
-        for path in paths {
+    for &plugin_name in &plugin_names {
+        let fallback_paths = get_fallback_paths(plugin_name, "");
+        let mut loaded = false;
+        
+        for path in fallback_paths {
             unsafe {
-                let c_path = std::ffi::CString::new(*path).map_err(|_| "Invalid plugin path")?;
-                let result = bass_plugin_load(c_path.as_ptr(), 0);
-                if result != 0 {
-                    println!(
-                        "[bass] Successfully loaded plugin: {} from {}",
-                        plugin_name, path
-                    );
-                    break;
+                match std::ffi::CString::new(path.clone()) {
+                    Ok(c_path) => {
+                        let result = bass_plugin_load(c_path.as_ptr(), 0);
+                        if result != 0 {
+                            println!(
+                                "[bass] Successfully loaded plugin: {} from {}",
+                                plugin_name, path
+                            );
+                            loaded = true;
+                            break;
+                        } else {
+                            // If already loaded, treat as success (avoid noisy failures)
+                            let err_code = match lib.get::<BassErrorGetCode>(b"BASS_ErrorGetCode") {
+                                Ok(f) => f(),
+                                Err(_) => -1,
+                            };
+                            if err_code == 14 { // BASS_ERROR_ALREADY
+                                println!("[bass] Plugin already loaded: {}", plugin_name);
+                                loaded = true;
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        println!("[bass] Invalid plugin path: {}", path);
+                    }
                 }
             }
+        }
+        
+        if !loaded {
+            println!("[bass] Failed to load plugin: {} (tried all fallback paths)", plugin_name);
         }
     }
 
@@ -877,90 +984,8 @@ pub fn probe_audio_format_from_channel(lib: &Library, handle: u32) -> BassAudioF
         // Finally, try filename/URL extension if still unknown
         let via_name = via_tags.or_else(|| codec_from_filename_ptr(info.filename));
 
-        // As a last resort, try inspecting the plugin handle with BASS_PluginGetInfo
-        if via_name.is_some() {
-            via_name
-        } else {
-            // Dynamically load BASS_PluginGetInfo and inspect formats
-            unsafe {
-                if let Ok(sym) = lib.get::<BassPluginGetInfo>(b"BASS_PluginGetInfo") {
-                    if info.plugin != 0 {
-                        let pinfo_ptr = sym(info.plugin);
-                        if !pinfo_ptr.is_null() {
-                            let pinfo = &*pinfo_ptr;
-                            // Iterate formats to find a recognizable name or extension
-                            for i in 0..pinfo.formatc {
-                                let form_ptr = pinfo.formats.add(i as usize);
-                                if form_ptr.is_null() {
-                                    continue;
-                                }
-                                let form = &*form_ptr;
-                                let name: String = if !form.name.is_null() {
-                                    std::ffi::CStr::from_ptr(form.name)
-                                        .to_string_lossy()
-                                        .to_lowercase()
-                                        .to_string()
-                                } else {
-                                    String::new()
-                                };
-                                let exts: String = if !form.exts.is_null() {
-                                    std::ffi::CStr::from_ptr(form.exts)
-                                        .to_string_lossy()
-                                        .to_lowercase()
-                                        .to_string()
-                                } else {
-                                    String::new()
-                                };
-                                // Heuristics based on plugin format name/extensions
-                                if name.contains("flac") || exts.contains("flac") {
-                                    return BassAudioFormatInfo {
-                                        codec: Some("flac".to_string()),
-                                        sample_rate,
-                                        bits_per_sample,
-                                    };
-                                }
-                                if name.contains("opus") || exts.contains("opus") {
-                                    return BassAudioFormatInfo {
-                                        codec: Some("opus".to_string()),
-                                        sample_rate,
-                                        bits_per_sample,
-                                    };
-                                }
-                                if name.contains("aac") || exts.contains("aac") {
-                                    return BassAudioFormatInfo {
-                                        codec: Some("aac".to_string()),
-                                        sample_rate,
-                                        bits_per_sample,
-                                    };
-                                }
-                                if name.contains("alac") || exts.contains("alac") {
-                                    return BassAudioFormatInfo {
-                                        codec: Some("alac".to_string()),
-                                        sample_rate,
-                                        bits_per_sample,
-                                    };
-                                }
-                                if name.contains("wavpack") || exts.contains("wv") {
-                                    return BassAudioFormatInfo {
-                                        codec: Some("wv".to_string()),
-                                        sample_rate,
-                                        bits_per_sample,
-                                    };
-                                }
-                                if name.contains("webm") || exts.contains("webm") {
-                                    return BassAudioFormatInfo {
-                                        codec: Some("webm".to_string()),
-                                        sample_rate,
-                                        bits_per_sample,
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
+        // As a last resort, return unknown codec
+        Some(via_name.unwrap_or_else(|| "unknown".to_string()))
     };
 
     BassAudioFormatInfo {

@@ -399,12 +399,49 @@ export default function Settings(){
   };
 
   async function onExport(){
-    const j = await exportJSON()
-    const blob = new Blob([j],{type:'application/json'})
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = 'freely-export.json'; a.click()
-    URL.revokeObjectURL(url)
+    try {
+      const j = await exportJSON()
+      
+      // If running inside Tauri, call the backend command to show a save dialog and write the file
+      if (isTauriAvailable() && runTauriCommand) {
+        try {
+          const result = await runTauriCommand('save_file_and_write', { 
+            default_file_name: 'freely-export.json', 
+            contents: j 
+          });
+          // runTauriCommand returns false if Tauri unavailable, an error object on failure, or the result
+          if (result && typeof result === 'object' && 'error' in result) {
+            throw new Error((result as any).message || 'Failed to save');
+          }
+          // Successful or cancelled (null/false) — show exported message
+          pushAlert(t('settings.exported', 'Settings exported'), 'info');
+        } catch (err) {
+          console.warn('Tauri save_file_and_write failed, falling back to browser download', err);
+          // Fallback to browser download
+          const blob = new Blob([j], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; 
+          a.download = 'freely-export.json'; 
+          a.click();
+          URL.revokeObjectURL(url);
+          pushAlert(t('settings.exported', 'Settings exported'), 'info');
+        }
+      } else {
+        // Browser fallback
+        const blob = new Blob([j], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; 
+        a.download = 'freely-export.json'; 
+        a.click();
+        URL.revokeObjectURL(url);
+        pushAlert(t('settings.exported', 'Settings exported'), 'info');
+      }
+    } catch (e) {
+      console.error('Failed to export settings:', e);
+      pushAlert(t('settings.exportFailed', 'Failed to export settings'), 'error');
+    }
   }
 
   // Export only the Appearance-related settings (with optional embedded image)
@@ -548,11 +585,47 @@ export default function Settings(){
   }
 
   async function onImportUpload(e:React.ChangeEvent<HTMLInputElement>){
-    const f = e.target.files?.[0]; if(!f) return
-    setImportFileName(f.name)
-    const s = await f.text()
-  await importJSON(s)
-  pushAlert(t('settings.imported'), 'info')
+    try {
+      const f = e.target.files?.[0]; 
+      if (!f) return;
+      
+      setImportFileName(f.name);
+      
+      // Validate file type
+      if (!f.name.toLowerCase().endsWith('.json')) {
+        pushAlert(t('settings.import.invalidFile', 'Please select a valid JSON file'), 'warn');
+        return;
+      }
+      
+      const s = await f.text();
+      
+      // Validate JSON format
+      try {
+        JSON.parse(s);
+      } catch (parseErr) {
+        pushAlert(t('settings.import.invalidJSON', 'Invalid JSON file format'), 'error');
+        return;
+      }
+      
+      // Import the settings
+      await importJSON(s);
+      pushAlert(t('settings.imported', 'Settings imported successfully'), 'info');
+      
+      // Trigger a page refresh to apply imported settings
+      try { 
+        window.dispatchEvent(new CustomEvent('freely:settingsImported')); 
+      } catch(_) {}
+      
+    } catch (error) {
+      console.error('Failed to import settings:', error);
+      pushAlert(t('settings.importFailed', 'Failed to import settings'), 'error');
+    } finally {
+      // Clear the file input
+      try { 
+        (e.target as HTMLInputElement).value = ''; 
+        setImportFileName('');
+      } catch {}
+    }
   }
 
   async function onClearCache() {
@@ -1054,25 +1127,29 @@ export default function Settings(){
         {/* Import / Export */}
         <section className="settings-section" aria-labelledby="import-export-header">
           <div className="settings-section-header">
-            <span className="material-symbols-rounded settings-icon" aria-hidden="true">file_upload</span>
-            <h3 id="import-export-header" className="settings-section-title">Import & Export</h3>
+            <span className="material-symbols-rounded settings-icon" aria-hidden="true">sync_alt</span>
+            <h3 id="import-export-header" className="settings-section-title">{t('settings.importExport', 'Import & Export')}</h3>
           </div>
           <div className="settings-card">
-            <div className="btn-row">
-              <button className="btn" onClick={onExport}>
-                <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>upload</span>
-                {t('settings.export')}
-              </button>
-              <div className="file-input-wrap">
-                <input id="import-file" className="file-input-hidden" type="file" accept="application/json" onChange={onImportUpload} aria-label={t('settings.import.placeholder')} />
-                <label htmlFor="import-file" className="file-input-visual">
-                  <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>download</span>
-                  {t('settings.import') || 'Import'}
-                  {importFileName && <span className="file-input-filename" title={importFileName}>{importFileName}</span>}
-                </label>
+            <div className="settings-fields">
+              <div className="settings-field">
+                <div className="btn-row">
+                  <button className="btn" onClick={onExport}>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>upload</span>
+                    {t('settings.export')}
+                  </button>
+                  <div className="file-input-wrap">
+                    <input id="import-file" className="file-input-hidden" type="file" accept="application/json" onChange={onImportUpload} aria-label={t('settings.import.placeholder')} />
+                    <label htmlFor="import-file" className="file-input-visual">
+                      <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>download</span>
+                      {t('settings.import', 'Import Settings')}
+                      {importFileName && <span className="file-input-filename" title={importFileName}>{importFileName}</span>}
+                    </label>
+                  </div>
+                </div>
+                <p className="settings-field-hint">{t('settings.importExport.hint', 'Export all your settings and playlists to a JSON file, or import them from a previously exported file.')}</p>
               </div>
             </div>
-            <p className="settings-field-hint">{t('settings.import.placeholder')}</p>
           </div>
         </section>
 

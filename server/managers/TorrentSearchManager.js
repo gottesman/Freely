@@ -32,13 +32,83 @@ class TorrentSearchManager {
   }
 
   async fetchWithOpts(url, init = {}) {
-    const defaultHeaders = { 'User-Agent': 'freely/1.0' };
-    const opts = {
-      ...init,
-      headers: { ...defaultHeaders, ...init?.headers }
+    const defaultHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9'
     };
     const fetch = await this._getFetch();
-    return fetch(url, opts);
+    const maxRedirects = typeof init.maxRedirects === 'number' ? init.maxRedirects : 5;
+    let redirects = 0;
+    let currentUrl = url;
+    let method = init.method || 'GET';
+    let body = init.body;
+    let headersBase = { ...defaultHeaders, ...(init.headers || {}) };
+    let cookies = headersBase.Cookie || headersBase.cookie;
+    let lastOrigin;
+
+    const getSetCookie = (response) => {
+      if (!response || !response.headers) return [];
+      if (typeof response.headers.getSetCookie === 'function') return response.headers.getSetCookie();
+      if (response.headers.raw?.()['set-cookie']) return response.headers.raw()['set-cookie'];
+      const sc = response.headers.get && response.headers.get('set-cookie');
+      return sc ? sc.split(', ').filter(Boolean) : [];
+    };
+
+    while (true) {
+      let sendHeaders = { ...headersBase };
+      // Propagate Referer across redirects
+      if (lastOrigin && !sendHeaders.Referer && !sendHeaders.referer) sendHeaders.Referer = lastOrigin + '/';
+      if (cookies && !sendHeaders.Cookie) sendHeaders.Cookie = cookies;
+
+      // Always request manual redirects so we can enforce a max
+      const sendInit = {
+        ...init,
+        method,
+        body,
+        redirect: 'manual',
+        headers: sendHeaders
+      };
+
+      const res = await fetch(currentUrl, sendInit);
+      // Non-redirect or no location header: return
+      const status = res.status;
+      const loc = res.headers.get('location') || res.headers.get('Location');
+      if (!(status >= 300 && status < 400 && loc)) {
+        return res;
+      }
+
+      // Update cookies from redirect response
+      try {
+        const setCookies = getSetCookie(res);
+        if (setCookies && setCookies.length) {
+          const newCookie = setCookies.map(c => c.split(';')[0]).join('; ');
+          cookies = cookies ? `${cookies}; ${newCookie}` : newCookie;
+        }
+      } catch {}
+
+      redirects += 1;
+      if (redirects > maxRedirects) {
+        throw new Error(`Too many redirects (>${maxRedirects}) for ${url}`);
+      }
+
+      // Compute next URL
+      let nextUrl;
+      try { nextUrl = new URL(loc, currentUrl).href; } catch { nextUrl = loc; }
+      try { const u = new URL(currentUrl); lastOrigin = u.origin; } catch {}
+
+      // Per spec: 303 -> GET; 301/302 with non-GET/HEAD -> GET; 307/308 preserve method and body
+      if (status === 303 || ((status === 301 || status === 302) && method !== 'GET' && method !== 'HEAD')) {
+        method = 'GET';
+        body = undefined;
+        // Remove content-related headers on method change
+        delete headersBase['Content-Type'];
+        delete headersBase['content-type'];
+        delete headersBase['Content-Length'];
+        delete headersBase['content-length'];
+      }
+
+      currentUrl = nextUrl;
+    }
   }
 
   async tryFetchAny(urls, init = {}, timeoutMs = 3000) {
@@ -57,7 +127,44 @@ class TorrentSearchManager {
   async fetchDetailMagnet(detailUrl, selector, options = {}) {
     if (!detailUrl) return undefined;
     try {
-      const dres = await this.fetchWithOpts(detailUrl, options);
+      // Apply browser-like headers by default to avoid simplistic bot blocks
+      const browserDefaults = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate'
+      };
+      let referer;
+      try { const u = new URL(detailUrl); referer = u.origin + '/'; } catch {}
+      const mergedOpts = {
+        ...options,
+        headers: { ...browserDefaults, ...(options.headers || {}), ...(referer && !options?.headers?.Referer ? { Referer: referer } : {}) }
+      };
+
+      let dres = await this.fetchWithOpts(detailUrl, mergedOpts);
+      // Retry once on common transient statuses
+      if (!dres.ok && [403, 429, 503].includes(dres.status)) {
+        await new Promise(r => setTimeout(r, 350));
+        let retryOpts = { ...mergedOpts, headers: { ...mergedOpts.headers, 'Cache-Control': 'no-cache' } };
+        // Preflight: fetch site origin to capture cookies if any, then retry with Cookie header
+        try {
+          const u = new URL(detailUrl);
+          const home = u.origin + '/';
+          const pre = await this.fetchWithOpts(home, { headers: browserDefaults, cache: 'no-store' });
+          const getSetCookie = (response) => {
+            if (typeof response.headers.getSetCookie === 'function') return response.headers.getSetCookie();
+            if (response.headers.raw?.()['set-cookie']) return response.headers.raw()['set-cookie'];
+            const sc = response.headers.get('set-cookie');
+            return sc ? sc.split(', ').filter(Boolean) : [];
+          };
+          const sc = getSetCookie(pre);
+          if (sc && sc.length) {
+            const cookieHeader = sc.map(c => c.split(';')[0]).join('; ');
+            retryOpts.headers = { ...retryOpts.headers, Cookie: cookieHeader };
+          }
+        } catch {}
+        dres = await this.fetchWithOpts(detailUrl, retryOpts);
+      }
       if (!dres.ok) {
         console.error(`[fetchDetailMagnet] Failed to fetch ${detailUrl}, status: ${dres.status}`);
         return undefined;
@@ -94,6 +201,22 @@ class TorrentSearchManager {
     const trackers = Array.from(new Set(parsed.flatMap(p => p.trackers)));
     let magnet = `magnet:?xt=${xt}`;
     if (dn) magnet += `&dn=${encodeURIComponent(dn)}`;
+    for (const tr of trackers) magnet += `&tr=${encodeURIComponent(tr)}`;
+    return magnet;
+  }
+
+  createMagnetFromInfoHash(infoHash, displayName = '') {
+    const ih = String(infoHash || '').trim();
+    if (!/^[A-Fa-f0-9]{40}$/.test(ih)) return undefined;
+    let magnet = `magnet:?xt=urn:btih:${ih.toUpperCase()}`;
+    if (displayName) magnet += `&dn=${encodeURIComponent(displayName)}`;
+    // Add a small tracker set to improve discovery when sources don't provide any
+    const trackers = [
+      'udp://tracker.opentrackr.org:1337/announce',
+      'udp://open.stealth.si:80/announce',
+      'udp://tracker.torrent.eu.org:451/announce',
+      'udp://exodus.desync.com:6969/announce'
+    ];
     for (const tr of trackers) magnet += `&tr=${encodeURIComponent(tr)}`;
     return magnet;
   }
@@ -363,10 +486,21 @@ class TorrentSearchManager {
         const def = scraper?.definition;
         
         // Only fetch detail magnet if we don't already have one and it's not already a magnet URI
-        if (!r.magnetURI && def?.magnetSelector && r.url && !r.url.startsWith('magnet:')) {
-          const fetchOptions = def?.fetchOptions?.(this.registry.get(scraper.id)?.data) || {};
-          const magnet = await this.fetchDetailMagnet(r.url, def.magnetSelector, fetchOptions);
-          if (magnet) r.magnetURI = magnet;
+        if (!r.magnetURI && r.url && !r.url.startsWith('magnet:')) {
+          // Fast path: derive magnet from URL if it contains a 40-hex infohash (e.g., torrentdownload.info/<INFOHASH>/...)
+          const ihMatch = String(r.url).match(/\b([A-Fa-f0-9]{40})\b/);
+          if (ihMatch && ihMatch[1]) {
+            const derived = this.createMagnetFromInfoHash(ihMatch[1], r.title || '');
+            if (derived) {
+              r.magnetURI = derived;
+            }
+          }
+          // Fallback to detail fetch if still no magnet and a selector is provided
+          if (!r.magnetURI && def?.magnetSelector) {
+            const fetchOptions = def?.fetchOptions?.(this.registry.get(scraper.id)?.data) || {};
+            const magnet = await this.fetchDetailMagnet(r.url, def.magnetSelector, fetchOptions);
+            if (magnet) r.magnetURI = magnet;
+          }
         }
         
         this.setInfoForResult(r, r.magnetURI, r._queryVariant || combinedQuery);
@@ -477,13 +611,24 @@ class TorrentSearchManager {
         const { query, page = 1 } = opts;
         let searchUrl;
         if (typeof definition.searchUrl === 'function') {
-          searchUrl = definition.searchUrl({ query, page });
+          // Pass scraper data so searchUrl can leverage cookies/baseUrl, etc.
+          const sdata = this.registry.get(definition.id)?.data;
+          searchUrl = definition.searchUrl({ query, page, data: sdata });
         } else {
           searchUrl = definition.searchUrl.replace('{query}', encodeURIComponent(query)).replace('{page}', page);
         }
         const fetchOptions = definition.fetchOptions?.(this.registry.get(definition.id)?.data) || {};
-        const res = await this.tryFetchAny(Array.isArray(searchUrl) ? searchUrl : [searchUrl], fetchOptions);
-        if (!res) throw new Error(`${definition.name} fetch failed`);
+        // Enrich fetchOptions with a reasonable Referer when single URL is used
+        let urls = Array.isArray(searchUrl) ? searchUrl : [searchUrl];
+        const firstUrl = urls[0];
+        if (firstUrl) {
+          try {
+            const u = new URL(firstUrl);
+            fetchOptions.headers = { ...(fetchOptions.headers || {}), Referer: u.origin + '/' };
+          } catch {}
+        }
+        const res = await this.tryFetchAny(urls, fetchOptions);
+        if (!res) throw new Error(`${definition.name} (${firstUrl}) fetch failed: ${res ? res.status : 'no response'}`);
         const body = await res.text();
         let $;
         if (definition.responseType === 'htmlFragment') {

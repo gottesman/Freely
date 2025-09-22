@@ -6,6 +6,7 @@ import { useContextMenu } from '../../core/ContextMenu';
 import { runTauriCommand } from '../../core/TauriCommands';
 import { buildDownloadsContextMenuItems } from '../Utilities/ContextMenu';
 import { createCachedSpotifyClient } from '../../core/SpotifyClient';
+import { useDB } from '../../core/Database';
 
 // Types for better organization
 interface TrackData {
@@ -83,17 +84,25 @@ const useMissingTrackMetadata = (trackIds: string[]) => {
 // Optimized DownloadsItem component
 interface DownloadsItemProps {
   id: string;
+  trackId: string;
   isDownloading: boolean;
   progress?: number;
   isPaused?: boolean;
   trackData?: TrackData;
+  sourceType?: string;
+  total?: number; // total bytes if known (e.g., YouTube)
 }
 
 const DownloadsItem = React.memo<DownloadsItemProps>(({
-  id, isDownloading, progress = 0, isPaused, trackData
+  id, trackId, isDownloading, progress = 0, isPaused, trackData, sourceType, total
 }) => {
   const { t } = useI18n();
   const { openMenu } = useContextMenu();
+  const { getSource } = useDB();
+
+  // Internal state for torrent-specific telemetry
+  const [torrentPeers, setTorrentPeers] = useState<number | undefined>(undefined);
+  const [torrentSize, setTorrentSize] = useState<number | undefined>(undefined);
 
   const imgUrl = useMemo(() => getImageUrl(trackData?.album?.images || []), [trackData?.album?.images]);
 
@@ -123,6 +132,105 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
     return Math.round(clamped * 100);
   }, [progress]);
 
+  // Format bytes helper
+  const formatBytes = useCallback((bytes?: number) => {
+    if (!bytes || bytes <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    let n = bytes;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    const precision = i <= 1 ? 0 : 1; // show 0 decimals for B/KB, 1 for MB+
+    return `${n.toFixed(precision)} ${units[i]}`;
+  }, []);
+
+  // Poll torrent progress to get peers and authoritative file size
+  useEffect(() => {
+    let active = true;
+    let interval: any;
+    let aborted = false;
+    let cachedPort: number | null = null;
+
+    const poll = async () => {
+      if (aborted) return;
+      try {
+        // Only applicable for torrent sources
+        if (sourceType !== 'torrent') return;
+
+        // Try to retrieve the selected file index from DB store
+        let fileIndex: number | undefined = undefined;
+        try {
+          if (trackId && getSource) {
+            const saved = await getSource(`selected:${trackId}`);
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (parsed && parsed.type === 'torrent') {
+                const idx = parsed.fileIndex ?? parsed.meta?.fileIndex;
+                if (typeof idx === 'number' && idx >= 0) fileIndex = idx | 0;
+              }
+            }
+          }
+        } catch (_) {}
+
+        // Derive infoHash from id or sourceHash portion of id
+        // Our DownloadItem id is sanitized: <trackId>_<sourceType>_<sourceHash>
+        // We can safely extract the last segment(s) as sourceHash used when creating the id
+        const parts = id.split('_');
+        const sourceHash = parts.slice(2).join('_');
+        if (!sourceHash) return;
+
+        // Resolve server port once (fallback to 9000)
+        if (cachedPort == null) {
+          try {
+            const status: any = await runTauriCommand('server_status');
+            const port = (status && (status.port || (status.data && status.data.port))) || 9000;
+            cachedPort = typeof port === 'number' ? port : 9000;
+          } catch (_) {
+            cachedPort = 9000;
+          }
+        }
+
+        const idx = typeof fileIndex === 'number' ? fileIndex : 0;
+        const url = `http://localhost:${cachedPort}/progress/${encodeURIComponent(sourceHash)}/${idx}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const json = await res.json();
+        const data = json?.data || {};
+        if (!active) return;
+        if (typeof data.peers === 'number') setTorrentPeers(data.peers);
+        if (typeof data.total === 'number' && data.total > 0) setTorrentSize(data.total);
+      } catch (_) {
+        // Ignore network errors
+      }
+    };
+
+    if (sourceType === 'torrent' && !isPaused) {
+      // Initial poll immediately, then at interval
+      poll();
+      interval = setInterval(poll, 3000);
+    }
+
+    return () => {
+      active = false;
+      aborted = true;
+      if (interval) clearInterval(interval);
+    };
+  }, [id, trackId, sourceType, isPaused, getSource]);
+
+  const displayPeers = useMemo(() => {
+    if (sourceType === 'torrent') return torrentPeers ?? 0;
+    return undefined;
+  }, [sourceType, torrentPeers]);
+
+  const displaySize = useMemo(() => {
+    // For torrents, prefer authoritative torrentSize from progress polling.
+    // For non-torrent sources (e.g., YouTube), show provided total size when available.
+    const raw = (sourceType === 'torrent') ? torrentSize : (typeof total === 'number' ? total : undefined);
+    return formatBytes(raw);
+  }, [formatBytes, torrentSize, sourceType, total]);
+
   return (
     <li
       data-downloads-id={id}
@@ -131,6 +239,13 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
       aria-current={isDownloading ? 'true' : undefined}
       title={trackData?.name || id}
     >
+      <button
+        className='downloads-more-btn btn-icon'
+        aria-label={t('common.more')}
+        onClick={handleMoreClick}
+      >
+        <span className="material-symbols-rounded">more_horiz</span>
+      </button>
       <span className="downloads-art" aria-hidden={imgUrl ? 'true' : undefined}>
         {imgUrl ? (
           <img src={imgUrl} alt="" loading="lazy" />
@@ -166,23 +281,25 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
           {trackData?.artists?.map(a => a.name).join(', ') || ''}
         </small>
       </span>
-      <button
-        className='downloads-more-btn btn-icon'
-        aria-label={t('common.more')}
-        onClick={handleMoreClick}
-      >
-        <span className="material-symbols-rounded">more_horiz</span>
-      </button>
+      <span className={`download-info${sourceType ? ` source-${sourceType}` : ''}`} aria-hidden="true">
+        {sourceType === 'torrent' ? (          
+          <span className='download-info-peers'><span className='download-info-label'>{t('downloads.peers')}:</span>{displayPeers ?? 0}</span>
+        ) : null}
+        <span className='download-info-size'><span className='download-info-label'>{t('downloads.size')}:</span>{displaySize}</span>
+      </span>      
     </li>
   );
 }, (prevProps, nextProps) => {
   // Custom comparison function for better performance
   return (
     prevProps.id === nextProps.id &&
+    prevProps.trackId === nextProps.trackId &&
     prevProps.isDownloading === nextProps.isDownloading &&
     prevProps.isPaused === nextProps.isPaused &&
     prevProps.progress === nextProps.progress &&
-    prevProps.trackData === nextProps.trackData
+    prevProps.trackData === nextProps.trackData &&
+    prevProps.sourceType === nextProps.sourceType &&
+    prevProps.total === nextProps.total
   );
 });
 
@@ -291,10 +408,13 @@ export const DownloadsTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) 
             <DownloadsItem
               key={d.id}
               id={d.id}
+              trackId={d.trackId}
               isDownloading={d.status === 'downloading' || d.status === 'ready'}
               progress={prog}
               isPaused={paused}
               trackData={combinedTrackData[d.trackId] as TrackData | undefined}
+              sourceType={d.sourceType}
+              total={total}
             />
           );
         })}

@@ -110,7 +110,15 @@
 .np-queue-list li , .np-downloads-list li  { display:flex; gap:10px; align-items:center; background:var(--surface-1); padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.2; border:1px solid var(--border-subtle); cursor:pointer; transition: background var(--dur-med), border-color var(--dur-med), transform 160ms cubic-bezier(.2,.8,.3,1); position:relative; will-change:transform; }
 .np-queue-list.no-tx li , .np-downloads-list.no-tx li  { transition: background var(--dur-med), border-color var(--dur-med); }
 .np-queue-list li:hover , .np-downloads-list li:hover  { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
-.queue-more-btn, .downloads-more-btn {opacity: 0;}
+.queue-more-btn, .downloads-more-btn {
+    opacity: 0;
+    position: absolute;
+    right: 10px;
+    z-index: 1 !important;
+    backdrop-filter: blur(10px);
+}
+.np-downloads-list li>*, .np-queue-list li>*  { transition: opacity var(--dur-med); }
+.np-downloads-list li:hover>:not(.downloads-more-btn, .downloads-art) , .np-queue-list li:hover>:not(.queue-more-btn, .queue-art)  { opacity:0.2; }
 .np-queue-list li:hover .queue-more-btn , .np-downloads-list li:hover .downloads-more-btn  { opacity:1; }
 .np-queue-list li.active , .np-downloads-list li.active  { background:var(--accent); color:var(--text-dark); border:transparent; font-weight:inherit; box-shadow:0 0 0 1px rgba(0,0,0,0.15) inset; }
 .np-queue-list li .track , .np-downloads-list li .track  { flex:1 1 auto; }
@@ -133,6 +141,21 @@
 }
 .np-downloads-list li.active .download-progress-inner { --ring-color: var(--text); }
 .np-downloads-list li .download-progress-label { color: var(--text); text-shadow: 0 1px 0 rgba(0,0,0,.75); }
+
+.download-info{
+    font-size: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.download-info > span {
+    display: flex;
+    gap: 4px;
+}
+.download-info-label {
+    opacity: 0.7;
+}
 
 /* Hover play button overlay */
 .queue-play-btn , .downloads-play-btn  { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.55); color:#fff; border:none; cursor:pointer; opacity:0; transition: opacity var(--dur-med); font-size:18px; margin:0; padding:0; }

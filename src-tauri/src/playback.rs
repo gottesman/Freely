@@ -649,6 +649,11 @@ pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, S
         // Apply current runtime configuration (timeouts/buffers)
         apply_bass_runtime_config(lib);
 
+        // Load codec plugins once BASS is initialized
+        if let Err(e) = crate::bass::load_bass_plugins(lib) {
+            println!("[bass] Warning: Failed to load some plugins: {}", e);
+        }
+
         println!("[bass] BASS initialization complete");
     } else {
         println!("[bass] BASS already initialized, skipping initialization");
@@ -1187,6 +1192,11 @@ pub async fn playback_start_with_source_internal(
                 // Apply current runtime configuration (timeouts/buffers)
                 apply_bass_runtime_config(lib);
 
+                // Load codec plugins after successful init
+                if let Err(e) = crate::bass::load_bass_plugins(lib) {
+                    println!("[bass] Warning: Failed to load some plugins: {}", e);
+                }
+
                 // Set HTTP User-Agent for YouTube compatibility
                 let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\0";
                 bass_set_config_ptr(lib, BASS_CONFIG_NET_AGENT, user_agent.as_ptr());
@@ -1684,48 +1694,60 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
     // Check if stream is still active
     let active = channel_is_active(lib, h);
     if active == BASS_ACTIVE_STOPPED && st.playing {
-        st.playing = false;
-        st.ended = true;
+        // Startup grace: avoid treating STOPPED immediately after start as an "end"
+        let started_recently = st
+            .started_at
+            .map(|t| t.elapsed() < Duration::from_millis(1200))
+            .unwrap_or(false);
 
-        // Emit status update for stream end detection immediately
-        drop(st); // Release the lock before emitting
-        emit_playback_status();
-        st = STATE.lock().unwrap(); // Re-acquire the lock
-
-        // If we were caching, finalize the .part file now as a natural end
-        if let Some(mut download_state) = st.download_file_state.take() {
-            let track_id = download_state.track_id.clone();
-            let source_type = download_state.source_type.clone();
-            let source_hash = download_state.source_hash.clone();
-            let cache_path = download_state.cache_path.clone();
-            let file_index = download_state.file_index;
-            // Capture totals accurately for finalization gating
-            let known_total = download_state.total_bytes;
-            let download_complete = download_state.download_complete;
-
+        if started_recently {
             println!(
-                "[bass] Finalizing cache file after BASS stopped: {}",
-                cache_path.display()
+                "[bass] Stream reported STOPPED within startup grace window; suppressing end"
             );
+        } else {
+            st.playing = false;
+            st.ended = true;
 
-            // Drop the download state to ensure file is closed
-            drop(download_state);
+            // Emit status update for stream end detection immediately
+            drop(st); // Release the lock before emitting
+            emit_playback_status();
+            st = STATE.lock().unwrap(); // Re-acquire the lock
 
-            tokio::spawn(async move {
-                // Use current .part size as downloaded, and persist known total if available
-                let downloaded = std::fs::metadata(&cache_path).ok().map(|m| m.len());
-                finalize_cache_file(
-                    track_id,
-                    source_type,
-                    source_hash,
-                    file_index,
-                    cache_path,
-                    downloaded,
-                    known_total,
-                    download_complete,
-                )
-                .await;
-            });
+            // If we were caching, finalize the .part file now as a natural end
+            if let Some(mut download_state) = st.download_file_state.take() {
+                let track_id = download_state.track_id.clone();
+                let source_type = download_state.source_type.clone();
+                let source_hash = download_state.source_hash.clone();
+                let cache_path = download_state.cache_path.clone();
+                let file_index = download_state.file_index;
+                // Capture totals accurately for finalization gating
+                let known_total = download_state.total_bytes;
+                let download_complete = download_state.download_complete;
+
+                println!(
+                    "[bass] Finalizing cache file after BASS stopped: {}",
+                    cache_path.display()
+                );
+
+                // Drop the download state to ensure file is closed
+                drop(download_state);
+
+                tokio::spawn(async move {
+                    // Use current .part size as downloaded, and persist known total if available
+                    let downloaded = std::fs::metadata(&cache_path).ok().map(|m| m.len());
+                    finalize_cache_file(
+                        track_id,
+                        source_type,
+                        source_hash,
+                        file_index,
+                        cache_path,
+                        downloaded,
+                        known_total,
+                        download_complete,
+                    )
+                    .await;
+                });
+            }
         }
     }
 
@@ -1758,9 +1780,15 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
         let duration = st.duration.unwrap();
         let is_near_end = position >= duration - 0.1;
         let stream_stopped = active == BASS_ACTIVE_STOPPED;
+        let started_recently = st
+            .started_at
+            .map(|t| t.elapsed() < Duration::from_millis(1200))
+            .unwrap_or(false);
         // NOTE: Do NOT treat "file_at_end" (CURRENT == END) as finished; that just means we've caught up to the
         // downloaded bytes and are stalled. Only consider STOPPED or truly near the known duration.
-        if is_near_end || stream_stopped {
+        // Tighten end condition: require either credible near-end, or STOPPED after grace period
+        let allow_end = (duration >= 2.0 && is_near_end) || (stream_stopped && !started_recently);
+        if allow_end {
             println!("[bass] Track reached end: position {:.2}s >= duration {:.2}s (near_end: {}, stopped: {})", 
                     position, duration, is_near_end, stream_stopped);
             st.playing = false;

@@ -130,6 +130,25 @@ fn main() {
 
             app.manage(paths);
 
+            // On Windows, ensure the resources/bin directory is on PATH so bass*.dll plugins can be located by the loader
+            #[cfg(target_os = "windows")]
+            {
+                use std::env;
+                let resources_bin = resource_dir.join("bin");
+                if resources_bin.exists() {
+                    if let Some(bin_str) = resources_bin.to_str() {
+                        let sep = ";";
+                        let new_path = match env::var("PATH") {
+                            Ok(p) => format!("{}{}{}", bin_str, sep, p),
+                            Err(_) => bin_str.to_string(),
+                        };
+                        // Best-effort set. Even if this fails, we still have explicit plugin loading with fallback paths.
+                        let _ = env::set_var("PATH", &new_path);
+                        println!("Added resources/bin to PATH: {}", bin_str);
+                    }
+                }
+            }
+
             // Initialize audio cache
             cache::init_cache(&app_config_dir)
                 .map_err(|e| format!("Failed to initialize audio cache: {}", e))?;
@@ -175,7 +194,7 @@ fn main() {
                     }
                 })
                 .menu(&menu)
-                .menu_on_left_click(false)
+                .show_menu_on_left_click(false)
                 .build(app)?;
 
             Ok(())
@@ -186,6 +205,7 @@ fn main() {
             save_file_dialog,
             save_file_and_write,
             update_loading_status,
+            get_executable_dir_path,
             // Database commands
             db::db_path,
             db::db_read,
@@ -324,4 +344,17 @@ async fn save_file_and_write(
     }
 
     None
+}
+#[tauri::command]
+fn get_executable_dir_path() -> Result<std::path::PathBuf, String> {
+    match std::env::current_exe() {
+        Ok(path) => {
+            if let Some(parent) = path.parent() {
+                Ok(parent.to_path_buf())
+            } else {
+                Err("Could not determine parent directory of executable".to_string())
+            }
+        },
+        Err(error) => Err(format!("Failed to get executable path: {error}")),
+    }
 }

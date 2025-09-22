@@ -2,11 +2,35 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const TorrentManager = require('../managers/TorrentManager');
+const TorrentFilesManager = require('../managers/TorrentFilesManager');
 const { SERVER_CONSTANTS } = require('../config/constants');
 
 const router = express.Router();
 // Get torrent manager instance - it's a singleton so this is safe
 const getTorrentManager = () => TorrentManager.getInstance();
+// Use TorrentFilesManager singleton for cache/client reuse across routes
+const getTorrentFilesManager = () => TorrentFilesManager.getInstance();
+
+// Cache recent magnets by infoHash so /progress can recall without re-sending magnet param
+const recentMagnets = new Map(); // infoHash -> { magnet, ts }
+const rememberMagnet = (infoHash, magnet) => {
+  try {
+    if (!infoHash || !magnet) return;
+    recentMagnets.set(String(infoHash).toLowerCase(), { magnet, ts: Date.now() });
+  } catch (_) {}
+};
+const recallMagnet = (infoHash, maxAgeMs = 60 * 60 * 1000) => {
+  try {
+    const key = String(infoHash).toLowerCase();
+    const entry = recentMagnets.get(key);
+    if (!entry) return null;
+    if ((Date.now() - entry.ts) > maxAgeMs) {
+      recentMagnets.delete(key);
+      return null;
+    }
+    return entry.magnet;
+  } catch (_) { return null; }
+};
 
 // Setup multer for file uploads
 const upload = multer({ 
@@ -80,7 +104,16 @@ router.post('/add-torrent', async (req, res) => {
       });
     }
 
-    const torrent = await getTorrentManager().addTorrent(magnetURI, 'application/octet-stream', name);
+    const manager = getTorrentManager();
+    if (!manager.isReady()) {
+      return res.status(503).json({
+        success: false,
+        error: 'WebTorrent is not available on this system',
+        details: manager.getStatus()
+      });
+    }
+
+    const torrent = await manager.addTorrent(magnetURI, { mimeType: 'application/octet-stream', name });
     
     res.json({
       success: true,
@@ -121,22 +154,34 @@ router.get('/stream/:infoHash/:fileIndex?', async (req, res) => {
 
   try {
     const { infoHash, fileIndex = '0' } = req.params;
-    const { magnet } = req.query; // Allow magnet URI to be passed as query param
+  const { magnet } = req.query; // Allow magnet URI to be passed as query param
     const range = req.headers.range;
 
     console.log(`[TorrentRoutes] Streaming request for ${infoHash}/${fileIndex}, magnet: ${magnet ? 'provided' : 'not provided'}`);
 
-    let torrent = getTorrentManager().getTorrent(infoHash);
+  const manager = getTorrentManager();
+  // Remember magnet for subsequent /progress calls
+  try { if (magnet) rememberMagnet(infoHash, magnet); } catch (_) {}
+    let torrent = manager.getTorrent(infoHash);
     if (!torrent) {
       // Torrent not found, try to add it
       console.log(`[TorrentRoutes] Torrent ${infoHash} not found, attempting to add`);
       
+      if (!manager.isReady()) {
+        console.warn('[TorrentRoutes] WebTorrent unavailable, cannot add torrent');
+        return res.status(503).json({
+          success: false,
+          error: 'WebTorrent is not available on this system',
+          details: manager.getStatus()
+        });
+      }
+
       try {
         // Use provided magnet URI or construct basic one
         const magnetURI = magnet || `magnet:?xt=urn:btih:${infoHash}`;
         console.log(`[TorrentRoutes] Adding torrent with magnet: ${magnetURI.substring(0, 100)}...`);
         
-        torrent = await getTorrentManager().addTorrent(magnetURI, {
+        torrent = await manager.addTorrent(magnetURI, {
           mimeType: 'application/octet-stream',
           name: `torrent-${infoHash}`,
           forceRecreate: false
@@ -148,7 +193,7 @@ router.get('/stream/:infoHash/:fileIndex?', async (req, res) => {
         // Check if it's a duplicate error - try to get the existing torrent
         if (addError.message.includes('duplicate torrent')) {
           console.log(`[TorrentRoutes] Torrent ${infoHash} already exists, attempting to retrieve it`);
-          torrent = getTorrentManager().getTorrent(infoHash);
+          torrent = manager.getTorrent(infoHash);
           if (!torrent) {
             return res.status(404).json({
               success: false,
@@ -166,27 +211,9 @@ router.get('/stream/:infoHash/:fileIndex?', async (req, res) => {
       console.log(`[TorrentRoutes] Using existing torrent ${infoHash} (${torrent.files ? torrent.files.length : '?'} files, ${torrent.numPeers || 0} peers)`);
     }
     
-    // Wait for torrent to be ready with timeout
-    const torrentReadyPromise = new Promise((resolve, reject) => {
-      if (torrent.ready) return resolve();
-      
-      const timeout = setTimeout(() => {
-        reject(new Error(`Torrent ready timeout after 10 seconds. Status: ready=${torrent.ready}, peers=${torrent.numPeers || 0}, files=${torrent.files ? torrent.files.length : 'unknown'}`));
-      }, 10000); // Reduced to 10 second timeout for faster feedback
-      
-      torrent.on('ready', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-      
-      torrent.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
-    });
-
+    // Wait for torrent to be ready with centralized helper (deduped)
     try {
-      await torrentReadyPromise;
+      await getTorrentManager().waitForTorrentReady(infoHash, 10000);
       console.log(`[TorrentRoutes] Torrent ready: ${torrent.files.length} files`);
     } catch (readyError) {
       console.error(`[TorrentRoutes] Torrent ${infoHash} failed to become ready:`, readyError.message);
@@ -211,7 +238,23 @@ router.get('/stream/:infoHash/:fileIndex?', async (req, res) => {
     // Check if file is already selected to avoid resetting download progress
     const isAlreadySelected = getTorrentManager().isFileSelected(infoHash, fileIdx);
     console.log(`[TorrentRoutes] File ${fileIdx} already selected: ${isAlreadySelected}`);
-    
+
+    // Safety: if our manager claims selected but WebTorrent shows unselected, force re-selection
+    const isActualSelected = file.selected === true;
+    if (isAlreadySelected && !isActualSelected && (file.downloaded || 0) < (file.length || Infinity)) {
+      console.warn(`[TorrentRoutes] Manager reports selected but WebTorrent shows unselected; forcing re-selection for file ${fileIdx}`);
+      const forced = getTorrentManager().selectFileForDownload(infoHash, fileIdx);
+      if (!forced) {
+        console.error(`[TorrentRoutes] Forced selection failed for file ${fileIdx}`);
+      }
+      try {
+        await getTorrentManager().waitForFileReady(infoHash, fileIdx, 20000);
+        console.log(`[TorrentRoutes] File ready after forced selection`);
+      } catch (e) {
+        console.warn(`[TorrentRoutes] Forced selection readiness wait error: ${e.message}`);
+      }
+    }
+
     if (!isAlreadySelected) {
       // Use TorrentManager's selective download method only if not already selected
       console.log(`[TorrentRoutes] Configuring selective download for file index ${fileIdx}`);
@@ -630,26 +673,57 @@ const fileDownloadTrackers = new Map();
  */
 router.get('/progress/:infoHash/:fileIndex?', async (req, res) => {
   try {
-    const { infoHash, fileIndex = '0' } = req.params;
+  const { infoHash, fileIndex = '0' } = req.params;
+  const magnetParam = req.query.magnet;
     const fileIdx = parseInt(fileIndex, 10);
     const fileKey = `${infoHash}:${fileIdx}`;
 
-    const torrent = getTorrentManager().getTorrent(infoHash);
+    let torrent = getTorrentManager().getTorrent(infoHash);
     if (!torrent) {
-      return res.status(404).json({
-        success: false,
-        error: 'Torrent not found'
-      });
-    }
+      // Optionally try to kick off add if a magnet is provided, but do not block the response
+      const magnet = magnetParam || recallMagnet(infoHash);
+      if (magnet && getTorrentManager().isReady()) {
+        try {
+          // Fire-and-forget; deduplicated in manager
+          getTorrentManager().addTorrent(magnet, { name: `torrent-${infoHash}` })
+            .catch(() => {});
+        } catch (_) {}
+      }
 
-    if (!torrent.ready || !torrent.files || torrent.files.length === 0) {
+      // Provide a graceful "not ready yet" status with a cached total if available
+      let fallbackTotal = 0;
+      try {
+        const tfm = getTorrentFilesManager();
+        fallbackTotal = await tfm.getFileLength(infoHash, fileIdx, { timeout: 3000, forceRefresh: false });
+      } catch (_) {}
+
       return res.json({
         success: true,
         data: {
           ready: false,
           progress: 0,
           downloaded: 0,
-          total: 0,
+          total: fallbackTotal || 0,
+          downloadSpeed: 0,
+          peers: 0
+        }
+      });
+    }
+
+    if (!torrent.ready || !torrent.files || torrent.files.length === 0) {
+      // Try to get a better total size from the files cache/manager (centralized helper)
+      let fallbackTotal = 0;
+      try {
+        const tfm = getTorrentFilesManager();
+        fallbackTotal = await tfm.getFileLength(infoHash, fileIdx, { timeout: 5000, forceRefresh: false });
+      } catch (_) {}
+      return res.json({
+        success: true,
+        data: {
+          ready: false,
+          progress: 0,
+          downloaded: 0,
+          total: fallbackTotal || 0,
           downloadSpeed: 0,
           peers: torrent.numPeers || 0
         }
@@ -664,7 +738,7 @@ router.get('/progress/:infoHash/:fileIndex?', async (req, res) => {
       });
     }
 
-    const file = torrent.files[fileIdx];
+  const file = torrent.files[fileIdx];
     const currentFileProgress = file.progress || 0;
     
     // Get or create download tracker for this file
@@ -707,7 +781,16 @@ router.get('/progress/:infoHash/:fileIndex?', async (req, res) => {
       currentFileBytes / (file.length || 1)
     );
     
-    const fileDownloaded = Math.min(tracker.maxFileBytes, file.length || 0);
+    // Ensure we have a valid total length; if not, try fallback via files manager
+    let totalLength = file.length || 0;
+    if (!totalLength) {
+      try {
+        const tfm = getTorrentFilesManager();
+        totalLength = await tfm.getFileLength(infoHash, fileIdx, { timeout: 5000, forceRefresh: false });
+      } catch (_) {}
+    }
+
+    const fileDownloaded = Math.min(tracker.maxFileBytes, totalLength || 0);
 
     res.json({
       success: true,
@@ -716,7 +799,7 @@ router.get('/progress/:infoHash/:fileIndex?', async (req, res) => {
         fileName: file.name,
         progress: Math.min(monotonicFileProgress, 1.0), // Cap at 100%
         downloaded: fileDownloaded,
-        total: file.length || 0,
+  total: totalLength || 0,
         downloadSpeed: torrent.downloadSpeed || 0,
         peers: torrent.numPeers || 0,
         torrentProgress: torrent.progress || 0,

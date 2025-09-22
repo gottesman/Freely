@@ -362,7 +362,7 @@ export function usePlaybackTransition() {
 
 export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(playbackReducer, initialState);
-  const { getApiCache, setApiCache, addPlay, ready, getSetting, setSetting } = useDB();
+  const { getApiCache, setApiCache, addPlay, ready, getSetting, setSetting, getSource } = useDB();
   
   // Refs for performance optimization
   const seekDebounceRef = React.useRef<any>(null);
@@ -404,9 +404,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
 
       // Load and attach selected source from database if available
-      if (ready && getSetting) {
+      if (ready && getSource) {
         try {
-          const savedSource = await getSetting(`source:selected:${id}`);
+          const savedSource = await getSource(`selected:${id}`);
           console.log('[playback] Loaded source for track:', id, savedSource ? 'found' : 'not found');
           
           if (savedSource && savedSource.trim()) {

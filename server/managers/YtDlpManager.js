@@ -4,6 +4,34 @@ const os = require('os');
 const { spawn } = require('child_process');
 const { getUserDataDir } = require('../utils/helpers');
 
+async function getInstalledDirectory() {
+  // In the server environment, we need to use Node.js-based path detection
+  // since Tauri APIs are not available in the server process
+  try {
+    // Try to detect if we're running in a packaged environment
+    if (process.resourcesPath) {
+      console.log('[youtube-dl] Using resourcesPath:', process.resourcesPath);
+      return process.resourcesPath;
+    }
+    
+    // Check if we're in a Tauri development environment
+    const devPath = path.join(__dirname, '..', '..', 'src-tauri');
+    if (fs.existsSync(devPath)) {
+      console.log('[youtube-dl] Using development path:', devPath);
+      return devPath;
+    }
+    
+    // Fallback to executable directory
+    const execDir = path.dirname(process.execPath);
+    console.log('[youtube-dl] Using executable directory:', execDir);
+    return execDir;
+    
+  } catch (error) {
+    console.error('[youtube-dl] Error detecting installed directory:', error.message);
+    return null;
+  }
+}
+
 // YouTube integration with optimized initialization
 let youtubeDlAvailable = false;
 let youtubeDlPath = null;
@@ -161,10 +189,10 @@ class YtDlpCache {
   async set(key, data) {
     try {
       const entry = new CacheEntry(data);
-      
+
       // Store in memory cache
       this.memoryCache.set(key, entry);
-      
+
       // Enforce memory cache size limit
       if (this.memoryCache.size > MAX_CACHE_ENTRIES) {
         this.evictOldestEntries();
@@ -177,7 +205,7 @@ class YtDlpCache {
         timestamp: entry.timestamp
       };
       fs.writeFileSync(filePath, JSON.stringify(fileData), 'utf8');
-      
+
       console.log('[ytdlp-cache] Cached result for:', key.substring(0, 50));
     } catch (e) {
       console.warn('[ytdlp-cache] Failed to cache data:', e.message);
@@ -186,13 +214,13 @@ class YtDlpCache {
 
   evictOldestEntries() {
     const entries = Array.from(this.memoryCache.entries())
-      .sort(([,a], [,b]) => a.lastAccessed - b.lastAccessed);
-    
+      .sort(([, a], [, b]) => a.lastAccessed - b.lastAccessed);
+
     const toRemove = entries.slice(0, Math.floor(MAX_CACHE_ENTRIES * 0.2));
     for (const [key] of toRemove) {
       this.memoryCache.delete(key);
     }
-    
+
     console.log(`[ytdlp-cache] Evicted ${toRemove.length} old entries`);
   }
 
@@ -204,7 +232,7 @@ class YtDlpCache {
 
   cleanup() {
     let removedCount = 0;
-    
+
     // Clean memory cache
     for (const [key, entry] of this.memoryCache.entries()) {
       if (entry.isExpired()) {
@@ -262,16 +290,33 @@ class YtDlpManager {
     try {
       const platform = process.platform;
       const binName = platform === 'win32' ? 'youtube-dl.exe' : 'youtube-dl';
+      
+      console.log('[youtube-dl] Initializing on platform:', platform);
+      console.log('[youtube-dl] Looking for binary:', binName);
 
-      // Look for bundled binary in multiple possible locations
-      // Use the same approach as BASS DLL loading - relative paths first
-      const bundledPaths = [
+      // Get the base directory for binary search
+      const baseDir = await getInstalledDirectory();
+      let foundPath = null;
+
+      // Create list of paths to check
+      const bundledPaths = [];
+      
+      // Add base directory paths first if available
+      if (baseDir) {
+        bundledPaths.push(
+          path.join(baseDir, 'bin', binName),
+          path.join(baseDir, binName)
+        );
+      }
+
+      // Add comprehensive fallback paths
+      bundledPaths.push(
         // Relative paths (same as BASS approach)
         binName,
         path.join('.', binName),
         path.join('.', 'bin', binName),
         path.join('bin', binName),
-        path.join('..','bin', binName),
+        path.join('..', 'bin', binName),
         // Tauri production paths
         path.join(process.resourcesPath || '', 'bin', binName),
         path.join(process.resourcesPath || '', binName),
@@ -281,18 +326,17 @@ class YtDlpManager {
         // Relative to executable
         path.join(path.dirname(process.execPath), 'bin', binName),
         path.join(path.dirname(process.execPath), binName)
-      ];
+      );
 
-      console.log('[youtube-dl] Looking for binary on platform:', platform);
-      console.log('[youtube-dl] Binary name:', binName);
       console.log('[youtube-dl] process.resourcesPath:', process.resourcesPath);
       console.log('[youtube-dl] process.execPath:', process.execPath);
       console.log('[youtube-dl] __dirname:', __dirname);
+      console.log('[youtube-dl] baseDir:', baseDir);
 
       for (const binPath of bundledPaths) {
         const exists = fs.existsSync(binPath);
         console.log(`[youtube-dl] Checking path: ${binPath} - ${exists ? 'EXISTS' : 'NOT FOUND'}`);
-        
+
         if (exists) {
           // On Unix-like systems, ensure the binary is executable
           if (platform !== 'win32') {
@@ -306,21 +350,24 @@ class YtDlpManager {
 
           youtubeDlPath = binPath;
           youtubeDlAvailable = true;
+          foundPath = binPath;
           console.log('[youtube-dl] ✅ Using bundled binary:', binPath);
           break;
         }
       }
 
       if (!youtubeDlAvailable) {
-        console.warn('[youtube-dl] Bundled binary not found in any expected location');
+        console.warn('[youtube-dl] ❌ Bundled binary not found in any expected location');
         console.warn('[youtube-dl] This may cause YouTube functionality to fail');
         console.warn('[youtube-dl] Checked paths:', bundledPaths);
       }
 
       this.initialized = true;
       console.log('[youtube-dl] Manager initialized successfully');
+      
     } catch (e) {
       console.error('[youtube-dl] Failed to initialize:', e.message);
+      this.initialized = true; // Mark as initialized even on failure to prevent retries
     }
   }
 
@@ -340,7 +387,7 @@ class YtDlpManager {
 
   async getVideoInfo(target, formatPreference = '140') {
     const cacheKey = YtDlpManager.cache.generateCacheKey(target, formatPreference);
-    
+
     // Check cache first
     const cached = await YtDlpManager.cache.get(cacheKey);
     if (cached) {
@@ -415,7 +462,7 @@ class YtDlpManager {
       console.log('[youtube-dl] Getting metadata for:', videoId);
       const jsonResult = await Promise.race([
         executeYoutubeDl(jsonArgs),
-        new Promise((_, reject) => 
+        new Promise((_, reject) =>
           setTimeout(() => reject(new Error('youtube-dl-json-timeout')), INFO_TIMEOUT)
         )
       ]);
@@ -431,7 +478,7 @@ class YtDlpManager {
         throw new Error('No URL found in metadata');
       }
       const directUrl = metadata.url;
-      
+
       // Create a more complete info object compatible with the route expectations
       return {
         id: videoId,
@@ -486,14 +533,14 @@ class YtDlpManager {
     if (info && Array.isArray(info.formats)) {
       // Find the best audio format
       const audioFormats = info.formats.filter(f => f && f.acodec && f.acodec !== 'none');
-      
+
       // Prefer formats with URLs
       const withUrl = audioFormats.filter(f => f.url);
       if (withUrl.length > 0) {
         // Return the first format with a URL (they're already sorted by preference)
         return withUrl[0];
       }
-      
+
       // Fallback to any audio format
       if (audioFormats.length > 0) {
         return audioFormats[0];

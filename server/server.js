@@ -11,6 +11,7 @@ const corsMiddleware = require('./middleware/cors');
 
 // Import routes
 const healthRoutes = require('./routes/health');
+const { getWebTorrentDiagnostics, isWebTorrentAvailable } = require('./utils/webtorrent-loader');
 const searchRoutes = require('./routes/search');
 const youtubeRoutes = require('./routes/youtube');
 const torrentRoutes = require('./routes/torrent');
@@ -34,6 +35,16 @@ app.use(corsMiddleware());
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
+});
+
+// Lightweight diagnostics endpoint
+app.get('/api/diagnostics/webtorrent', async (req, res) => {
+  const available = await isWebTorrentAvailable().catch(() => false);
+  res.json({
+    success: true,
+    available,
+    ...getWebTorrentDiagnostics()
+  });
 });
 
 // Initialize search cache
