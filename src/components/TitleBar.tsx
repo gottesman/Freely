@@ -33,6 +33,9 @@ interface TitleBarProps {
     close: () => void;
   };
   isMaximized: boolean;
+  pipMode?: boolean;
+  isPinned?: boolean;
+  handlePin?: () => void;
 }
 
 // Memoized navigation button component
@@ -92,7 +95,10 @@ export default function TitleBar({
   onNavigate,
   activeTab,
   windowStatus: { maximize, restore, minimize, close },
-  isMaximized
+  isMaximized,
+  pipMode,
+  isPinned,
+  handlePin,
 }: TitleBarProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
@@ -153,17 +159,31 @@ export default function TitleBar({
         isActive={activeTab === id}
         onClick={() => handleNavigate(id)}
       />
-    )), [t, activeTab, handleNavigate]);
+    )
+  ), [t, activeTab, handleNavigate]);
+  const pinbutton = useMemo(() => (
+    <button
+      type="button"
+      className={`tb-btn ${isPinned ? 'active' : ''}`}
+      aria-label={t('nav.pin')}
+      title={t('nav.pin')}
+      onClick={handlePin}
+    >
+      <span className="material-symbols-rounded filled">{`${isPinned?'keep_off':'keep'}`}</span>
+    </button>
+  ), [t, handlePin, isPinned]);
 
   // Memoized window control buttons
   const windowControlButtons = useMemo(() => {
     const buttons = [
       { ...WINDOW_BUTTONS[0], className: 'tb-min', onClick: minimize },
+      !pipMode ?
       isMaximized 
         ? { ...WINDOW_BUTTONS[2], className: 'tb-restore', onClick: restore }
-        : { ...WINDOW_BUTTONS[1], className: 'tb-max', onClick: maximize },
+        : { ...WINDOW_BUTTONS[1], className: 'tb-max', onClick: maximize }
+        : null,
       { ...WINDOW_BUTTONS[3], className: 'tb-close', onClick: close }
-    ];
+    ].filter(Boolean); // Filter out null values
 
     return buttons.map(({ symbol, key, className, onClick }) => (
       <WindowButton
@@ -174,7 +194,7 @@ export default function TitleBar({
         onClick={onClick}
       />
     ));
-  }, [isMaximized, t, minimize, restore, maximize, close]);
+  }, [isMaximized, t, minimize, restore, maximize, close, pipMode]);
 
   // Memoized search container class
   const searchContainerClass = useMemo(() => 
@@ -184,7 +204,7 @@ export default function TitleBar({
 
   return (
     <div className="titlebar">
-      <div className="titlebar-left">
+      {!pipMode && <div className="titlebar-left">
         {icon ? (
           <div className="titlebar-icon" style={{ backgroundImage: `url(${icon})`, marginRight: 10 }} />
         ) : (
@@ -211,15 +231,15 @@ export default function TitleBar({
             aria-label={t('search.action', 'Search')}
           />
         </div>
-      </div>
+      </div>}
 
       <div className="titlebar-nav">
-        <div className="titlebar-title">{resolvedTitle}</div>
+        {!pipMode && <div className="titlebar-title">{resolvedTitle}</div>}
       </div>
 
       <div className="titlebar-right">
-        {navigationButtons2}
-          <div className='titlebar-window-buttons'>{windowControlButtons}</div>        
+        {pipMode?pinbutton:navigationButtons2}
+        <div className='titlebar-window-buttons'>{windowControlButtons}</div>        
       </div>
     </div>
   );

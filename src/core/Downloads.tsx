@@ -14,6 +14,7 @@ export type DownloadStatus = 'queued' | 'ready' | 'downloading' | 'completed' | 
 
 export interface DownloadItem {
   id: string;              // <trackId>_<sourceType>_<sourceHash>
+  sessionId: number;       // Unique sequential ID for this session
   trackId: string;
   sourceType: string;
   sourceHash: string;
@@ -53,6 +54,10 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const currentPlaybackIdRef = useRef<string | null>(null);
+  // Session-based sequential ID counter - resets on app start
+  const sessionIdCounterRef = useRef<number>(1);
+  // Cache of known trackIds per composite download id (helps when backend sends only hashes)
+  const knownTrackIdsRef = useRef<Record<string, string>>({});
   const pendingRemovalRef = useRef<Set<string>>(new Set());
   const { push: pushAlert } = (() => {
     try {
@@ -64,6 +69,31 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   })();
 
   const spotifyClient = useMemo(() => createCachedSpotifyClient(), []);
+
+  // Heuristics
+  const isLikelyInfoHash = (s: any): boolean => {
+    if (typeof s !== 'string') return false;
+    const hex40 = /^[a-fA-F0-9]{40}$/;
+    const base32_32 = /^[A-Z2-7]{32}$/; // BT base32 variant often uppercase
+    return hex40.test(s) || base32_32.test(s);
+  };
+
+  // Attempt to recover original trackId from the composite id
+  const parseTrackIdFromCompositeId = (compositeId: string): string | undefined => {
+    if (!compositeId) return undefined;
+    const parts = compositeId.split('_');
+    if (parts.length < 3) return undefined;
+    const sourceHash = parts[parts.length - 1];
+    const sourceType = parts[parts.length - 2];
+    const trackSanitized = parts.slice(0, parts.length - 2).join('_');
+    // Only safe reconstruction we support: spotify:track:<id>
+    if (trackSanitized.startsWith('spotify_track_')) {
+      const id = trackSanitized.substring('spotify_track_'.length);
+      if (id) return `spotify:track:${id}`;
+    }
+    // Future: support other well-known prefixes if needed
+    return undefined;
+  };
 
   // Function to get track name from track ID
   const getTrackName = async (trackId: string): Promise<string> => {
@@ -84,9 +114,18 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const upsert = (id: string, patch: Partial<DownloadItem>) => {
     setItems(prev => {
       const existing = prev[id];
+      // Assign sessionId only for new items
+      const sessionId = existing?.sessionId ?? sessionIdCounterRef.current++;
+      
+      // Prefer existing or known trackId; avoid overwriting with probable infohashes
+      const candidateTrackId = (patch.trackId as string) || '';
+      const safeTrackId = existing?.trackId
+        || knownTrackIdsRef.current[id]
+        || (isLikelyInfoHash(candidateTrackId) ? '' : candidateTrackId);
       const next: DownloadItem = {
         id,
-        trackId: existing?.trackId || (patch.trackId as string) || '',
+        sessionId,
+        trackId: safeTrackId,
         sourceType: existing?.sourceType || (patch.sourceType as string) || '',
         sourceHash: existing?.sourceHash || (patch.sourceHash as string) || '',
         status: existing?.status || 'queued',
@@ -98,6 +137,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
         updatedAt: Date.now(),
         ...patch,
       };
+      // Ensure sessionId is not overwritten by patch
+      next.sessionId = sessionId;
       if (patch.status) next.updatedAt = Date.now();
       return { ...prev, [id]: next };
     });
@@ -148,6 +189,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
+          if (trackId) knownTrackIdsRef.current[id] = trackId;
           const bytes = Number(p.bytes_downloaded || 0) || 0;
           const total = p.total_bytes != null ? Number(p.total_bytes) : undefined;
           // If already complete, skip adding
@@ -166,13 +208,17 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
+          if (trackId) knownTrackIdsRef.current[id] = trackId;
           const bytes = Number(p.bytes_downloaded || 0) || 0;
           const total = p.total_bytes != null ? Number(p.total_bytes) : undefined;
           // If completed (bytes >= total when total is known), announce and schedule removal
           if (typeof total === 'number' && total > 0 && bytes >= total) {
             if (!pendingRemovalRef.current.has(id)) {
               pendingRemovalRef.current.add(id);
-              const trackId = itemsRef.current[id]?.trackId || 'Download';
+              const trackId = knownTrackIdsRef.current[id]
+                || itemsRef.current[id]?.trackId
+                || parseTrackIdFromCompositeId(id)
+                || 'Download';
               (async () => {
                 const name = await getTrackName(trackId);
                 try { pushAlert(`${name} downloaded`, 'info'); } catch {}
@@ -201,9 +247,14 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId } = derive(p);
+          if (trackId) knownTrackIdsRef.current[id] = trackId;
           if (!pendingRemovalRef.current.has(id)) {
             pendingRemovalRef.current.add(id);
-            const currentTrackId = itemsRef.current[id]?.trackId || trackId || 'Download';
+            const currentTrackId = knownTrackIdsRef.current[id]
+              || itemsRef.current[id]?.trackId
+              || trackId
+              || parseTrackIdFromCompositeId(id)
+              || 'Download';
             (async () => {
               const name = await getTrackName(currentTrackId);
               try { pushAlert(`${name} downloaded`, 'info'); } catch {}
@@ -224,6 +275,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
+          if (trackId) knownTrackIdsRef.current[id] = trackId;
           upsert(id, {
             trackId, sourceType, sourceHash,
             status: 'error', origin: 'cache',
@@ -236,6 +288,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
+          if (trackId) knownTrackIdsRef.current[id] = trackId;
           // Represent paused state as 'queued' so UI shows Pause/Resume state consistently
           upsert(id, {
             trackId, sourceType, sourceHash,
@@ -248,6 +301,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
+          if (trackId) knownTrackIdsRef.current[id] = trackId;
           upsert(id, {
             trackId, sourceType, sourceHash,
             status: 'downloading', origin: 'cache',
@@ -277,6 +331,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (!trackId || !sourceType || !sourceHash) return;
           const id = createId(trackId, sourceType, sourceHash);
           currentPlaybackIdRef.current = id;
+          knownTrackIdsRef.current[id] = trackId;
           // Avoid upserting here to prevent adding cached items that won't download
         });
         unsubs.push(un6);
@@ -300,7 +355,10 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
               if (typeof totalNum === 'number' && totalNum > 0 && bytesNum >= totalNum) {
                 if (!pendingRemovalRef.current.has(id)) {
                   pendingRemovalRef.current.add(id);
-                  const trackId = itemsRef.current[id]?.trackId || 'Download';
+                  const trackId = knownTrackIdsRef.current[id]
+                    || itemsRef.current[id]?.trackId
+                    || parseTrackIdFromCompositeId(id)
+                    || 'Download';
                   (async () => {
                     const name = await getTrackName(trackId);
                     try { pushAlert(`${name} downloaded`, 'info'); } catch {}
@@ -341,7 +399,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<DownloadsContextValue>(() => ({
     items,
-    list: Object.values(items).sort((a, b) => b.updatedAt - a.updatedAt),
+    list: Object.values(items).sort((a, b) => a.sessionId - b.sessionId), // Sort by session order (oldest first)
     get: (id: string) => items[id],
     makeId: createId,
     prune: ({ olderThanMs } = {}) => {

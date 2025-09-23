@@ -85,92 +85,154 @@ interface SyncedLyricsBodyProps {
     activeLineRef: React.RefObject<HTMLDivElement>;
     effectivePosition: number;
     style?: React.CSSProperties;
-    isRightPanel?: boolean; // New prop to indicate if this is in right panel
 }
 
-export const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputedLinesData, focusIndex, activeLineRef, effectivePosition, style, isRightPanel = false }) => (
-    <div className="lyrics-body" style={{ margin: 0, ...style }}>
-        {lines.map((ln, i) => {
+// Constants for performance and consistency
+const LYRICS_CONSTANTS = {
+    BLUR_AMOUNT: 1,
+    BLUR_OPACITY: 0.7,
+    LETTER_BUFFER: 0.05,
+    WAVE_DISTANCE: 4,
+    WAVE_TRAVEL_DISTANCE: 10,
+    ANTICIPATION_S: 0.5,
+    WAVE_CLEAR_DURATION_S: 0.2,
+    FOCUS_PRE_BUFFER_S: 0.5,
+    FOCUS_POST_BUFFER_S: 0.1,
+    FOCUS_OFFSET: 20, // Allow focus to trigger slightly before line start
+    ARTIFICIAL_INWARD_BUFFER_S: 0.8,
+    RAF_THROTTLE_MS: (1/30)*1000, // ~30fps for smoother wave animations
+    SCROLL_DEBOUNCE_MS: 20,
+    INTERLUDE_THRESHOLD_S: 3.0
+} as const;
+
+export const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputedLinesData, focusIndex, activeLineRef, effectivePosition, style }) => {
+    const { LETTER_BUFFER, WAVE_DISTANCE, RAF_THROTTLE_MS } = LYRICS_CONSTANTS;
+
+    // Round effective position to reduce excessive re-renders
+    const roundedPosition = useMemo(() => {
+        return Math.round(effectivePosition * RAF_THROTTLE_MS) / RAF_THROTTLE_MS; // Round to 50ms precision
+    }, [effectivePosition]);
+
+    // Memoize expensive calculations that don't change frequently
+    const memoizedLineElements = useMemo(() => {
+        return lines.map((ln, i) => {
             const data = precomputedLinesData[i];
             if (!data) return null;
 
             const { isFocus, isActive, wasActive, isPlayed, isLast, peakIdx, wordData } = data;
 
-            // For right panel: no blur, fixed opacity
-            // For center panel: dynamic blur and opacity based on focus
-            const shouldBlur = !isRightPanel && !isFocus && !isActive && !isLast && !isPlayed;
-            const blurAmount = isRightPanel ? 0 : Math.abs(i - 1 - focusIndex) * 0.5;
-            const opacity = isRightPanel ? 0.7 : Math.max(0, 1 - Math.abs(i - focusIndex) * 0.3);
+            // Pre-calculate class names
+            const lineClassName = 
+                `lyric-line` +
+                (isActive ? ' active' : '') +
+                (isPlayed ? ' played' : '') +
+                (wasActive ? ' wasactive' : '') +
+                (isLast ? ' last' : '') +
+                (ln.isArtificial ? ' artificial' : '');
+
             let letterPosInLine = 0;
-            return (
-                <div
-                    key={i}
-                    ref={isFocus ? activeLineRef : undefined}
-                    className={
-                        `lyric-line` +
-                        (isActive ? ' active' : '') +
-                        (isPlayed ? ' played' : '') +
-                        (wasActive ? ' wasactive' : '') +
-                        (isLast ? ' last' : '') +
-                        (ln.isArtificial ? ' artificial' : '')
-                    }
-                    style={shouldBlur ? { filter: `blur(${blurAmount}px)`, opacity: opacity } : undefined}
-                    data-index={i}
-                    aria-current={isFocus ? 'true' : undefined}
-                >
-                    {ln.parts ? (
-                        ln.parts.map((p, j) => {
-                            const wordStartPos = letterPosInLine;
-                            const isWordActive = wordData?.[j]?.isActive ?? false;
-                            const nextPart = ln.parts[j + 1];
-                            const partEnd = nextPart?.start ?? ln.end;
-                            const partDuration = partEnd - p.start;
-                            const result = (
-                                <span key={j} className={`lyric-word${p.text.trim() === '' ? ' space' : ''}${isWordActive ? ' active' : ''}`}>
-                                    <span className="word-text">
-                                        {p.text.split('').map((letter, idx) => {
-                                            if (letter === ' ') return <span key={idx}>&nbsp;</span>;
 
-                                            const currentLetterPos = wordStartPos + idx;
-                                            const distance = Math.abs(currentLetterPos - peakIdx);
-                                            const t = Math.max(0, 1 - distance / 4);
-                                            const waveY = t * t * (3 - 2 * t) * 5;
+            const lineContent = ln.parts ? (
+                ln.parts.map((p, j) => {
+                    const wordStartPos = letterPosInLine;
+                    const isWordActive = wordData?.[j]?.isActive ?? false;
+                    const nextPart = ln.parts![j + 1];
+                    const partEnd = nextPart?.start ?? ln.end;
+                    const partDuration = partEnd - p.start;
 
-                                            // Improved letter timing for rich sync precision
-                                            const letterDuration = partDuration / Math.max(1, p.text.length);
-                                            const letterStart = p.start + (idx * letterDuration);
-                                            const letterEnd = letterStart + letterDuration;
+                    // Pre-calculate word classes
+                    const wordClassName = `lyric-word${p.text.trim() === '' ? ' space' : ''}${isWordActive ? ' active' : ''}`;
 
-                                            // More precise timing check with small buffer for smooth transitions
-                                            const LETTER_BUFFER = 0.05; // 50ms buffer for smoother animation
-                                            const hasPeaked = effectivePosition >= (letterStart - LETTER_BUFFER);
-                                            const isCurrentLetter = effectivePosition >= letterStart && effectivePosition < letterEnd;
-                                            const shouldHighlight = isPlayed || hasPeaked;
+                    // Pre-calculate letter elements for this word
+                    const letterElements = p.text.split('').map((letter, idx) => {
+                        if (letter === ' ') {
+                            return <span key={idx}>&nbsp;</span>;
+                        }
 
-                                            return (
-                                                <span
-                                                    key={idx}
-                                                    className={`letter${shouldHighlight ? ' sung' : ''}${isCurrentLetter ? ' current' : ''}`}
-                                                    style={{ transform: `translateY(${-waveY}px)` }}
-                                                >
-                                                    {letter}
-                                                </span>
-                                            );
-                                        })}
-                                    </span>
-                                </span>
-                            );
-                            letterPosInLine += p.text.length;
-                            return result;
-                        })
-                    ) : (
-                        <span>{ln.text}</span>
-                    )}
-                </div>
+                        const currentLetterPos = wordStartPos + idx;
+                        const distance = Math.abs(currentLetterPos - peakIdx);
+                        const t = Math.max(0, 1 - distance / WAVE_DISTANCE);
+                        
+                        // Smoother wave function using sine wave for more natural movement
+                        const smoothT = t * t * (3 - 2 * t); // Smoothstep function
+                        const waveY = Math.sin(smoothT * Math.PI * 0.5) * 6; // Reduced amplitude for subtlety
+
+                        // Improved letter timing for rich sync precision
+                        const letterDuration = partDuration / Math.max(1, p.text.length);
+                        const letterStart = p.start + (idx * letterDuration);
+                        const letterEnd = letterStart + letterDuration;
+
+                        // More precise timing check with small buffer for smooth transitions
+                        const hasPeaked = roundedPosition >= (letterStart - LETTER_BUFFER);
+                        const isCurrentLetter = roundedPosition >= letterStart && roundedPosition < letterEnd;
+                        const shouldHighlight = isPlayed || hasPeaked;
+
+                        // Pre-calculate letter classes
+                        const letterClassName = `letter${shouldHighlight ? ' sung' : ''}${isCurrentLetter ? ' current' : ''}`;
+
+                        // Use CSS custom property for smoother animations
+                        // Round waveY to reduce micro-updates that cause stuttering
+                        const roundedWaveY = Math.round(waveY * 10) / 10;
+                        const letterStyle = {
+                            '--wave-y': `${-roundedWaveY}px`
+                        } as React.CSSProperties;
+
+                        return (
+                            <span
+                                key={idx}
+                                className={letterClassName}
+                                style={letterStyle}
+                            >
+                                {letter}
+                            </span>
+                        );
+                    });
+
+                    const result = (
+                        <span key={j} className={wordClassName}>
+                            <span className="word-text">
+                                {letterElements}
+                            </span>
+                        </span>
+                    );
+                    
+                    letterPosInLine += p.text.length;
+                    return result;
+                })
+            ) : (
+                <span>{ln.text}</span>
             );
-        })}
-    </div>
-));
+
+            return {
+                key: i,
+                isFocus,
+                className: lineClassName,
+                content: lineContent,
+                dataIndex: i
+            };
+        });
+    }, [lines, precomputedLinesData, roundedPosition, LETTER_BUFFER, WAVE_DISTANCE]);
+
+    return (
+        <div className="lyrics-body" style={{ margin: 0, ...style }}>
+            {memoizedLineElements.map((lineElement) => {
+                if (!lineElement) return null;
+
+                return (
+                    <div
+                        key={lineElement.key}
+                        ref={lineElement.isFocus ? activeLineRef : undefined}
+                        className={lineElement.className}
+                        data-index={lineElement.dataIndex}
+                        aria-current={lineElement.isFocus ? 'true' : undefined}
+                    >
+                        {lineElement.content}
+                    </div>
+                );
+            })}
+        </div>
+    );
+});
 SyncedLyricsBody.displayName = 'SyncedLyricsBody';
 
 // Utility function for safe HTML processing
@@ -197,58 +259,78 @@ export function useLyricsPositionTracking() {
     const baseTsRef = useRef<number>(performance.now());
     const rafRef = useRef<number | null>(null);
     const isInterpolatingRef = useRef<boolean>(false);
+    const lastTickTimeRef = useRef<number>(0);
 
+    // Optimized tick function with throttling
     const tick = useCallback(() => {
-        if (playing && isInterpolatingRef.current) {
-            const now = performance.now();
-            const interpolatedTime = basePosRef.current + (now - baseTsRef.current) / 1000;
-            setDerivedPosition(interpolatedTime);
+        if (!isInterpolatingRef.current) {
+            rafRef.current = null;
+            return;
         }
-        rafRef.current = requestAnimationFrame(tick);
-    }, [playing]);
 
-    // Update base position when playback position changes significantly
-    useEffect(() => {
         const now = performance.now();
-        const currentInterpolated = basePosRef.current + (now - baseTsRef.current) / 1000;
-        const positionDrift = Math.abs((position ?? 0) - currentInterpolated);
-
-        // Sync if drift is more than 250ms or if position jumped significantly
-        if (positionDrift > 0.25 || Math.abs((position ?? 0) - basePosRef.current) > 1.0) {
-            console.log('🎵 Lyrics sync: Updating base position', {
-                newPosition: position,
-                drift: positionDrift,
-                wasInterpolated: currentInterpolated
-            });
-            basePosRef.current = position ?? 0;
-            baseTsRef.current = now;
-            setDerivedPosition(position ?? 0);
+        
+        // Throttle updates to ~60fps maximum
+        if (now - lastTickTimeRef.current < LYRICS_CONSTANTS.RAF_THROTTLE_MS) {
+            rafRef.current = requestAnimationFrame(tick);
+            return;
         }
-    }, [position]);
 
-    // Start/stop interpolation based on playing state
+        lastTickTimeRef.current = now;
+        const interpolatedTime = basePosRef.current + (now - baseTsRef.current) / 1000;
+        setDerivedPosition(interpolatedTime);
+        rafRef.current = requestAnimationFrame(tick);
+    }, []);
+
+    // Consolidated effect for handling position updates and RAF lifecycle
     useEffect(() => {
+        const currentPosition = position ?? 0;
+
         if (playing) {
-            isInterpolatingRef.current = true;
-            basePosRef.current = position ?? 0;
-            baseTsRef.current = performance.now();
-            setDerivedPosition(position ?? 0);
-            if (!rafRef.current) {
-                rafRef.current = requestAnimationFrame(tick);
+            const now = performance.now();
+
+            // Check if we need to sync position
+            const currentInterpolated = basePosRef.current + (now - baseTsRef.current) / 1000;
+            const positionDrift = Math.abs(currentPosition - currentInterpolated);
+
+            // Sync if drift is significant or if position jumped
+            if (positionDrift > 0.25 || Math.abs(currentPosition - basePosRef.current) > 1.0) {
+                basePosRef.current = currentPosition;
+                baseTsRef.current = now;
+                setDerivedPosition(currentPosition);
+            }
+
+            // Start interpolation if not already running
+            if (!isInterpolatingRef.current) {
+                isInterpolatingRef.current = true;
+                basePosRef.current = currentPosition;
+                baseTsRef.current = now;
+                setDerivedPosition(currentPosition);
+                
+                if (!rafRef.current) {
+                    rafRef.current = requestAnimationFrame(tick);
+                }
             }
         } else {
+            // Stop interpolation and use exact position
             isInterpolatingRef.current = false;
-            // Use exact position when not playing
-            setDerivedPosition(position ?? 0);
+            setDerivedPosition(currentPosition);
+            
+            if (rafRef.current) {
+                cancelAnimationFrame(rafRef.current);
+                rafRef.current = null;
+            }
         }
 
+        // Cleanup on unmount
         return () => {
             if (rafRef.current) {
                 cancelAnimationFrame(rafRef.current);
                 rafRef.current = null;
             }
+            isInterpolatingRef.current = false;
         };
-    }, [playing, tick, position]);
+    }, [playing, position, tick]);
 
     return { derivedPosition, playing, position };
 }
@@ -257,7 +339,6 @@ export function useLyricsPositionTracking() {
 export function useLyricsSettings() {
     const [syncOffsetMs, setSyncOffsetMs] = useState<number>(0);
     const [lyricsSource, setLyricsSource] = useState<'genius' | 'musixmatch'>('musixmatch');
-    const [richSyncEnabled, setRichSyncEnabled] = useState<boolean>(true);
     const [fontSize, setFontSize] = useState<number>(50); // Multiplier percentage (e.g., 50 means 50%)
     const [menuUpdateTrigger, setMenuUpdateTrigger] = useState<number>(0);
 
@@ -375,7 +456,7 @@ export function useLyricsSettings() {
                 }
             ]
         }
-    ], [syncOffsetMs, lyricsSource, richSyncEnabled, fontSize, t]);
+    ], [syncOffsetMs, lyricsSource, fontSize, t]);
 
     // Ref to current menuItems
     const menuItemsRef = useRef(menuItems);
@@ -402,8 +483,6 @@ export function useLyricsSettings() {
         setSyncOffsetMs,
         lyricsSource,
         setLyricsSource,
-        richSyncEnabled,
-        setRichSyncEnabled,
         fontSize,
         setFontSize,
         handleSettingsClick,
@@ -431,7 +510,7 @@ export function useLyricsData(synced?: SyncedLyrics | MusixmatchRichSync) {
         }
 
         const linesWithInterludes: InternalLyricsLine[] = [];
-        const INTERLUDE_THRESHOLD_S = 3.0;
+        const { INTERLUDE_THRESHOLD_S } = LYRICS_CONSTANTS;
 
         for (let i = 0; i < initialLines.length; i++) {
             const currentLine = initialLines[i];
@@ -475,31 +554,101 @@ export function useLyricsTiming(
     const hasSynced = !!(normalizedLyrics?.lines?.length);
     const lines = normalizedLyrics?.lines || [];
 
+    // Memoize words per line for efficient lookup - only recreate when lines change
+    const { allWords, wordsPerLine } = useMemo(() => {
+        if (!hasSynced || lines.length === 0) {
+            return { allWords: [], wordsPerLine: new Map<number, any[]>() };
+        }
+
+        const words: Array<{
+            text: string;
+            start: number;
+            lineIndex: number;
+            partIndex: number;
+            letterOffset: number;
+        }> = [];
+        
+        const lineWordMap = new Map<number, typeof words>();
+
+        lines.forEach((line, lineIndex) => {
+            if (!line.parts) return;
+            
+            let letterOffset = 0;
+            const lineWords: typeof words = [];
+            
+            line.parts.forEach((part, partIndex) => {
+                const wordInfo = {
+                    text: part.text,
+                    start: part.start,
+                    lineIndex,
+                    partIndex,
+                    letterOffset
+                };
+                words.push(wordInfo);
+                lineWords.push(wordInfo);
+                letterOffset += part.text.length;
+            });
+            
+            lineWordMap.set(lineIndex, lineWords);
+        });
+
+        return { allWords: words, wordsPerLine: lineWordMap };
+    }, [lines, hasSynced]);
+
+    // Optimize active word finding with binary search approach
+    const activeWordGlobalIndex = useMemo(() => {
+        if (allWords.length === 0 || !isFinite(effectivePosition) || effectivePosition < 0) {
+            return -1;
+        }
+
+        // Binary search for better performance on large datasets
+        let left = 0;
+        let right = allWords.length - 1;
+        let lastValidIndex = -1;
+
+        while (left <= right) {
+            const mid = Math.floor((left + right) / 2);
+            if (allWords[mid].start <= effectivePosition) {
+                lastValidIndex = mid;
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+
+        return lastValidIndex;
+    }, [allWords, effectivePosition]);
+
     const { focusIndex, activeIndices } = useMemo(() => {
         if (!hasSynced || lines.length === 0) return { focusIndex: -1, activeIndices: [] };
 
-        const FOCUS_PRE_BUFFER_S = 0.1;
-        const FOCUS_POST_BUFFER_S = 0.5;
-        const ARTIFICIAL_INWARD_BUFFER_S = 0.3;
+        const { FOCUS_PRE_BUFFER_S, FOCUS_POST_BUFFER_S, ARTIFICIAL_INWARD_BUFFER_S, FOCUS_OFFSET } = LYRICS_CONSTANTS;
 
         // Validate effective position is reasonable
         if (!isFinite(effectivePosition) || effectivePosition < 0) {
-            console.warn('🎵 Invalid effective position:', effectivePosition);
             return { focusIndex: -1, activeIndices: [] };
         }
 
         const activeCandidates: number[] = [];
+        let primaryIndex = -1;
+        let lastPassedLine = -1;
+
+        // Single pass through lines for better performance
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
 
             // Validate line timing data
             if (!isFinite(line.start) || !isFinite(line.end) || line.start > line.end) {
-                console.warn('🎵 Invalid line timing:', line);
                 continue;
             }
 
-            let lineIsActive = false;
+            // Track passed lines for primary index fallback
+            if (line.start <= effectivePosition) {
+                lastPassedLine = i;
+            }
 
+            // Check if line is active
+            let lineIsActive = false;
             if (line.isArtificial) {
                 lineIsActive = effectivePosition >= (line.start + ARTIFICIAL_INWARD_BUFFER_S) &&
                     effectivePosition < (line.end - ARTIFICIAL_INWARD_BUFFER_S);
@@ -511,25 +660,15 @@ export function useLyricsTiming(
             if (lineIsActive) {
                 activeCandidates.push(i);
             }
-        }
 
-        let primaryIndex = -1;
-        for (let i = 0; i < lines.length; i++) {
-            if (effectivePosition >= lines[i].start && effectivePosition < lines[i].end) {
+            // Check for primary index (currently playing line)
+            if (primaryIndex === -1 && effectivePosition >= line.start - FOCUS_OFFSET && effectivePosition < line.end) {
                 primaryIndex = i;
-                break;
             }
         }
 
+        // Use fallback if no primary index found
         if (primaryIndex === -1) {
-            let lastPassedLine = -1;
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].start <= effectivePosition) {
-                    lastPassedLine = i;
-                } else {
-                    break;
-                }
-            }
             primaryIndex = lastPassedLine;
         }
 
@@ -539,35 +678,22 @@ export function useLyricsTiming(
     useEffect(() => {
         setLastLineIndex(previousFocusIndex);
         setPreviousFocusIndex(focusIndex);
-    }, [focusIndex]);
+    }, [focusIndex, previousFocusIndex]);
+
+    // Optimize isSongFinished check
+    const isSongFinished = useMemo(() => {
+        if (lines.length === 0) return false;
+        return effectivePosition >= lines[lines.length - 1]?.end;
+    }, [effectivePosition, lines]);
 
     const precomputedLinesData = useMemo((): PrecomputedLineData[] => {
         if (!hasSynced) return [];
 
-        const WAVE_TRAVEL_DISTANCE = 10;
-        const ANTICIPATION_S = 0.2;
-        const WAVE_CLEAR_DURATION_S = 0.5;
+        const { WAVE_TRAVEL_DISTANCE, ANTICIPATION_S, WAVE_CLEAR_DURATION_S } = LYRICS_CONSTANTS;
 
-        const allWords = lines.flatMap((line, lineIndex) => {
-            let letterOffset = 0;
-            return (line.parts || []).map((part, partIndex) => {
-                const wordInfo = { ...part, lineIndex, partIndex, letterOffset };
-                letterOffset += part.text.length;
-                return wordInfo;
-            });
-        });
-
-        let activeWordGlobalIndex = -1;
-        for (let i = 0; i < allWords.length; i++) {
-            if (allWords[i].start <= effectivePosition) {
-                activeWordGlobalIndex = i;
-            } else {
-                break;
-            }
-        }
-
-        // **THE FIX**: Determine if the entire song is finished to apply special `.last` class logic.
-        const isSongFinished = effectivePosition >= lines[lines.length - 1].end;
+        // Get active word info once and reuse
+        const activeWord = activeWordGlobalIndex !== -1 ? allWords[activeWordGlobalIndex] : null;
+        const nextWord = activeWordGlobalIndex !== -1 ? allWords[activeWordGlobalIndex + 1] : null;
 
         return lines.map((ln, i) => {
             const isFocus = i === focusIndex;
@@ -576,10 +702,8 @@ export function useLyricsTiming(
 
             let isLast = false;
             if (isSongFinished) {
-                // If song is over, only the very last line gets the .last class.
                 isLast = i === lines.length - 1;
             } else {
-                // Otherwise, the line that was previously focus but is no longer active is the .last line.
                 isLast = i === lastLineIndex && !isActive;
             }
 
@@ -589,7 +713,6 @@ export function useLyricsTiming(
 
             const animAnticipationEnd = ln.start;
             const animAnticipationStart = animAnticipationEnd - ANTICIPATION_S;
-
             const animExitStart = ln.end;
             const animExitEnd = animExitStart + WAVE_CLEAR_DURATION_S;
 
@@ -597,16 +720,15 @@ export function useLyricsTiming(
                 const progress = (effectivePosition - animAnticipationStart) / ANTICIPATION_S;
                 peakIdx = (progress * WAVE_TRAVEL_DISTANCE) - WAVE_TRAVEL_DISTANCE;
             } else if (effectivePosition >= animAnticipationEnd && effectivePosition < animExitStart) {
-                const activeWord = activeWordGlobalIndex !== -1 && allWords[activeWordGlobalIndex]?.lineIndex === i ? allWords[activeWordGlobalIndex] : null;
-                if (activeWord) {
-                    const nextWord = allWords[activeWordGlobalIndex + 1];
+                if (activeWord && activeWord.lineIndex === i) {
                     const wordStart = activeWord.start;
                     const wordEnd = nextWord?.start ?? ln.end;
                     const wordDuration = Math.max(0.1, wordEnd - wordStart);
                     const progressInWord = Math.max(0, Math.min(1, (effectivePosition - wordStart) / wordDuration));
                     peakIdx = activeWord.letterOffset + (progressInWord * activeWord.text.length);
                 } else {
-                    const lastWordInLine = allWords.slice().reverse().find(w => w.lineIndex === i && w.start <= effectivePosition);
+                    const wordsInLine = wordsPerLine.get(i) || [];
+                    const lastWordInLine = wordsInLine.slice().reverse().find(w => w.start <= effectivePosition);
                     peakIdx = lastWordInLine ? lastWordInLine.letterOffset + lastWordInLine.text.length : 0;
                 }
             } else if (effectivePosition >= animExitStart && effectivePosition < animExitEnd) {
@@ -616,14 +738,13 @@ export function useLyricsTiming(
                 peakIdx = ln.text.length + WAVE_TRAVEL_DISTANCE;
             }
 
-            const activeWordInThisLine = activeWordGlobalIndex !== -1 && allWords[activeWordGlobalIndex]?.lineIndex === i ? allWords[activeWordGlobalIndex] : null;
             const wordData = ln.parts?.map((part, partIndex) => ({
-                isActive: activeWordInThisLine?.partIndex === partIndex,
+                isActive: activeWord?.lineIndex === i && activeWord?.partIndex === partIndex,
             }));
 
             return { isFocus, isActive, wasActive, isPlayed, isLast, peakIdx, wordData };
         });
-    }, [hasSynced, lines, focusIndex, activeIndices, effectivePosition, lastLineIndex]);
+    }, [hasSynced, lines, focusIndex, activeIndices, effectivePosition, lastLineIndex, allWords, activeWordGlobalIndex, isSongFinished, wordsPerLine]);
 
     return {
         hasSynced,
@@ -663,6 +784,9 @@ export function BaseLyricsComponent({
 }: BaseLyricsComponentProps) {
     const { t } = useI18n();
     const activeLineRef = useRef<HTMLDivElement | null>(null);
+    const scrollTimeoutRef = useRef<number | null>(null);
+    const lastScrollFocusRef = useRef<number>(-1);
+    const isManualScrollingRef = useRef<boolean>(false);
 
     // Use custom hooks for functionality
     const { derivedPosition, playing, position } = useLyricsPositionTracking();
@@ -677,20 +801,116 @@ export function BaseLyricsComponent({
 
     const { hasSynced, lines, focusIndex, precomputedLinesData } = useLyricsTiming(normalizedLyrics, effectivePosition);
 
-    // Determine if this is being used in the right panel
-    const isRightPanel = className.includes('right-panel-lyrics');
-
     // Reset offset when title changes
     useEffect(() => {
         resetOffsetOnTitleChange(title);
     }, [title, resetOffsetOnTitleChange]);
 
-    // Auto-scroll to active line
-    useLayoutEffect(() => {
-        if (hasSynced && activeLineRef.current) {
-            activeLineRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // Optimized scroll-to-line function with debouncing
+    const scrollToActiveLine = useCallback(() => {
+        if (!hasSynced || !activeLineRef.current || focusIndex === lastScrollFocusRef.current) {
+            return;
         }
+
+        // Clear any pending scroll operations
+        if (scrollTimeoutRef.current) {
+            clearTimeout(scrollTimeoutRef.current);
+        }
+
+        // Debounce scroll operations to prevent excessive DOM manipulation
+        scrollTimeoutRef.current = window.setTimeout(() => {
+            if (activeLineRef.current && !isManualScrollingRef.current) {
+                activeLineRef.current.scrollIntoView({ 
+                    block: 'center', 
+                    behavior: 'smooth' 
+                });
+                lastScrollFocusRef.current = focusIndex;
+            }
+        }, LYRICS_CONSTANTS.SCROLL_DEBOUNCE_MS);
     }, [hasSynced, focusIndex]);
+
+    // Auto-scroll to active line when focus changes
+    useLayoutEffect(() => {
+        scrollToActiveLine();
+    }, [scrollToActiveLine]);
+
+    // Optimized resize handling with improved debouncing
+    useEffect(() => {
+        let resizeTimeout: number | null = null;
+        let resizeStartTime: number = 0;
+
+        const onResizeStart = () => {
+            resizeStartTime = performance.now();
+            isManualScrollingRef.current = true; // Prevent auto-scroll during resize
+        };
+
+        const onResizeEnd = () => {
+            if (resizeTimeout) {
+                clearTimeout(resizeTimeout);
+            }
+
+            // Use adaptive timeout based on resize duration
+            const resizeDuration = performance.now() - resizeStartTime;
+            const timeoutDuration = Math.min(300, Math.max(100, resizeDuration * 0.5));
+
+            resizeTimeout = window.setTimeout(() => {
+                isManualScrollingRef.current = false;
+                scrollToActiveLine();
+            }, timeoutDuration);
+        };
+
+        // Use ResizeObserver for better performance when available
+        if (containerRef?.current && 'ResizeObserver' in window) {
+            const resizeObserver = new ResizeObserver((entries) => {
+                if (entries.length > 0) {
+                    onResizeStart();
+                    onResizeEnd();
+                }
+            });
+
+            resizeObserver.observe(containerRef.current);
+
+            return () => {
+                resizeObserver.disconnect();
+                if (resizeTimeout) clearTimeout(resizeTimeout);
+                if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+            };
+        } else {
+            // Fallback to window resize events
+            window.addEventListener('resize', onResizeStart);
+            window.addEventListener('resize', onResizeEnd);
+
+            return () => {
+                window.removeEventListener('resize', onResizeStart);
+                window.removeEventListener('resize', onResizeEnd);
+                if (resizeTimeout) clearTimeout(resizeTimeout);
+                if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+            };
+        }
+    }, [scrollToActiveLine, containerRef]);
+
+    // Handle playback state changes
+    useEffect(() => {
+        if (playing && hasSynced) {
+            // Reset manual scrolling flag when playback starts
+            isManualScrollingRef.current = false;
+            // Use a small delay to ensure the position is stable
+            const playbackScrollTimeout = setTimeout(() => {
+                scrollToActiveLine();
+            }, 100);
+
+            return () => clearTimeout(playbackScrollTimeout);
+        }
+    }, [playing, hasSynced, scrollToActiveLine]);
+
+    // Cleanup timeouts on unmount
+    useEffect(() => {
+        return () => {
+            if (scrollTimeoutRef.current) {
+                clearTimeout(scrollTimeoutRef.current);
+            }
+        };
+    }, []);
 
     const processedLyrics = useMemo(() => sanitizeAndProcessLyrics(lyrics, t('lyrics.unavailable')), [lyrics, t]);
 
@@ -723,6 +943,8 @@ export function BaseLyricsComponent({
                     </button>
                 )}
             </div>
+            <div className="np-lyrics-blur">
+            </div>
             <div className={`np-lyrics-scroll`}>
                 <div className="np-lyrics-body">
                     {hasSynced ? (
@@ -732,7 +954,6 @@ export function BaseLyricsComponent({
                             focusIndex={focusIndex}
                             activeLineRef={activeLineRef}
                             effectivePosition={effectivePosition}
-                            isRightPanel={isRightPanel}
                             style={{ '--lyrics-font-multiplier': fontSize / 50 } as React.CSSProperties}
                         />
                     ) : (

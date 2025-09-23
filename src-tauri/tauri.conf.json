@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "1.2.0-test",
+  "version": "1.2.5-test",
   "build": {
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run fetch:ytdlp && npm run fetch:bass && npm run dev",
@@ -97,7 +97,13 @@
             "core:window:allow-close",
             "core:event:default",
             "core:event:allow-listen",
-            "core:path:default"
+            "core:path:default",
+            "core:window:allow-set-min-size",
+            "core:window:allow-set-max-size",
+            "core:window:allow-set-size",
+            "core:window:allow-set-always-on-top",
+            "core:window:allow-set-fullscreen",
+            "core:window:allow-set-position"
           ]
         }
       ],

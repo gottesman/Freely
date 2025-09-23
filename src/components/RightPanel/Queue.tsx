@@ -2,6 +2,8 @@ import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useMe
 import { usePlaybackSelector } from '../../core/Playback';
 import { useI18n } from '../../core/i18n';
 import { useContextMenu } from '../../core/ContextMenu';
+import { useDB } from '../../core/Database';
+import { createCachedSpotifyClient } from '../../core/SpotifyClient';
 import { buildQueueContextMenuItems } from '../Utilities/ContextMenu';
 
 // Types for better organization
@@ -248,6 +250,90 @@ const useQueueOperations = () => {
   }), []);
 };
 
+// Custom hook for fetching missing track metadata
+const useMissingTrackFetcher = (queueIds: string[], trackCache: Record<string, any>) => {
+  const { ready, getApiCache, setApiCache } = useDB();
+  const [additionalTrackData, setAdditionalTrackData] = useState<Record<string, TrackData>>({});
+  const [loadingTracks, setLoadingTracks] = useState<Set<string>>(new Set());
+
+  // Memoize Spotify client with database cache
+  const spotifyClient = useMemo(() => {
+    return ready ? createCachedSpotifyClient({ getApiCache, setApiCache }) : null;
+  }, [ready, getApiCache, setApiCache]);
+
+  useEffect(() => {
+    if (!spotifyClient || !queueIds.length) return;
+
+    const fetchMissingTracks = async () => {
+      // Find tracks that aren't in either cache and aren't currently loading
+      const missingIds = queueIds.filter(id => 
+        !trackCache[id] && !additionalTrackData[id] && !loadingTracks.has(id)
+      );
+
+      if (missingIds.length === 0) return;
+
+      // Mark tracks as loading
+      setLoadingTracks(prev => {
+        const newSet = new Set(prev);
+        missingIds.forEach(id => newSet.add(id));
+        return newSet;
+      });
+
+      try {
+        const tracks = await spotifyClient.getTracks(missingIds);
+        
+        const newTrackData: Record<string, TrackData> = {};
+        tracks.forEach((track: any) => {
+          if (track && track.id) {
+            newTrackData[track.id] = {
+              id: track.id,
+              name: track.name,
+              artists: track.artists || [],
+              album: track.album || { id: '', images: [] }
+            };
+          }
+        });
+
+        setAdditionalTrackData(prev => ({ ...prev, ...newTrackData }));
+      } catch (e) {
+        console.warn('[Queue] Failed to fetch missing track metadata:', e);
+      } finally {
+        // Clear loading state
+        setLoadingTracks(prev => {
+          const newSet = new Set(prev);
+          missingIds.forEach(id => newSet.delete(id));
+          return newSet;
+        });
+      }
+    };
+
+    fetchMissingTracks();
+  }, [spotifyClient, queueIds, trackCache, additionalTrackData, loadingTracks]);
+
+  // Merge track data from both sources
+  const mergedTrackData = useMemo(() => {
+    const merged: Record<string, TrackData> = {};
+    
+    // Add data from trackCache first
+    queueIds.forEach(id => {
+      if (trackCache[id]) {
+        merged[id] = trackCache[id] as TrackData;
+      }
+    });
+    
+    // Add additional fetched data
+    Object.keys(additionalTrackData).forEach(id => {
+      if (!merged[id]) {
+        merged[id] = additionalTrackData[id];
+      }
+    });
+    
+    return merged;
+  }, [queueIds, trackCache, additionalTrackData]);
+
+  return mergedTrackData;
+};
+
 // Custom hook for drag interactions
 const useDragInteraction = (
   queueIds: string[],
@@ -397,6 +483,9 @@ export const QueueTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) => {
 
   const queueOps = useQueueOperations();
   const { listRef, handlePointerDown } = useDragInteraction(queueIds, currentIndex, setState);
+  
+  // Use the new hook to fetch missing track data
+  const mergedTrackData = useMissingTrackFetcher(queueIds, trackCache);
 
   // Memoized derived values
   const queueData = useMemo(() => {
@@ -508,7 +597,7 @@ export const QueueTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) => {
             id={queueData.currentId}
             index={currentIndex}
             isActive={true}
-            trackData={trackCache[queueData.currentId] as TrackData | undefined}
+            trackData={mergedTrackData[queueData.currentId] as TrackData | undefined}
             dragState={null}
             handleHoverIndex={null}
             onPointerDown={() => {}} // No-op to disable dragging
@@ -533,7 +622,7 @@ export const QueueTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) => {
               id={id}
               index={restIdx}
               isActive={false}
-              trackData={trackCache[id] as TrackData | undefined}
+              trackData={mergedTrackData[id] as TrackData | undefined}
               dragState={state.dragState}
               handleHoverIndex={state.handleHoverIndex}
               onPointerDown={handlePointerDown}

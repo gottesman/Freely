@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
 import LeftPanel from './components/LeftPanel';
 import CenterTabs from './components/CenterPanel';
 import RightPanel from './components/RightPanel';
-import BottomPlayer from './components/MainPlayer';
+import MainPlayer from './components/MainPlayer';
+import SmallPlayer from './components/SmallPlayer';
 import LyricsTab from './components/CenterPanel/LyricsTab';
 import GeniusClient from './core/Genius';
 import MusixmatchClient, { SyncedLyrics } from './core/LyricsProviders';
@@ -17,6 +19,7 @@ import { PromptProvider } from './core/PromptContext';
 import { runTauriCommand } from './core/TauriCommands';
 import { DownloadsProvider } from './core/Downloads';
 import { ContextMenuProvider } from './core/ContextMenu';
+import { is } from 'cheerio/dist/commonjs/api/traversing';
 
 // Constants for performance optimization
 const UI_CONSTANTS = {
@@ -231,7 +234,9 @@ export default function App() {
           <PlaybackProvider>
             <AlertsProvider>
               <DownloadsProvider>
-                <Main />
+                <PromptProvider>
+                  <Main />
+                </PromptProvider>
               </DownloadsProvider>
             </AlertsProvider>
           </PlaybackProvider>
@@ -256,6 +261,15 @@ function Main() {
   const [tabState, setTabState] = useState<TabState>(initialTabState);
   const [lyricsState, setLyricsState] = useState<LyricsState>(initialLyricsState);
   const [modalState, setModalState] = useState<ModalState>(initialModalState);
+
+  const [windowSize, setWindowSize] = useState<{ width: number; height: number }>({ width: 1200, height: 800 });
+  const [windowPos, setWindowPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const [pipMode, setPipMode] = useState(false); // Picture-in-picture mode for small player
+  const [pipSize, setPipSize] = useState<{ width: number; height: number }>({ width: 300, height: 300 });
+  const [pipPos, setPipPos] = useState<{ x: number; y: number }>({ x: -1, y: -1 });
+
+  const [isPinned, setIsPinned] = useState(false); // Pinned state for always-on-top
 
   // Refs for performance
   const currentTrackIdRef = useRef<string | undefined>(undefined);
@@ -619,7 +633,7 @@ function Main() {
   const toggleLyrics = useCallback(() => {
     const isLyricsInCenter = lyricsState.open;
     const isLyricsInRightPanel = uiState.rightTab === 'lyrics';
-    
+
     if (isLyricsInCenter) {
       // Close center panel lyrics
       setLyricsState(prev => ({ ...prev, open: false }));
@@ -705,6 +719,178 @@ function Main() {
     }));
   }, []);
 
+  // Function to reload all appearance settings
+  const reloadAppearanceSettings = useCallback(async () => {
+    try {
+      const root = document.documentElement;
+      
+      // Load accent color
+      try {
+        const accent = await getSetting('ui.accent');
+        if (accent) {
+          root.style.setProperty('--accent', accent);
+          // Derive and set --accent-rgb
+          const h = accent.replace('#','');
+          const r = parseInt(h.substring(0,2),16) || 0;
+          const g = parseInt(h.substring(2,4),16) || 0;
+          const b = parseInt(h.substring(4,6),16) || 0;
+          root.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
+          
+          // Calculate and set accent hue
+          const hue = Math.round((Math.max(r,g,b) === Math.min(r,g,b)) ? 0 : 
+            (Math.max(r,g,b) === r ? ((g-b)/(Math.max(r,g,b)-Math.min(r,g,b)) + (g < b ? 6 : 0)) * 60 :
+             Math.max(r,g,b) === g ? ((b-r)/(Math.max(r,g,b)-Math.min(r,g,b)) + 2) * 60 :
+             ((r-g)/(Math.max(r,g,b)-Math.min(r,g,b)) + 4) * 60));
+          root.style.setProperty('--accent-hue', String(hue));
+        }
+      } catch {}
+      
+      // Load text colors
+      try {
+        const [textColor, textDarkColor] = await Promise.all([
+          getSetting('ui.text'),
+          getSetting('ui.textDark')
+        ]);
+        if (textColor) {
+          root.style.setProperty('--text', textColor);
+        }
+        if (textDarkColor) {
+          root.style.setProperty('--text-dark', textDarkColor);
+          const h = textDarkColor.replace('#','');
+          const r = parseInt(h.substring(0,2),16) || 0;
+          const g = parseInt(h.substring(2,4),16) || 0;
+          const b = parseInt(h.substring(4,6),16) || 0;
+          const hue = Math.round((Math.max(r,g,b) === Math.min(r,g,b)) ? 0 : 
+            (Math.max(r,g,b) === r ? ((g-b)/(Math.max(r,g,b)-Math.min(r,g,b)) + (g < b ? 6 : 0)) * 60 :
+             Math.max(r,g,b) === g ? ((b-r)/(Math.max(r,g,b)-Math.min(r,g,b)) + 2) * 60 :
+             ((r-g)/(Math.max(r,g,b)-Math.min(r,g,b)) + 4) * 60));
+          root.style.setProperty('--text-dark-hue', String(hue));
+        }
+      } catch {}
+      
+      // Load background RGB
+      try {
+        const storedRgb = await getSetting('ui.bg.rgb');
+        if (storedRgb) {
+          root.style.setProperty('--bg', storedRgb);
+        } else {
+          root.style.setProperty('--bg', '15, 23, 36');
+        }
+      } catch {}
+      
+      // Load background appearance settings
+      try {
+        const [bgImage, bgBlur, bgBlurAmount, bgAnimate, bgOverlayColor, bgOverlayOpacity] = await Promise.all([
+          getSetting('ui.bg.image'),
+          getSetting('ui.bg.blur'),
+          getSetting('ui.bg.blurAmount'),
+          getSetting('ui.bg.animate'),
+          getSetting('ui.bg.overlayColor'),
+          getSetting('ui.bg.overlayOpacity')
+        ]);
+        
+        // Apply background settings
+        if (bgImage) {
+          root.style.setProperty('--bg-image', `url(${bgImage})`);
+        }
+        
+        const blur = (bgBlur === null || bgBlur === undefined || bgBlur === '') ? true : (bgBlur === '1' || bgBlur === 'true');
+        const animate = (bgAnimate === null || bgAnimate === undefined || bgAnimate === '') ? true : (bgAnimate === '1' || bgAnimate === 'true');
+        const blurAmount = bgBlurAmount != null ? Math.max(0, Math.min(200, Number(bgBlurAmount))) : 200;
+        
+        const filter = blur ? `blur(${blurAmount}px)` : 'none';
+        const animation = animate ? 'drift 60s ease-in-out infinite alternate' : 'none';
+        
+        root.style.setProperty('--bg-filter', filter);
+        root.style.setProperty('--bg-animation', animation);
+        root.style.setProperty('--bg-size', '200%');
+        root.style.setProperty('--bg-radius', '100em');
+        
+        // Apply overlay
+        const overlayColor = bgOverlayColor || '#0A131A';
+        const overlayOpacity = bgOverlayOpacity != null ? Number(bgOverlayOpacity) : 0.55;
+        
+        if (overlayColor.startsWith('#')) {
+          const h = overlayColor.replace('#','');
+          const r = parseInt(h.substring(0,2),16) || 0;
+          const g = parseInt(h.substring(2,4),16) || 0;
+          const b = parseInt(h.substring(4,6),16) || 0;
+          root.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${overlayOpacity})`);
+        }
+      } catch {}
+      
+      // Force a repaint to ensure all styles are reapplied
+      document.body.offsetHeight; // Trigger reflow
+    } catch (error) {
+      console.warn('Failed to reload appearance settings:', error);
+    }
+  }, [getSetting]);
+
+  const togglePIP = useCallback(async (pip: boolean) => {
+    const currentWindow = getCurrentWindow();
+    
+    // Fade out the app to hide the transition glitch
+    document.body.style.transition = 'opacity 150ms ease-out';
+    document.body.style.opacity = '0';
+    
+    // Small delay to ensure fade out completes
+    await new Promise(resolve => setTimeout(resolve, 150));
+    
+    setPipMode(pip);
+    const currentSize = await currentWindow.outerSize();
+    const currentPosition = await currentWindow.outerPosition();
+
+    // Disable always-on-top temporarily to avoid glitches
+    await currentWindow.setAlwaysOnTop(false);
+    setIsPinned(false);
+
+    if (pip) {
+      // Entering PIP mode: save current full app state
+      setWindowPos(currentPosition);
+      setWindowSize(currentSize);
+      
+      // If this is the first time entering PIP, use current position
+      const pipPosition = (pipPos.x === -1 && pipPos.y === -1) ? currentPosition : pipPos;
+      
+      await currentWindow.setMinSize(new LogicalSize(250, 250));
+      await currentWindow.setSize(new LogicalSize(pipSize.width, pipSize.height));
+      await currentWindow.setPosition(new LogicalPosition(pipPosition.x, pipPosition.y));
+      await currentWindow.setMaxSize(new LogicalSize(800, 800));
+      
+    } else {
+      // Exiting PIP mode: save current PIP state and restore full app
+      setPipPos(currentPosition);
+      setPipSize(currentSize);
+
+      await currentWindow.setMinSize(new LogicalSize(800, 600));
+      await currentWindow.setSize(new LogicalSize(windowSize.width, windowSize.height));
+      await currentWindow.setPosition(new LogicalPosition(windowPos.x, windowPos.y));
+      await currentWindow.setMaxSize(new LogicalSize(10000, 10000));
+      
+      // Reload appearance settings when exiting PIP mode
+      await reloadAppearanceSettings();
+    }
+    
+    // Small delay to ensure window changes are applied
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    // Fade back in
+    document.body.style.transition = 'opacity 200ms ease-in';
+    document.body.style.opacity = '1';
+    
+    // Clean up transition style after animation completes
+    setTimeout(() => {
+      document.body.style.transition = '';
+    }, 200);
+  }, [pipPos, pipSize, windowSize, windowPos, reloadAppearanceSettings]);
+
+  const togglePinned = useCallback(async () => {
+    const currentWindow = getCurrentWindow();
+    const newPinnedState = !isPinned;
+    setIsPinned(newPinnedState);
+    await currentWindow.setAlwaysOnTop(newPinnedState);
+  }, [isPinned]);
+
   // Open Downloads tab in the right panel and ensure it is visible
   const openDownloadsTab = useCallback(() => {
     setUIState(prev => ({
@@ -756,6 +942,32 @@ function Main() {
     setModalState(prev => ({ ...prev, open: false, track: null, fromBottomPlayer: false }));
   }, []);
 
+  if (pipMode) {
+    return (
+      <div className={`${'app'} pip-mode`}>
+        <TitleBar
+          title="Freely"
+          icon="icon-192.png"
+          onSearch={handleSearch}
+          onNavigate={handleNavigate}
+          activeTab={tabState.activeTab}
+          windowStatus={windowStatus}
+          isMaximized={isMaximized}
+          pipMode={pipMode}
+          handlePin={togglePinned}
+          isPinned={isPinned}
+        />
+        <div className="window-body">
+          <div className="content layout">
+            <SmallPlayer
+              onPIPtoggle={togglePIP}
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={`${'app'}${(uiState.draggingLeft || uiState.draggingRight) ? ' is-resizing' : ''}${isMaximized ? ' maximized' : ''}`}>
       <PromptProvider>
@@ -768,6 +980,7 @@ function Main() {
           activeTab={tabState.activeTab}
           windowStatus={windowStatus}
           isMaximized={isMaximized}
+          pipMode={pipMode}
         />
         <div className="window-body">
           <div className="content layout">
@@ -816,10 +1029,10 @@ function Main() {
               onToggle={() => setUIState(prev => ({ ...prev, rightCollapsed: !prev.rightCollapsed }))}
               width={uiState.rightWidth}
               activeRightTab={uiState.rightTab}
-              onRightTabChange={(tab) => setUIState(prev => ({ 
-                ...prev, 
+              onRightTabChange={(tab) => setUIState(prev => ({
+                ...prev,
                 previousRightTab: prev.rightTab !== 'lyrics' ? prev.rightTab : prev.previousRightTab,
-                rightTab: tab 
+                rightTab: tab
               }))}
               extraClass={uiState.draggingRight ? `panel-dragging ${uiState.collapseIntentRight ? 'collapse-intent' : ''}` : ''}
               onSelectAlbum={(id) => { handleSelectAlbum(id); }}
@@ -832,13 +1045,14 @@ function Main() {
             />
           </div>
 
-          <BottomPlayer
+          <MainPlayer
             lyricsOpen={lyricsOpen}
             onToggleLyrics={toggleLyrics}
             onToggleQueueTab={toggleQueueTab}
             onToggleDownloads={openDownloadsTab}
             queueActive={uiState.rightTab === 'queue'}
             downloadsActive={uiState.rightTab === 'downloads'}
+            onPIPtoggle={togglePIP}
           />
         </div>
 
