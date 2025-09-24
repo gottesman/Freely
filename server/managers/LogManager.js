@@ -12,13 +12,20 @@ class LogManager {
     if (this.initialized) return;
 
     try {
-      const LOG_DIR = path.join(dataDir);
-      if (!fs.existsSync(LOG_DIR)) {
-        fs.mkdirSync(LOG_DIR, { recursive: true });
+      // Use environment variables if provided by Tauri, fallback to dataDir
+      const LOG_FILE = process.env.FREELY_SERVER_LOGS || path.join(dataDir, 'server_logs.txt');
+      const ERR_FILE = process.env.FREELY_SERVER_ERRORS || path.join(dataDir, 'server_errors.txt');
+      
+      // Ensure directories exist
+      const logDir = path.dirname(LOG_FILE);
+      const errDir = path.dirname(ERR_FILE);
+      
+      if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true });
       }
-
-      const LOG_FILE = path.join(LOG_DIR, 'server.log');
-      const ERR_FILE = path.join(LOG_DIR, 'server.err.log');
+      if (logDir !== errDir && !fs.existsSync(errDir)) {
+        fs.mkdirSync(errDir, { recursive: true });
+      }
       
       const outStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
       const errStream = fs.createWriteStream(ERR_FILE, { flags: 'a' });

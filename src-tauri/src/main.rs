@@ -7,6 +7,8 @@ mod bass;
 mod cache;
 mod commands;
 mod downloads;
+mod logging;
+mod paths;
 mod playback;
 mod server;
 mod utils;
@@ -14,7 +16,9 @@ mod window;
 
 use cache::{cache_clear, cache_download_and_store, cache_get_file, cache_get_stats};
 use commands::{db, external, search, torrent, youtube};
-use server::{server_start, server_status, PathState};
+use logging::BackendLogger;
+use paths::{get_path_config, write_to_log_file, PathConfig};
+use server::{server_start, server_status};
 use window::{handle_window_resize, WindowState};
 
 use once_cell::sync::Lazy;
@@ -98,43 +102,27 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_prevent_default::init()) // ::init() makes the app ignore default browser shortcuts and context menu, ::debug() enables them in dev mode
         .setup(|app| {
-            // Initialize application directories
-            let resource_dir = app
-                .path()
-                .resource_dir()
-                .expect("Failed to find resource directory");
-            let app_log_dir = app
-                .path()
-                .app_log_dir()
-                .expect("Failed to find app log directory");
-            let app_config_dir = app
-                .path()
-                .app_config_dir()
-                .expect("Failed to find app config directory");
+            // Initialize global path configuration
+            let path_config = PathConfig::new(app.handle())
+                .expect("Failed to initialize path configuration");
 
-            // Ensure directories exist
-            for dir in [&app_log_dir, &app_config_dir] {
-                if !dir.exists() {
-                    std::fs::create_dir_all(dir)?;
-                }
-            }
+            // Initialize backend logging
+            BackendLogger::init(
+                path_config.logs.backend_logs.clone(),
+                path_config.logs.backend_errors.clone(),
+            ).expect("Failed to initialize backend logger");
 
-            // Initialize path state
-            let paths = PathState {
-                server_script: resource_dir.join("server-dist").join("server.bundle.js"),
-                pid_file: app_config_dir.join(".server.pid"),
-                log_file: app_log_dir.join("server.log"),
-                err_file: app_log_dir.join("server.err.log"),
-                db_file: app_config_dir.join("freely.db"),
-            };
+            log_info!("Freely Player starting up...");
+            log_info!("Path configuration initialized: {}", path_config.to_json().unwrap_or_default());
 
-            app.manage(paths);
+            // Store path configuration for other components to use
+            app.manage(path_config.clone());
 
             // On Windows, ensure the resources/bin directory is on PATH so bass*.dll plugins can be located by the loader
             #[cfg(target_os = "windows")]
             {
                 use std::env;
-                let resources_bin = resource_dir.join("bin");
+                let resources_bin = path_config.resource_dir.join("bin");
                 if resources_bin.exists() {
                     if let Some(bin_str) = resources_bin.to_str() {
                         let sep = ";";
@@ -144,13 +132,13 @@ fn main() {
                         };
                         // Best-effort set. Even if this fails, we still have explicit plugin loading with fallback paths.
                         let _ = env::set_var("PATH", &new_path);
-                        println!("Added resources/bin to PATH: {}", bin_str);
+                        log_info!("Added resources/bin to PATH: {}", bin_str);
                     }
                 }
             }
 
             // Initialize audio cache
-            cache::init_cache(&app_config_dir)
+            cache::init_cache(&path_config.audio_cache_dir)
                 .map_err(|e| format!("Failed to initialize audio cache: {}", e))?;
 
             // Initialize window state
@@ -166,13 +154,13 @@ fn main() {
 
             tauri::async_runtime::spawn(async move {
                 // Start server in background
-                let paths_state = app_handle.state::<PathState>();
-                match server_start(paths_state).await {
+                let path_config = app_handle.state::<PathConfig>();
+                match server_start(path_config).await {
                     Ok(status) => {
-                        println!("Server started on localhost:{}", status.port.unwrap_or(0));
+                        log_info!("Server started on localhost:{}", status.port.unwrap_or(0));
                     }
                     Err(e) => {
-                        eprintln!("Failed to start server: {}", e);
+                        log_error!("Failed to start server: {}", e);
                     }
                 }
                 // Note: No longer auto-closing splashscreen here
@@ -213,6 +201,9 @@ fn main() {
             // Server commands
             server_status,
             server_start,
+            // Path configuration commands
+            get_path_config,
+            write_to_log_file,
             // Torrent commands
             torrent::torrent_list_scrapers,
             torrent::torrent_get_files,
@@ -267,8 +258,8 @@ fn main() {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     // Only kill server when main window is closing, not splashscreen
                     if window.label() == "main" {
-                        let paths = window.app_handle().state::<PathState>();
-                        paths.kill_server();
+                        let config = window.app_handle().state::<PathConfig>();
+                        config.kill_server();
 
                         // Cleanup BASS resources before closing
                         tauri::async_runtime::spawn(async move {

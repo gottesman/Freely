@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 use tokio::fs as tokio_fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
@@ -67,8 +67,8 @@ pub struct AudioCache {
 }
 
 impl AudioCache {
-    pub fn new(app_config_dir: &Path) -> Result<Self, String> {
-        let cache_dir = app_config_dir.join(CACHE_DIR_NAME);
+    pub fn new(cache_dir_path: &Path) -> Result<Self, String> {
+        let cache_dir = cache_dir_path.to_path_buf();
         let index_file = cache_dir.join(CACHE_INDEX_FILE);
 
         // Create cache directory if it doesn't exist
@@ -444,10 +444,10 @@ fn is_valid_audio_content(bytes: &[u8]) -> bool {
 }
 
 // Initialize cache with app config directory
-pub fn init_cache(app_config_dir: &Path) -> Result<(), String> {
+pub fn init_cache(audio_cache_dir: &Path) -> Result<(), String> {
     let mut cache = CACHE.lock().unwrap();
-    *cache = Some(AudioCache::new(app_config_dir)?);
-    println!("[cache] Audio cache initialized");
+    *cache = Some(AudioCache::new(audio_cache_dir)?);
+    println!("[cache] Audio cache initialized at: {}", audio_cache_dir.display());
     Ok(())
 }
 
@@ -846,7 +846,9 @@ pub async fn download_and_cache_audio(
     file_index: Option<usize>,
     tx: mpsc::UnboundedSender<CacheDownloadResult>,
 ) {
-    println!("[cache] Incoming params -> track: '{}', source_type: '{}', hash: '{}', url: '{}', file_index: {:?}", track_id, source_type, source_hash, url, file_index);
+    // Only log truncated URL to avoid excessive log verbosity
+    println!("[cache] Starting download for {} ({}:{}) from: {}... (file_index: {:?})", 
+        track_id, source_type, source_hash, &url[..50.min(url.len())], file_index);
 
     // Resolve the provided URL to a direct download URL when possible. This avoids
     // hitting the local streaming endpoint which may return HTML/error pages.
@@ -890,11 +892,26 @@ pub async fn download_and_cache_audio(
             )
         }
     } else {
-        match resolve_audio_source(&source_type, &url).await {
-            Ok(u) => u,
-            Err(e) => {
-                println!("[cache] Failed to resolve source URL for {} ({}:{}): {}. Falling back to provided URL", track_id, source_type, source_hash, e);
-                url.clone()
+        // Skip resolution for YouTube URLs that are already direct URLs (googlevideo.com, manifest URLs)
+        // to avoid converting them to slow localhost streaming endpoints
+        if source_type == "youtube" && (url.contains("googlevideo.com") || url.contains("youtube.com/api/manifest") || url.contains("manifest.googlevideo.com")) {
+            println!("[cache] Using direct YouTube URL without resolution: {}", &url[..80.min(url.len())]);
+            url.clone()
+        } else {
+            match resolve_audio_source(&source_type, &url).await {
+                Ok(u) => {
+                    // If the resolved URL is also a direct googlevideo.com URL, use it directly
+                    if source_type == "youtube" && u.contains("googlevideo.com") {
+                        println!("[cache] Using resolved direct YouTube CDN URL: {}", &u[..80.min(u.len())]);
+                        u
+                    } else {
+                        u
+                    }
+                },
+                Err(e) => {
+                    println!("[cache] Failed to resolve source URL for {} ({}:{}): {}. Falling back to provided URL", track_id, source_type, source_hash, e);
+                    url.clone()
+                }
             }
         }
     };
@@ -909,17 +926,13 @@ pub async fn download_and_cache_audio(
         .build()
         .unwrap();
 
-    // Issue request
-    println!(
-        "[cache] Downloading for {} ({}:{}) from: {} (file_index: {:?})",
-        track_id, source_type, source_hash, resolved, file_index
-    );
+    // Issue request (logging already done above)
 
     // Check if it's a localhost request and verify server is running
     if resolved.starts_with("http://localhost:9000") {
         if let Some(app_ref) = app.as_ref() {
             match app_ref
-                .state::<crate::server::PathState>()
+                .state::<crate::paths::PathConfig>()
                 .get_server_status()
                 .await
             {
@@ -1148,9 +1161,9 @@ pub async fn download_and_cache_audio(
 
     let mut stream = resp.bytes_stream();
 
-    // Open async file for writing
+    // Open async file for writing with buffering (64KB buffer for better I/O performance)
     let mut file = match tokio_fs::File::create(&cache_path).await {
-        Ok(f) => f,
+        Ok(f) => BufWriter::with_capacity(64 * 1024, f), // 64KB buffer
         Err(e) => {
             println!(
                 "[cache] Failed to create cache file {:?}: {}",
@@ -1177,6 +1190,12 @@ pub async fn download_and_cache_audio(
     let mut ready_emitted = false;
     #[allow(unused_assignments)]
     let mut download_complete = false; // Track if download completed successfully
+    
+    // Progress event throttling variables
+    let mut last_progress_time = std::time::Instant::now();
+    let mut last_progress_bytes = 0u64;
+    const PROGRESS_TIME_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(250);
+    const PROGRESS_BYTES_THRESHOLD: u64 = 512 * 1024; // 512KB
 
     use futures_util::StreamExt;
 
@@ -1352,14 +1371,7 @@ pub async fn download_and_cache_audio(
                     return;
                 }
                 total_written = total_written.saturating_add(chunk.len() as u64);
-                // update inflight bytes
-                {
-                    let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                    if let Some(v) = inflight.get_mut(&base_name) {
-                        v.0 = total_written;
-                    }
-                }
-
+                
                 // Emit a "ready" event as soon as we have enough validated prefix bytes
                 if !ready_emitted && prefix_buf.len() >= 1024 {
                     if is_valid_audio_content(&prefix_buf) {
@@ -1382,19 +1394,38 @@ pub async fn download_and_cache_audio(
                     }
                 }
 
-                // emit progress event
-                if let Some(app_ref) = app.as_ref() {
-                    let _ = app_ref.emit(
-                        "cache:download:progress",
-                        serde_json::json!({
-                            "trackId": track_id,
-                            "sourceType": source_type,
-                            "sourceHash": source_hash,
-                            "bytes_downloaded": total_written,
-                            "total_bytes": total_size_opt,
-                            "inflight": true
-                        }),
-                    );
+                // Throttled progress and inflight updates - only update if enough time/bytes have passed
+                let now = std::time::Instant::now();
+                let time_since_last = now.duration_since(last_progress_time);
+                let bytes_since_last = total_written.saturating_sub(last_progress_bytes);
+                
+                if time_since_last >= PROGRESS_TIME_THRESHOLD || bytes_since_last >= PROGRESS_BYTES_THRESHOLD {
+                    // Update inflight bytes
+                    {
+                        let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+                        if let Some(v) = inflight.get_mut(&base_name) {
+                            v.0 = total_written;
+                        }
+                    }
+                    
+                    // emit progress event
+                    if let Some(app_ref) = app.as_ref() {
+                        let _ = app_ref.emit(
+                            "cache:download:progress",
+                            serde_json::json!({
+                                "trackId": track_id,
+                                "sourceType": source_type,
+                                "sourceHash": source_hash,
+                                "bytes_downloaded": total_written,
+                                "total_bytes": total_size_opt,
+                                "inflight": true
+                            }),
+                        );
+                    }
+                    
+                    // Update throttling state
+                    last_progress_time = now;
+                    last_progress_bytes = total_written;
                 }
             }
             Err(e) => {

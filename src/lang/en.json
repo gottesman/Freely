@@ -128,6 +128,7 @@
   "np.bio.showLess": "Show less",
   "np.bio.readMore": "Read more",
   "np.bio.unavailable": "Bio unavailable",
+  "np.seeders": "{count} seeders",
   "tests.logs": "Logs",
   "tests.emptyLog": "Empty log.",
   "tests.apis": "APIs Tests",

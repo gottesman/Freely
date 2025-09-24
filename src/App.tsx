@@ -19,6 +19,7 @@ import { PromptProvider } from './core/PromptContext';
 import { runTauriCommand } from './core/TauriCommands';
 import { DownloadsProvider } from './core/Downloads';
 import { ContextMenuProvider } from './core/ContextMenu';
+import { frontendLogger, logInfo } from './core/FrontendLogger';
 import { is } from 'cheerio/dist/commonjs/api/traversing';
 
 // Constants for performance optimization
@@ -278,11 +279,28 @@ function Main() {
   // Custom hooks
   useDebouncedSearch(searchState, setSearchState);
 
+  // Initialize frontend logging
+  useEffect(() => {
+    const initializeLogging = async () => {
+      try {
+        await frontendLogger.init();
+        await logInfo('Frontend logging initialized successfully');
+        await logInfo('Freely Player application started');
+      } catch (error) {
+        console.error('Failed to initialize frontend logging:', error);
+      }
+    };
+
+    initializeLogging();
+  }, []); // Run once on mount
+
   // Notify Tauri when app is ready
   useEffect(() => {
     if (ready) {
       // Call the Tauri command when app is ready using the helper function
       runTauriCommand('app_ready').catch(console.error);
+      // Log app ready state
+      logInfo('Application ready state achieved').catch(console.error);
     }
   }, [ready]);
 

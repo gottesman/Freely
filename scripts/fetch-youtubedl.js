@@ -16,15 +16,15 @@ if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
 const YOUTUBE_DL_CONFIG = {
   win32: {
     name: 'youtube-dl.exe',
-    url: 'https://github.com/ytdl-org/ytdl-nightly/releases/download/2025.05.05/youtube-dl.exe'
+    url: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_x86.exe'
   },
   linux: {
     name: 'youtube-dl',
-    url: 'https://github.com/ytdl-org/ytdl-nightly/releases/download/2025.05.05/youtube-dl'
+    url: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux'
   },
   darwin: {
     name: 'youtube-dl',
-    url: 'https://github.com/ytdl-org/ytdl-nightly/releases/download/2025.05.05/youtube-dl'
+    url: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
   }
 };
 

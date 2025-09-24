@@ -48,7 +48,10 @@ app.get('/api/diagnostics/webtorrent', async (req, res) => {
 });
 
 // Initialize search cache
-const dataDir = path.join(__dirname, 'data');
+// Use a safe data directory - either from environment or fallback to temp
+const dataDir = process.env.LOG_FILE_PATH ? 
+  path.dirname(process.env.LOG_FILE_PATH) : 
+  path.join(__dirname, 'data');
 initSearchCache(dataDir);
 
 // Setup routes

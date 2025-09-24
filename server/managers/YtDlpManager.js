@@ -335,7 +335,6 @@ class YtDlpManager {
 
       for (const binPath of bundledPaths) {
         const exists = fs.existsSync(binPath);
-        console.log(`[youtube-dl] Checking path: ${binPath} - ${exists ? 'EXISTS' : 'NOT FOUND'}`);
 
         if (exists) {
           // On Unix-like systems, ensure the binary is executable
@@ -362,12 +361,30 @@ class YtDlpManager {
         console.warn('[youtube-dl] Checked paths:', bundledPaths);
       }
 
+      await this.updateYtDlpBinary();
+
       this.initialized = true;
       console.log('[youtube-dl] Manager initialized successfully');
       
     } catch (e) {
       console.error('[youtube-dl] Failed to initialize:', e.message);
       this.initialized = true; // Mark as initialized even on failure to prevent retries
+    }
+  }
+
+  static async updateYtDlpBinary() {
+    if (!youtubeDlAvailable || !youtubeDlPath) {
+      throw new Error('youtube-dl not available for update');
+    }
+    console.log('[youtube-dl] Updating binary at:', youtubeDlPath);
+    try {
+      const args = ['-U'];
+      const updateResult = await executeYoutubeDl(args);
+      console.log('[youtube-dl]', updateResult);
+      return true;
+    } catch (e) {
+      console.error('[youtube-dl] Failed to update binary:', e.message);
+      return false;
     }
   }
 
@@ -511,7 +528,7 @@ class YtDlpManager {
       };
 
     } catch (e) {
-      console.error('[youtube-dl] Request failed:', e.message);
+      console.error('[youtube-dl] Request failed with args:',jsonArgs, ". Error:", e.message);
       throw new Error(`Failed to get video info: ${e.message}`);
     }
   }

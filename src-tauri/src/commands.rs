@@ -1,4 +1,4 @@
-use crate::server::PathState;
+use crate::paths::PathConfig;
 use base64::Engine;
 use serde::Deserialize;
 use tauri::State;
@@ -7,17 +7,17 @@ use tauri::State;
 pub mod db {
     use super::*;
     #[tauri::command]
-    pub async fn db_path(paths: State<'_, PathState>) -> Result<String, String> {
-        Ok(paths.db_file.to_string_lossy().to_string())
+    pub async fn db_path(config: State<'_, PathConfig>) -> Result<String, String> {
+        Ok(config.server.db_file.to_string_lossy().to_string())
     }
     #[tauri::command]
-    pub async fn db_read(paths: State<'_, PathState>) -> Result<Option<String>, String> {
-        if !paths.db_file.exists() {
+    pub async fn db_read(config: State<'_, PathConfig>) -> Result<Option<String>, String> {
+        if !config.server.db_file.exists() {
             return Ok(None);
         }
 
         let data =
-            std::fs::read(&paths.db_file).map_err(|e| format!("Failed to read database: {}", e))?;
+            std::fs::read(&config.server.db_file).map_err(|e| format!("Failed to read database: {}", e))?;
 
         Ok(Some(
             base64::engine::general_purpose::STANDARD.encode(&data),
@@ -27,10 +27,10 @@ pub mod db {
     #[tauri::command]
     pub async fn db_write(
         base64_data: String,
-        paths: State<'_, PathState>,
+        config: State<'_, PathConfig>,
     ) -> Result<bool, String> {
         // Ensure parent directory exists
-        if let Some(parent) = paths.db_file.parent() {
+        if let Some(parent) = config.server.db_file.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create database directory: {}", e))?;
         }
@@ -39,7 +39,7 @@ pub mod db {
             .decode(&base64_data)
             .map_err(|e| format!("Invalid base64 data: {}", e))?;
 
-        std::fs::write(&paths.db_file, bytes)
+        std::fs::write(&config.server.db_file, bytes)
             .map_err(|e| format!("Failed to write database: {}", e))?;
 
         Ok(true)
@@ -54,12 +54,12 @@ pub mod torrent {
     pub async fn torrent_get_files(
         id: String,
         timeout_ms: Option<u64>,
-        paths: State<'_, PathState>,
+        config: State<'_, PathConfig>,
     ) -> Result<serde_json::Value, serde_json::Value> {
         let timeout = timeout_ms.unwrap_or(20000);
 
         // Get server status to check if it's running
-        let status = paths.get_server_status().await.map_err(|e| {
+        let status = config.get_server_status().await.map_err(|e| {
             serde_json::json!({
                 "error": "server_check_failed",
                 "message": e
@@ -108,9 +108,9 @@ pub mod torrent {
 
     #[tauri::command]
     pub async fn torrent_list_scrapers(
-        paths: State<'_, PathState>,
+        config: State<'_, PathConfig>,
     ) -> Result<serde_json::Value, String> {
-        let status = paths.get_server_status().await?;
+        let status = config.get_server_status().await?;
 
         if let Some(port) = status.port {
             let url = format!("http://localhost:{}/ping", port);
@@ -143,9 +143,9 @@ pub mod search {
     #[tauri::command]
     pub async fn source_search(
         payload: SourceSearchPayload,
-        paths: State<'_, PathState>,
+        config: State<'_, PathConfig>,
     ) -> Result<serde_json::Value, String> {
-        let status = paths.get_server_status().await?;
+        let status = config.get_server_status().await?;
 
         let port = status.port.ok_or("Server not running")?;
 
@@ -198,9 +198,9 @@ pub mod youtube {
     #[tauri::command]
     pub async fn youtube_get_info(
         payload: YoutubeInfoPayload,
-        paths: State<'_, PathState>,
+        config: State<'_, PathConfig>,
     ) -> Result<serde_json::Value, String> {
-        let status = paths.get_server_status().await?;
+        let status = config.get_server_status().await?;
 
         let port = status.port.ok_or("Server not running")?;
 
@@ -322,7 +322,7 @@ pub mod external {
     pub async fn musixmatch_fetch_lyrics(
         title: String,
         artist: String,
-        paths: tauri::State<'_, crate::server::PathState>,
+        config: tauri::State<'_, crate::paths::PathConfig>,
     ) -> Result<serde_json::Value, String> {
         use sha2::{Digest, Sha256};
         use std::fs;
@@ -337,8 +337,8 @@ pub mod external {
         }
 
         // Compute cache file path under app config dir
-        let base_dir: PathBuf = paths
-            .db_file
+        let base_dir: PathBuf = config
+            .server.db_file
             .parent()
             .ok_or("Invalid app config path")?
             .join("lyrics_cache");
@@ -522,14 +522,14 @@ pub mod external {
     #[tauri::command]
     pub async fn lyrics_cache_get(
         key: String,
-        paths: tauri::State<'_, crate::server::PathState>,
+        config: tauri::State<'_, crate::paths::PathConfig>,
     ) -> Result<Option<String>, String> {
         use sha2::{Digest, Sha256};
         use std::path::PathBuf;
 
         // Compute cache directory based on app config directory (use db_file's parent)
-        let base_dir: PathBuf = paths
-            .db_file
+        let base_dir: PathBuf = config
+            .server.db_file
             .parent()
             .ok_or("Invalid app config path")?
             .join("lyrics_cache");
@@ -552,14 +552,14 @@ pub mod external {
     pub async fn lyrics_cache_set(
         key: String,
         content: String,
-        paths: tauri::State<'_, crate::server::PathState>,
+        config: tauri::State<'_, crate::paths::PathConfig>,
     ) -> Result<bool, String> {
         use sha2::{Digest, Sha256};
         use std::fs;
         use std::path::PathBuf;
 
-        let base_dir: PathBuf = paths
-            .db_file
+        let base_dir: PathBuf = config
+            .server.db_file
             .parent()
             .ok_or("Invalid app config path")?
             .join("lyrics_cache");

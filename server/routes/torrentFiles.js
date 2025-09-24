@@ -42,7 +42,7 @@ router.get('/torrent-files/:id', async (req, res) => {
   // Keep the effective ID for error responses/logging
   req._effectiveTorrentId = id;
 
-    console.log(`[TorrentFiles] Getting files for ${id} (timeout: ${timeout}, force: ${forceRefresh})`);
+    console.log(`[TorrentFiles] Getting files for (timeout: ${timeout}, force: ${forceRefresh})`);
 
     const files = await TorrentFilesManagerSingleton.getTorrentFiles(id, {
       timeout,

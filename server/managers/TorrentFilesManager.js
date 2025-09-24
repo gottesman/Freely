@@ -257,7 +257,6 @@ class TorrentFilesManager {
               torrent.files.forEach((file, index) => {
                 if (file.deselect) {
                   file.deselect();
-                  console.log(`[TorrentFilesManager] Deselected file ${index}: ${file.name}`);
                 }
               });
               

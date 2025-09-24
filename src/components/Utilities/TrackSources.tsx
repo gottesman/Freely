@@ -7,17 +7,15 @@ import { useDB } from '../../core/Database';
 import * as tc from '../../core/TorrentClient';
 import { fmtTotalMs } from './Helpers';
 
-// Constants
+// ===== CONSTANTS =====
 const DEFAULT_TIMEOUT = 10000;
 const MAX_SOURCES = 50;
-const CONCURRENCY_LIMIT = 2; // Reduced from 5 to 2 to limit ytdlp processes
+const CONCURRENCY_LIMIT = 2;
 const MIN_SEEDS = 1;
-const AUTO_FETCH_LIMIT = 5; // Only auto-fetch first 5 sources to reduce CPU load
-
-// Audio file extensions for filtering
+const AUTO_FETCH_LIMIT = 5;
+const SOURCES_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const AUDIO_EXTENSIONS = /\.(mp3|m4a|flac|wav|ogg|aac|opus|webm)$/i;
 
-// Icons for different source types
 const SOURCE_ICONS = {
   youtube: 'https://upload.wikimedia.org/wikipedia/commons/0/09/YouTube_full-color_icon_%282017%29.svg',
   torrent: 'https://free-icon-rainbow.com/i/icon_10753/icon_10753_svg_s1.svg',
@@ -25,28 +23,34 @@ const SOURCE_ICONS = {
   local: 'https://cdn-icons-png.flaticon.com/512/3767/3767084.png'
 } as const;
 
-// Helper function to get source type info
+// ===== UTILITY FUNCTIONS =====
+const generateCacheKey = (title: string, artist: string, year?: string): string =>
+  `${title || ''}::${artist || ''}::${year || ''}`;
+
+const generateSourceKey = (source: any, index: number): string =>
+  source.infoHash ?? source.magnetURI ?? source.id ?? source.url ?? String(index);
+
+const normalizeText = (text: string): string =>
+  text.toLowerCase()
+    .replace(/\s+|_+|-+/g, ' ')
+    .replace(/[\p{P}\p{S}]/gu, '')
+    .trim();
+
 const getSourceTypeInfo = (source: any) => {
-  if (source?.type === 'youtube') {
-    return { type: 'YouTube', icon: SOURCE_ICONS.youtube };
-  }
-
-  if (source?.infoHash || source?.magnetURI) {
-    return { type: 'Torrent', icon: SOURCE_ICONS.torrent };
-  }
-
-  if (source?.url?.startsWith('http')) {
-    return { type: 'HTTP', icon: SOURCE_ICONS.http };
-  }
-
-  if (source?.path || source?.file) {
-    return { type: 'Local File', icon: SOURCE_ICONS.local };
-  }
-
+  if (source?.type === 'youtube') return { type: 'YouTube', icon: SOURCE_ICONS.youtube };
+  if (source?.infoHash || source?.magnetURI) return { type: 'Torrent', icon: SOURCE_ICONS.torrent };
+  if (source?.url?.startsWith('http')) return { type: 'HTTP', icon: SOURCE_ICONS.http };
+  if (source?.path || source?.file) return { type: 'Local File', icon: SOURCE_ICONS.local };
   return { type: 'Unknown', icon: null };
 };
 
-// Module-level caches with better cleanup
+const isValidSource = (source: any): boolean => {
+  if (source?.type === 'youtube') return true;
+  const seeds = Number(source?.seeders ?? source?.seeds ?? 0);
+  return seeds >= MIN_SEEDS;
+};
+
+// ===== CACHE MANAGEMENT =====
 class CacheManager {
   private static instance: CacheManager;
   private searchCache = new Map<string, any[]>();
@@ -72,108 +76,53 @@ class CacheManager {
   getCachedFileCache() { return this.cachedFileCache; }
   getCachedFileInflight() { return this.cachedFileInflight; }
 
-  // Cleanup method for memory management
   cleanup() {
     this.searchCache.clear();
     this.searchInflight.clear();
     this.fileListCache.clear();
     this.fileListInflight.clear();
+    this.downloadInflight.clear();
+    this.cachedFileCache.clear();
+    this.cachedFileInflight.clear();
   }
 }
 
 const cacheManager = CacheManager.getInstance();
 
-// Utility functions
-const generateCacheKey = (title: string, artist: string, year?: string): string =>
-  `${title || ''}::${artist || ''}::${year || ''}`;
-
-const generateSourceKey = (source: any, index: number): string =>
-  source.infoHash ?? source.magnetURI ?? source.id ?? source.url ?? String(index);
-
-const normalizeText = (text: string): string =>
-  text.toLowerCase()
-    .replace(/\s+|_+|-+/g, ' ')
-    .replace(/[\p{P}\p{S}]/gu, '')
-    .trim();
-
-// Helper function to find the matching file index for a track in torrent files
-const findMatchingFileIndex = (files: any[], trackName: string): number | undefined => {
-  if (!files || !trackName) {
-    console.log(`[findMatchingFileIndex] Invalid input: files=${!!files}, trackName="${trackName}"`);
-    return undefined;
-  }
+// ===== FILE MATCHING UTILITIES =====
+const findMatchingFileIndices = (files: any[], trackName: string): { all: number[], audio: number[], first?: number } => {
+  if (!files?.length || !trackName) return { all: [], audio: [] };
 
   const normTrack = normalizeText(trackName);
-  console.log(`[findMatchingFileIndex] Looking for "${trackName}" (normalized: "${normTrack}") in ${files.length} files`);
-
-  // Log first few file names for debugging
-  for (let i = 0; i < Math.min(10, files.length); i++) {
-    const file = files[i];
-    const fileName = file.name || '';
-    const isAudio = AUDIO_EXTENSIONS.test(fileName);
-    console.log(`[findMatchingFileIndex] File ${i}: "${fileName}" (audio: ${isAudio})`);
-  }
-
-  // First pass: Look for exact audio file matches
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const fileName = file.name || '';
-    const normFile = normalizeText(fileName);
-
-    // Check if it's an audio file
-    if (AUDIO_EXTENSIONS.test(fileName)) {
-      // Prefer files that contain the track name and are audio files
-      if (normFile.includes(normTrack)) {
-        console.log(`[findMatchingFileIndex] Found audio match at index ${i}: "${fileName}"`);
-        return i;
-      }
-    }
-  }
-
-  console.log(`[findMatchingFileIndex] No audio file matches found, checking all files...`);
-
-  // Second pass: If no exact audio match, look for any file containing the track name
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const normFile = normalizeText(file.name || '');
-    if (normFile.includes(normTrack)) {
-      console.log(`[findMatchingFileIndex] Found any file match at index ${i}: "${file.name}"`);
-      return i;
-    }
-  }
-
-  console.log(`[findMatchingFileIndex] No matches found for "${trackName}"`);
-  return undefined;
-};
-
-// Helper to get all matching file indices for a track
-const findAllMatchingFileIndices = (files: any[], trackName: string): number[] => {
-  if (!files || !Array.isArray(files) || !trackName) {
-    return [];
-  }
-
-  const normTrack = normalizeText(trackName);
-  const matches: number[] = [];
-
-  // Check audio files first
   const audioMatches: number[] = [];
+  const allMatches: number[] = [];
+
   files.forEach((file, i) => {
     const fileName = file?.name || '';
-    const isAudio = AUDIO_EXTENSIONS.test(fileName);
     const normFile = normalizeText(fileName);
     
     if (normFile.includes(normTrack)) {
-      if (isAudio) {
+      allMatches.push(i);
+      if (AUDIO_EXTENSIONS.test(fileName)) {
         audioMatches.push(i);
-      } else {
-        matches.push(i);
       }
     }
   });
 
-  // Prefer audio matches
-  return audioMatches.length > 0 ? audioMatches : matches;
+  const preferredMatches = audioMatches.length > 0 ? audioMatches : allMatches;
+  return {
+    all: allMatches,
+    audio: audioMatches,
+    first: preferredMatches[0]
+  };
 };
+
+// Simplified versions for backwards compatibility
+const findMatchingFileIndex = (files: any[], trackName: string): number | undefined =>
+  findMatchingFileIndices(files, trackName).first;
+
+const findAllMatchingFileIndices = (files: any[], trackName: string): number[] =>
+  findMatchingFileIndices(files, trackName).all;
 
 // Helper to get the selected file index for a source, falling back to auto-selection
 const getSelectedFileIndex = (
@@ -206,7 +155,7 @@ interface SourceState {
   selectedFileIndices: Record<string, number>; // sourceKey -> real file index
   lastQuery: string | undefined;
   loadError: string | undefined;
-  isCollapsed: boolean;
+  showed: string | false; // false = all collapsed, string = only that type is shown
   downloadStates: Record<string, 'idle' | 'downloading' | 'completed' | 'error'>;
   downloadProgress: Record<string, { bytes: number; total?: number } | undefined>;
 }
@@ -221,7 +170,7 @@ const initialState: SourceState = {
   selectedFileIndices: {},
   lastQuery: undefined,
   loadError: undefined,
-  isCollapsed: true,
+  showed: false, // Start with all types collapsed
   downloadStates: {},
   downloadProgress: {}
 };
@@ -234,14 +183,11 @@ export default function TrackSources({ track, album, primaryArtist }: {
   const { t } = useI18n();
   const { getSetting, setSetting, getSource, setSource } = useDB();
   const [state, setState] = useState<SourceState>(initialState);
+  // ===== REFS AND MEMOIZED VALUES =====
   const wtClientRef = useRef<any | null>(null);
   const fetchedQueriesRef = useRef<Record<string, boolean>>({});
   const abortControllerRef = useRef<AbortController | null>(null);
   const sourcesRef = useRef<any[] | undefined>(state.sources);
-
-  // Persisted sources cache TTL (to avoid re-requesting every time)
-  // Adjust as needed; 6 hours strikes a balance between freshness and fewer lookups
-  const SOURCES_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
   // Memoized values
   const currentTrackName = useMemo(() => track?.name?.trim() || '', [track?.name]);
@@ -258,7 +204,123 @@ export default function TrackSources({ track, album, primaryArtist }: {
     [searchParams]
   );
 
-  // Cleanup effect
+  // ===== MEMOIZED COMPUTED VALUES =====
+  const validSources = useMemo(() => 
+    state.sources?.filter(isValidSource) ?? [], 
+    [state.sources]
+  );
+
+  const { youtubeSources, torrentSources } = useMemo(() => ({
+    youtubeSources: validSources.filter(s => s.type === 'youtube'),
+    torrentSources: validSources.filter(s => s.type !== 'youtube')
+  }), [validSources]);
+
+  const selectedSourceInfo = useMemo(() => {
+    if (!state.selectedSourceKey || !validSources.length) return null;
+    const selectedIndex = validSources.findIndex((source, index) =>
+      generateSourceKey(source, index) === state.selectedSourceKey
+    );
+    return selectedIndex !== -1 ? getSourceTypeInfo(validSources[selectedIndex]) : null;
+  }, [state.selectedSourceKey, validSources]);
+
+  // ===== STATE UPDATE HELPERS =====
+  const updateSourceState = useCallback((updates: Partial<SourceState>) => {
+    setState(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  const updateDownloadState = useCallback((sourceKey: string, downloadState: SourceState['downloadStates'][string], progress?: SourceState['downloadProgress'][string]) => {
+    setState(prev => ({
+      ...prev,
+      downloadStates: { ...prev.downloadStates, [sourceKey]: downloadState },
+      downloadProgress: progress !== undefined ? { ...prev.downloadProgress, [sourceKey]: progress } : prev.downloadProgress
+    }));
+  }, []);
+
+  const updateSourceError = useCallback((sourceKey: string, error?: string, loading?: boolean) => {
+    setState(prev => ({
+      ...prev,
+      errors: { ...prev.errors, [sourceKey]: error },
+      loadingKeys: loading !== undefined ? { ...prev.loadingKeys, [sourceKey]: loading } : prev.loadingKeys
+    }));
+  }, []);
+
+  // ===== ERROR HANDLING HELPERS =====
+  const handleUnavailableVideo = useCallback((sourceId: string) => {
+    console.warn(`[TrackSources] Cannot access unavailable video ${sourceId}`);
+    alert(`This video is unavailable and cannot be accessed. It may be private, deleted, or region-restricted.`);
+  }, []);
+
+  const sanitizeErrorMessage = useCallback((error: any): string => {
+    let msg = error?.message ?? String(error);
+    if (msg.startsWith('ERR: ') && msg.length > 50 && !msg.includes(' ')) {
+      console.warn('TrackSources: sanitizing long error message:', msg);
+      return 'Failed to load source data';
+    }
+    return msg;
+  }, []);
+
+  // ===== INFO PROCESSING HELPERS =====
+  const processInfoTemplate = useCallback((template: string, source: any) => {
+    // Handle special t(key,placeholder) pattern
+    if (template.startsWith('t(') && template.includes(',{') && template.endsWith(')')) {
+      const match = template.match(/^t\(([^,]+),\{([^}]+)\}\)$/);
+      if (match) {
+        const [, localeKey, placeholder] = match;
+        let value: any = '';
+        let count: number | undefined = undefined;
+        
+        switch (placeholder) {
+          case 'seeders':
+            if (typeof source.seeders === 'number' || typeof source.seeds === 'number') {
+              const seedersCount = Number(source.seeders ?? source.seeds ?? 0);
+              value = seedersCount.toLocaleString();
+              count = seedersCount;
+            } else return null;
+            break;
+          case 'time':
+            value = source.duration ? fmtTotalMs(Number(source.duration) * 1000) : '';
+            break;
+          case 'uploader':
+            value = source.uploader || '';
+            break;
+          case 'id':
+            value = source.id || '';
+            break;
+          case 'source':
+            value = source.source || '';
+            break;
+          case 'size':
+            value = source.size || '';
+            break;
+        }
+        
+        if (value) {
+          const translatedText = count !== undefined 
+            ? t(localeKey, undefined, { count })
+            : t(localeKey, undefined, { value });
+          return translatedText;
+        }
+        return null;
+      }
+    }
+    
+    // Handle regular template substitution
+    return template
+      .replace('{time}', source.duration ? fmtTotalMs(Number(source.duration) * 1000) : '')
+      .replace('{uploader}', source.uploader || '')
+      .replace('{id}', source.id || '')
+      .replace('{source}', source.source || '')
+      .replace('{size}', source.size || '')
+      .replace('{seeders}', (typeof source.seeders === 'number' || typeof source.seeds === 'number') ? 
+        Number(source.seeders ?? source.seeds ?? 0).toLocaleString() : '');
+  }, [t]);
+
+  // ===== EFFECTS =====
+  // Cleanup and ref updates
+  useEffect(() => {
+    sourcesRef.current = state.sources;
+  }, [state.sources]);
+
   useEffect(() => {
     return () => {
       if (wtClientRef.current?.destroy) {
@@ -272,11 +334,6 @@ export default function TrackSources({ track, album, primaryArtist }: {
       abortControllerRef.current?.abort();
     };
   }, []);
-
-  // Keep a ref of current sources for event handlers to avoid stale closures
-  useEffect(() => {
-    sourcesRef.current = state.sources;
-  }, [state.sources]);
 
   // Helper to find a sourceKey from event payload (best-effort)
   const findSourceKeyForEvent = useCallback((payload: any) => {
@@ -1414,32 +1471,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
     }
   }, [state.fileLists, state.loadingKeys, state.errors, handleSourceData]);
 
-  // Memoized filtered and sorted sources
-  const validSources = useMemo(() => {
-    if (!state.sources) return [];
 
-    return state.sources.filter((source: any) => {
-      const isYoutube = source.type === 'youtube';
-      if (isYoutube) return true;
-
-      const seeds = Number(source.seeders ?? source.seeds ?? 0);
-      return seeds >= MIN_SEEDS;
-    });
-  }, [state.sources]);
-
-  // Memoized selected source info
-  const selectedSourceInfo = useMemo(() => {
-    if (!state.selectedSourceKey || !state.sources) return null;
-
-    const selectedIndex = validSources.findIndex((source: any, index: number) =>
-      generateSourceKey(source, index) === state.selectedSourceKey
-    );
-
-    if (selectedIndex === -1) return null;
-
-    const selectedSource = validSources[selectedIndex];
-    return getSourceTypeInfo(selectedSource);
-  }, [state.selectedSourceKey, state.sources, validSources]);
 
   // Handle file selection for sources with multiple matching files
   const handleFileSelect = useCallback((event: any, sourceKey: string, realFileIndex: number) => {
@@ -1455,8 +1487,290 @@ export default function TrackSources({ track, album, primaryArtist }: {
     }));
   }, []);
 
+  // Function to render a complete sources section for a specific type
+  const renderSourcesList = useCallback(({ title, type, sources, icon, info, showFiles=false }: {
+    title: string;
+    type: string;
+    sources: any[];
+    icon: string;
+    info?: string[];
+    showFiles?: boolean;
+  }) => {
+    if (sources.length === 0) return null;
+
+    const isCollapsed = state.showed !== type;
+    const listClassName = `sources-list source-${type}`;
+    
+    return (
+      <div className={`source-section ${isCollapsed ? 'collapsed' : ''}`}>
+        <div className="source-section-header">
+          <h5 style={{ margin: '0 5px', display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px' }}>
+            {icon && (
+              <img
+                src={icon}
+                alt={title}
+                className="source-icon"
+                style={{ width: 16, height: 16, objectFit: 'contain' }}
+                loading="lazy"
+              />
+            )} {title} ({sources.length})
+          </h5>
+          <button 
+            className={`btn-icon btn-${isCollapsed ? 'show' : 'hide'}`} 
+            type="button" 
+            onClick={() => {
+              setState(prev => ({ 
+                ...prev, 
+                showed: prev.showed === type ? false : type
+              }));
+            }} 
+            aria-label={t('np.collapseExpand', `Collapse/Expand ${title} sources`)}
+          >
+            <span className="material-symbols-rounded">
+              {isCollapsed ? 'expand_more' : 'expand_less'}
+            </span>
+          </button>
+        </div>
+        <ul className={`${listClassName} ${isCollapsed ? 'collapsed' : 'expanded'}`}>
+        {sources.map((source: any, index: number) => {
+          const sourceKey = generateSourceKey(source, index);
+          const isSelected = state.selectedSourceKey === sourceKey;
+          const isLoading = state.loadingKeys[sourceKey];
+          const hasError = state.errors[sourceKey];
+          const files = state.fileLists[sourceKey];
+          const isVisible = state.visibleOutputs[sourceKey];
+          const downloadState = state.downloadStates[sourceKey] || 'idle';
+          const isDownloading = downloadState === 'downloading';
+          const isDownloaded = downloadState === 'completed';
+
+          return (
+            <li
+              key={sourceKey}
+              className={`source-item ${isSelected ? 'selected' : ''} ${isLoading ? 'loading' : ''} ${hasError ? 'error' : ''}`}
+              aria-pressed={isSelected}
+              aria-label={isSelected ? t('np.selectedSource', 'Selected source') : t('np.selectSource', 'Select this source')}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleSourceSelect(source, sourceKey);
+              }}
+            >
+              <div className="source-element">
+                <div className="source-actions">
+                  <button className={`ts-select ${isSelected ? 'active' : ''}`}>
+                    <span className="material-symbols-rounded">
+                      {isSelected ? 'task_alt' : 'radio_button_unchecked'}
+                    </span>
+                  </button>
+                </div>
+                <div className="source-meta">
+                  <div>
+                    <strong title={source.title || source.infoHash}>
+                      {source.title || source.infoHash}
+                    </strong>
+                  </div>
+                  <div className="source-sub">
+                    {info && info.map((infoTemplate, idx) => {
+                      // Handle special infoHash case (needs React element)
+                      if (infoTemplate === '{infoHash}') {
+                        const infoHashValue = source.infoHash || (
+                          <span style={{ opacity: .6 }}>{t('np.unknownHash', 'Unknown info hash')}</span>
+                        );
+                        return { key: idx, content: infoHashValue };
+                      }
+                      
+                      // Use optimized info processor
+                      const processed = processInfoTemplate(infoTemplate, source);
+                      return processed ? { key: idx, content: processed } : null;
+                    }).filter(Boolean).map((item, renderIdx) => (
+                      <span key={item.key}>
+                        {renderIdx > 0 ? ' · ' : ''}{item.content}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="source-actions">
+                      {!isLoading && !(files && !showFiles) && (
+                        <button
+                          type="button"
+                          className={`btn-icon ts-files ${hasError ? (hasError.includes('Error') ? 'btn-error' : 'btn-warning') : ''}`}
+                          disabled={isLoading && !files}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleFiles(source, sourceKey);
+                          }}
+                        >
+                          {files
+                            ? (isVisible ? t('np.hide', 'Hide') : t('np.filesSource', 'Show'))
+                            : (hasError || t('np.filesSource', 'Load'))
+                          }
+                        </button>
+                      )}
+                      {isLoading && !files && (
+                        <div className="loading-dots" aria-label={t('np.loading', 'Loading')}>
+                          <span></span><span></span><span></span>
+                        </div>
+                      )}
+                      <button className={`ts-download${isLoading || isDownloading || isDownloaded ? ' disabled' : ''}${ isDownloading ? ' downloading' : isDownloaded ? ' downloaded' : ''}`}
+                        aria-label={isDownloaded ? t('np.downloaded', 'Downloaded') : t('np.download', 'Download this source')}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownloadSource(source, sourceKey);
+                        }}
+                        disabled={isLoading || isDownloading || isDownloaded}
+                      >
+                        {isDownloading ? (
+                          // Circular progress with percentage in middle
+                          (() => {
+                              const prog = state.downloadProgress[sourceKey];
+                              const bytes = prog?.bytes ?? 0;
+                              let total = prog?.total ?? undefined;
+
+                              // Fallback: estimate total from source metadata or file list
+                              const estimateTotalFromSource = () => {
+                                // If explicit size provided on source (like '3.4 MB'), try to parse
+                                if (source.size && typeof source.size === 'string') {
+                                  const m = String(source.size).match(/([0-9.]+)\s*(kb|mb|gb|b)/i);
+                                  if (m) {
+                                    const n = parseFloat(m[1]);
+                                    const unit = m[2].toLowerCase();
+                                    if (!isNaN(n)) {
+                                      if (unit === 'b') return Math.round(n);
+                                      if (unit === 'kb') return Math.round(n * 1024);
+                                      if (unit === 'mb') return Math.round(n * 1024 * 1024);
+                                      if (unit === 'gb') return Math.round(n * 1024 * 1024 * 1024);
+                                    }
+                                  }
+                                }
+
+                                // If files list exists, sum lengths
+                                const fileList = state.fileLists[sourceKey];
+                                if (Array.isArray(fileList) && fileList.length > 0) {
+                                  const sum = fileList.reduce((acc, f) => acc + (Number(f.length) || 0), 0);
+                                  if (sum > 0) return sum;
+                                }
+
+                                return undefined;
+                              };
+
+                              if (total === undefined) {
+                                const est = estimateTotalFromSource();
+                                if (est && est > 0) total = est;
+                              }
+
+                              const percent = total ? Math.round((bytes / total) * 100) : undefined;
+
+                              return (
+                                <div className="ts-download-progress">
+                                  {percent !== undefined ? `${percent}%` : '...'}
+                                </div>
+                              );
+                          })()
+                        ) : (
+                          <span className="material-symbols-rounded filled">
+                            {isDownloaded ? 'download_done' : 'download'}
+                          </span>
+                        )}
+                      </button>
+                </div>
+              </div>
+
+              <div className={`source-output ${isVisible && !isLoading && !hasError && type === 'torrent' ? 'show' : ''}`}>
+                {isVisible && files && (
+                  <div className="source-files">
+                    <div style={{ fontSize: 12, opacity: .8,display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      {t('np.sourceFiles', 'Files in source')}
+                      {(() => {
+                      const allMatchingIndices = findAllMatchingFileIndices(files, currentTrackName);
+                      if (allMatchingIndices.length > 1) {
+                        const selectedFileIndex = getSelectedFileIndex(sourceKey, files, currentTrackName, state.selectedFileIndices);
+                        const selectedFile = selectedFileIndex !== undefined ? files[selectedFileIndex] : null;
+                        return (
+                          <div>
+                            {allMatchingIndices.length} matching files found.
+                            {selectedFile && ` Selected: ${selectedFile.name}`}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                    </div>
+                    <ul style={{ margin: 6, paddingLeft: 0 }}>
+                      {(() => {
+                        // Filter to show only audio files when available, otherwise show all files
+                        const audioFiles = files.filter(f => AUDIO_EXTENSIONS.test(f.name));
+                        const displayFiles = audioFiles.length > 0 ? audioFiles : files;
+                        
+                        // Find all matching files and check if user can select
+                        const allMatchingIndices = findAllMatchingFileIndices(files, currentTrackName);
+                        const canSelectFiles = allMatchingIndices.length > 1;
+                        
+                        // Get currently selected file index
+                        const selectedFileIndex = getSelectedFileIndex(sourceKey, files, currentTrackName, state.selectedFileIndices);
+                        
+                        // Create mappings between display and real indices
+                        const displayToRealIndex = new Map<number, number>();
+                        displayFiles
+                          .map((file, idx) => ({ file, realIndex: files.indexOf(file), displayIndex: idx }))
+                          .sort((a, b) => a.file.name.localeCompare(b.file.name, undefined, { numeric: true, sensitivity: 'base' }))
+                          .forEach(({ realIndex }, sortedDisplayIndex) => {
+                            displayToRealIndex.set(sortedDisplayIndex, realIndex);
+                          });
+
+                        return displayFiles
+                          .slice()
+                          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+                          .map((file, displayIndex) => {
+                            const realIndex = displayToRealIndex.get(displayIndex);
+                            const normTrack = normalizeText(currentTrackName);
+                            const normFile = normalizeText(file.name);
+                            const isCurrent = normTrack && normFile.includes(normTrack);
+                            const isSelected = realIndex === selectedFileIndex;
+                            const isClickable = canSelectFiles && isCurrent;
+
+                            return (
+                              <li
+                                key={`${realIndex}-${displayIndex}`}
+                                className={`track-file ${isCurrent ? 'current' : ''} ${isSelected ? 'selected' : ''} ${isClickable ? 'clickable' : ''}`}
+                                onClick={isClickable && realIndex !== undefined ? (e) => handleFileSelect(e,sourceKey, realIndex) : undefined}
+                                title={isClickable ? 'Click to select this file for playback/download' : undefined}
+                              >
+                                {canSelectFiles && isCurrent && (
+                                  <span className="material-symbols-rounded" style={{ fontSize: 14, marginRight: 4 }}>
+                                    {isSelected ? 'radio_button_checked' : 'radio_button_unchecked'}
+                                  </span>
+                                )}
+                                {file.name}
+                                <span style={{ opacity: .6 }}>
+                                  · {Math.round((file.length || 0) / 1024 / 1024)} MB
+                                </span>
+                              </li>
+                            );
+                          });
+                      })()}
+                    </ul>
+                  </div>
+                )}
+
+                {((isLoading && !isVisible) || hasError) && (
+                  <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 6 }}>
+                    {isLoading ? t('np.loading', 'Loading') : hasError}
+                  </div>
+                )}
+              </div>
+            </li>
+          );
+        })}
+        </ul>
+      </div>
+    );
+  }, [state.selectedSourceKey, state.loadingKeys, state.errors, state.fileLists, state.visibleOutputs, state.downloadStates, state.downloadProgress, state.selectedFileIndices, state.showed, t, handleSourceSelect, handleToggleFiles, handleDownloadSource, handleFileSelect, currentTrackName]);
+
+
+
   return (
-    <div className={`np-section np-audio-sources ${state.isCollapsed ? 'collapsed' : ''}`} aria-label={t('np.audioSources', 'Audio sources')}>
+    <div className="np-section np-audio-sources" aria-label={t('np.audioSources', 'Audio sources')}>
       <h4 className="np-sec-title">
         {t('np.audioSources', 'Audio sources')}
         <div className='np-sec-right'>
@@ -1477,13 +1791,6 @@ export default function TrackSources({ track, album, primaryArtist }: {
               t('np.audioSourcesHint', 'Choose a source to stream this track')
             )}
           </div>
-          <button className={`btn-icon btn-${state.isCollapsed ? 'show' : 'hide'}`} type="button" onClick={() => {
-            setState(prev => ({ ...prev, isCollapsed: !prev.isCollapsed }));
-          }} aria-label={t('np.collapseExpand', 'Collapse/Expand section')}>
-            <span className="material-symbols-rounded">
-              {state.isCollapsed ? 'expand_more' : 'expand_less'}
-            </span>
-          </button>
         </div>
       </h4>
 
@@ -1493,249 +1800,23 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
       {validSources.length > 0 && (
         <div className="sources-container">
-          <ul className="sources-list">
-            {validSources.map((source: any, index: number) => {
-              const sourceKey = generateSourceKey(source, index);
-              const isYoutube = source.type === 'youtube';
-              const isSelected = state.selectedSourceKey === sourceKey;
-              const isLoading = state.loadingKeys[sourceKey];
-              const hasError = state.errors[sourceKey];
-              const files = state.fileLists[sourceKey];
-              const isVisible = state.visibleOutputs[sourceKey];
-              const downloadState = state.downloadStates[sourceKey] || 'idle';
-              const isDownloading = downloadState === 'downloading';
-              const isDownloaded = downloadState === 'completed';
-
-              const iconSrc = isYoutube ? SOURCE_ICONS.youtube : SOURCE_ICONS.torrent;
-
-              return (
-                <li
-                  key={sourceKey}
-                  className={`source-item ${isSelected ? 'selected' : ''} ${isLoading ? 'loading' : ''} ${hasError ? 'error' : ''}`}
-                  aria-pressed={isSelected}
-                  aria-label={isSelected ? t('np.selectedSource', 'Selected source') : t('np.selectSource', 'Select this source')}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    handleSourceSelect(source, sourceKey);
-                  }}
-                >
-                  <div className="source-element">
-                    <div className="source-actions">
-                      <button className={`ts-select ${isSelected ? 'active' : ''}`}>
-                        <span className="material-symbols-rounded">
-                          {isSelected ? 'task_alt' : 'radio_button_unchecked'}
-                        </span>
-                      </button>
-                    </div>
-                    <div className="source-meta">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {iconSrc && (
-                          <img
-                            src={iconSrc}
-                            alt={isYoutube ? 'YouTube' : 'Torrent'}
-                            className="source-icon"
-                            style={{ width: 16, height: 16, objectFit: 'contain' }}
-                            loading="lazy"
-                          />
-                        )}
-                        <strong title={source.title || source.infoHash}>
-                          {source.title || source.infoHash}
-                        </strong>
-                      </div>
-                      <div className="source-sub">
-                        {isYoutube ? 'YouTube' : source.source}
-                        {isYoutube && (
-                          <>
-                            {source.duration && <> · {fmtTotalMs(Number(source.duration) * 1000)}</>}
-                            {source.uploader && <> · {source.uploader}</>}
-                            {source.id && <> · {source.id}</>}
-                          </>
-                        )}
-                        {source.size && <> · {source.size}</>}
-                        {!isYoutube && (typeof source.seeders === 'number' || typeof source.seeds === 'number') && (
-                          <> · {Number(source.seeders ?? source.seeds ?? 0).toLocaleString()} {t('np.seeders', 'seeds')} · {source.infoHash || <span style={{ opacity: .6 }}>{t('np.unknownHash', 'Unknown info hash')}</span>}</>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="source-actions">
-                      {(source.magnetURI || source.infoHash || isYoutube) && (
-                        <>
-                          {!isLoading && !(files && source.type !== 'torrent') && (
-                            <button
-                              type="button"
-                              className={`btn-icon ts-files ${hasError ? (hasError.includes('Error') ? 'btn-error' : 'btn-warning') : ''}`}
-                              disabled={isLoading && !files}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleFiles(source, sourceKey);
-                              }}
-                            >
-                              {files
-                                ? (isVisible ? t('np.hide', 'Hide') : t('np.filesSource', 'Show'))
-                                : (hasError || t('np.filesSource', 'Load'))
-                              }
-                            </button>
-                          )}
-                          {isLoading && !files && (
-                            <div className="loading-dots" aria-label={t('np.loading', 'Loading')}>
-                              <span></span><span></span><span></span>
-                            </div>
-                          )}
-                          <button className={`ts-download${isLoading || isDownloading || isDownloaded ? ' disabled' : ''}${ isDownloading ? ' downloading' : isDownloaded ? ' downloaded' : ''}`}
-                            aria-label={isDownloaded ? t('np.downloaded', 'Downloaded') : t('np.download', 'Download this source')}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDownloadSource(source, sourceKey);
-                            }}
-                            disabled={isLoading || isDownloading || isDownloaded}
-                          >
-                            {isDownloading ? (
-                              // Circular progress with percentage in middle
-                              (() => {
-                                  const prog = state.downloadProgress[sourceKey];
-                                  const bytes = prog?.bytes ?? 0;
-                                  let total = prog?.total ?? undefined;
-
-                                  // Fallback: estimate total from source metadata or file list
-                                  const estimateTotalFromSource = () => {
-                                    // If explicit size provided on source (like '3.4 MB'), try to parse
-                                    if (source.size && typeof source.size === 'string') {
-                                      const m = String(source.size).match(/([0-9.]+)\s*(kb|mb|gb|b)/i);
-                                      if (m) {
-                                        const n = parseFloat(m[1]);
-                                        const unit = m[2].toLowerCase();
-                                        if (!isNaN(n)) {
-                                          if (unit === 'b') return Math.round(n);
-                                          if (unit === 'kb') return Math.round(n * 1024);
-                                          if (unit === 'mb') return Math.round(n * 1024 * 1024);
-                                          if (unit === 'gb') return Math.round(n * 1024 * 1024 * 1024);
-                                        }
-                                      }
-                                    }
-
-                                    // If files list exists, sum lengths
-                                    const fileList = state.fileLists[sourceKey];
-                                    if (Array.isArray(fileList) && fileList.length > 0) {
-                                      const sum = fileList.reduce((acc, f) => acc + (Number(f.length) || 0), 0);
-                                      if (sum > 0) return sum;
-                                    }
-
-                                    return undefined;
-                                  };
-
-                                  if (total === undefined) {
-                                    const est = estimateTotalFromSource();
-                                    if (est && est > 0) total = est;
-                                  }
-
-                                  const percent = total ? Math.round((bytes / total) * 100) : undefined;
-
-                                  return (
-                                    <div className="ts-download-progress">
-                                      {percent !== undefined ? `${percent}%` : '...'}
-                                    </div>
-                                  );
-                              })()
-                            ) : (
-                              <span className="material-symbols-rounded filled">
-                                {isDownloaded ? 'download_done' : 'download'}
-                              </span>
-                            )}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className={`source-output ${isVisible && !isLoading && !hasError && source.type == 'torrent' ? 'show' : ''}`}>
-                    {isVisible && files && (
-                      <div className="source-files">
-                        <div style={{ fontSize: 12, opacity: .8,display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          {t('np.sourceFiles', 'Files in source')}
-                          {(() => {
-                          const allMatchingIndices = findAllMatchingFileIndices(files, currentTrackName);
-                          if (allMatchingIndices.length > 1) {
-                            const selectedFileIndex = getSelectedFileIndex(sourceKey, files, currentTrackName, state.selectedFileIndices);
-                            const selectedFile = selectedFileIndex !== undefined ? files[selectedFileIndex] : null;
-                            return (
-                              <div>
-                                {allMatchingIndices.length} matching files found.
-                                {selectedFile && ` Selected: ${selectedFile.name}`}
-                              </div>
-                            );
-                          }
-                          return null;
-                        })()}
-                        </div>
-                        <ul style={{ margin: 6, paddingLeft: 0 }}>
-                          {(() => {
-                            // Filter to show only audio files when available, otherwise show all files
-                            const audioFiles = files.filter(f => AUDIO_EXTENSIONS.test(f.name));
-                            const displayFiles = audioFiles.length > 0 ? audioFiles : files;
-                            
-                            // Find all matching files and check if user can select
-                            const allMatchingIndices = findAllMatchingFileIndices(files, currentTrackName);
-                            const canSelectFiles = allMatchingIndices.length > 1;
-                            
-                            // Get currently selected file index
-                            const selectedFileIndex = getSelectedFileIndex(sourceKey, files, currentTrackName, state.selectedFileIndices);
-                            
-                            // Create mappings between display and real indices
-                            const displayToRealIndex = new Map<number, number>();
-                            displayFiles
-                              .map((file, idx) => ({ file, realIndex: files.indexOf(file), displayIndex: idx }))
-                              .sort((a, b) => a.file.name.localeCompare(b.file.name, undefined, { numeric: true, sensitivity: 'base' }))
-                              .forEach(({ realIndex }, sortedDisplayIndex) => {
-                                displayToRealIndex.set(sortedDisplayIndex, realIndex);
-                              });
-
-                            return displayFiles
-                              .slice()
-                              .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
-                              .map((file, displayIndex) => {
-                                const realIndex = displayToRealIndex.get(displayIndex);
-                                const normTrack = normalizeText(currentTrackName);
-                                const normFile = normalizeText(file.name);
-                                const isCurrent = normTrack && normFile.includes(normTrack);
-                                const isSelected = realIndex === selectedFileIndex;
-                                const isClickable = canSelectFiles && isCurrent;
-
-                                return (
-                                  <li
-                                    key={`${realIndex}-${displayIndex}`}
-                                    className={`track-file ${isCurrent ? 'current' : ''} ${isSelected ? 'selected' : ''} ${isClickable ? 'clickable' : ''}`}
-                                    onClick={isClickable && realIndex !== undefined ? (e) => handleFileSelect(e,sourceKey, realIndex) : undefined}
-                                    title={isClickable ? 'Click to select this file for playback/download' : undefined}
-                                  >
-                                    {canSelectFiles && isCurrent && (
-                                      <span className="material-symbols-rounded" style={{ fontSize: 14, marginRight: 4 }}>
-                                        {isSelected ? 'radio_button_checked' : 'radio_button_unchecked'}
-                                      </span>
-                                    )}
-                                    {file.name}
-                                    <span style={{ opacity: .6 }}>
-                                      · {Math.round((file.length || 0) / 1024 / 1024)} MB
-                                    </span>
-                                  </li>
-                                );
-                              });
-                          })()}
-                        </ul>
-                      </div>
-                    )}
-
-                    {((isLoading && !isVisible) || hasError) && (
-                      <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 6 }}>
-                        {isLoading ? t('np.loading', 'Loading') : hasError}
-                      </div>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          {renderSourcesList({
+            title: "YouTube",
+            type: "youtube",
+            sources: youtubeSources,
+            icon: SOURCE_ICONS.youtube,
+            info: ["{time}","{uploader}","{id}"],
+            showFiles: false
+          })}
+          
+          {renderSourcesList({
+            title: "Torrents",
+            type: "torrent", 
+            sources: torrentSources,
+            icon: SOURCE_ICONS.torrent,
+            info: ["{source}","{size}","t(np.seeders,{seeders})","{infoHash}"],
+            showFiles: true
+          })}
         </div>
       )}
 
