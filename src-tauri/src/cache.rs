@@ -587,6 +587,14 @@ pub async fn cache_get_file(
     file_index: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     println!("[cache] cache_get_file called with: track_id='{}', source_type='{}', source_hash='{}', file_index={:?}", track_id, source_type, source_hash, file_index);
+    // If a download is currently in-flight for this key, return quickly without spamming cache-miss logs
+    let inflight_key = create_cache_filename_with_index(&track_id, &source_type, &source_hash, file_index);
+    {
+        let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+        if inflight.contains_key(&inflight_key) {
+            return Ok(serde_json::json!({ "cached_path": null, "exists": false }));
+        }
+    }
     // If we recently answered a miss for this key, return quickly to avoid repeated work
     let cache_key = AudioCache::generate_cache_key_with_index(
         &track_id,
@@ -921,6 +929,9 @@ pub async fn download_and_cache_audio(
     // - Disable automatic body decompression to avoid "error decoding response body" when servers mislabel encodings
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
+        .tcp_nodelay(true)
+        .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
+        .pool_max_idle_per_host(1)
         .gzip(false)
         .brotli(false)
         .build()
@@ -980,17 +991,28 @@ pub async fn download_and_cache_audio(
     }
 
     // Issue request with explicit identity encoding to receive raw bytes as-is
-    let resp = match client
+    // Build request with optional YouTube-specific headers to encourage fast direct CDN responses
+    let mut req = client
         .get(&resolved)
         .header("Accept-Encoding", "identity")
         .header(
             "User-Agent",
             // Stable UA to reduce chance of odd server responses
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-        )
-        .send()
-        .await
-    {
+        );
+
+    let is_youtube_cdn = resolved.contains("googlevideo.com");
+    if is_youtube_cdn {
+        // Many YouTube CDN endpoints deliver faster when using Range requests
+        // Also include Referer/Origin to match browser-like requests
+        req = req
+            .header("Range", "bytes=0-")
+            .header("Connection", "keep-alive")
+            .header("Origin", "https://www.youtube.com")
+            .header("Referer", "https://www.youtube.com/");
+    }
+
+    let resp = match req.send().await {
         Ok(r) => {
             println!("[cache] HTTP request successful, status: {}", r.status());
             r
@@ -1163,7 +1185,7 @@ pub async fn download_and_cache_audio(
 
     // Open async file for writing with buffering (64KB buffer for better I/O performance)
     let mut file = match tokio_fs::File::create(&cache_path).await {
-        Ok(f) => BufWriter::with_capacity(64 * 1024, f), // 64KB buffer
+        Ok(f) => BufWriter::with_capacity(256 * 1024, f), // 256KB buffer for better throughput
         Err(e) => {
             println!(
                 "[cache] Failed to create cache file {:?}: {}",

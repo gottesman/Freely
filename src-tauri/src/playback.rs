@@ -1203,27 +1203,36 @@ pub async fn playback_start_with_source_internal(
             }
         }
 
-        // Create stream with download callback using unified function
-        let (handle, mut download_state) = {
-            let cache_info = Some((
-                spec.track_id.as_str(),
-                spec.source_type.as_str(),
-                source_hash.as_str(),
-            ));
+        // Determine if caching should be enabled for this source
+        // For local files (file://), we do not enable caching/download callback.
+        let allow_caching = !resolved_source.url.starts_with("file://");
+
+        // Create stream with optional download callback for caching
+        let (handle, mut download_state_opt) = {
+            let cache_info = if allow_caching {
+                Some((
+                    spec.track_id.as_str(),
+                    spec.source_type.as_str(),
+                    source_hash.as_str(),
+                ))
+            } else {
+                None
+            };
             println!(
-                "[bass] Calling create_bass_stream with file_index: {:?}",
-                file_index
+                "[bass] Calling create_bass_stream with file_index: {:?} (caching: {})",
+                file_index,
+                allow_caching
             );
-            let (handle, download_state) =
-                create_bass_stream(lib, &resolved_source.url, true, cache_info, file_index)?;
-            (
-                handle,
-                download_state.expect("Download state should be present when caching is enabled"),
-            )
+            create_bass_stream(lib, &resolved_source.url, allow_caching, cache_info, file_index)?
         };
         // If we know the total file size from resolution, store it in the download state now
-        if let Some(total) = resolved_source.format.as_ref().and_then(|f| f.filesize) {
-            download_state.total_bytes = Some(total);
+        if let (true, Some(total)) = (
+            download_state_opt.is_some(),
+            resolved_source.format.as_ref().and_then(|f| f.filesize),
+        ) {
+            if let Some(ref mut ds) = download_state_opt {
+                ds.total_bytes = Some(total);
+            }
         }
 
         // Wait a brief moment for additional buffering after stream creation
@@ -1304,7 +1313,8 @@ pub async fn playback_start_with_source_internal(
             state.current_track_id = Some(spec.track_id.clone());
             state.current_source_type = Some(spec.source_type.clone());
             state.current_source_hash = Some(source_hash.clone());
-            state.download_file_state = Some(download_state);
+            // Only set download state if caching/downloading is active
+            state.download_file_state = download_state_opt;
         }
 
         // Emit status update

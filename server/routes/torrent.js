@@ -12,16 +12,52 @@ const getTorrentManager = () => TorrentManager.getInstance();
 const getTorrentFilesManager = () => TorrentFilesManager.getInstance();
 
 // Cache recent magnets by infoHash so /progress can recall without re-sending magnet param
-const recentMagnets = new Map(); // infoHash -> { magnet, ts }
+// Also track recently removed torrents ("tombstones") so polling after removal does NOT resurrect them.
+const recentMagnets = new Map(); // infoHashLower -> { magnet, ts }
+const removedMagnets = new Map(); // infoHashLower -> ts (time of removal)
+
+// How long (ms) a removal tombstone prevents auto re-add (polling) – 10 minutes default
+const REMOVAL_TOMBSTONE_MS = 10 * 60 * 1000;
+
+const markRemovedMagnet = (infoHash) => {
+  try {
+    const key = String(infoHash).toLowerCase();
+    recentMagnets.delete(key); // prevent recall
+    removedMagnets.set(key, Date.now());
+    if (process.env.DEBUG_TORRENT_REMOVAL) {
+      console.log('[TorrentRoutes] Marked removed torrent', key);
+    }
+  } catch (_) {}
+};
+
+const wasRemovedRecently = (infoHash) => {
+  try {
+    const key = String(infoHash).toLowerCase();
+    const ts = removedMagnets.get(key);
+    if (!ts) return false;
+    if ((Date.now() - ts) > REMOVAL_TOMBSTONE_MS) {
+      removedMagnets.delete(key);
+      return false;
+    }
+    return true;
+  } catch (_) { return false; }
+};
+
 const rememberMagnet = (infoHash, magnet) => {
   try {
     if (!infoHash || !magnet) return;
-    recentMagnets.set(String(infoHash).toLowerCase(), { magnet, ts: Date.now() });
+    const key = String(infoHash).toLowerCase();
+    recentMagnets.set(key, { magnet, ts: Date.now() });
+    // If it was previously removed, clear the tombstone because we are explicitly re-adding
+    removedMagnets.delete(key);
   } catch (_) {}
 };
+
 const recallMagnet = (infoHash, maxAgeMs = 60 * 60 * 1000) => {
   try {
     const key = String(infoHash).toLowerCase();
+    // Do NOT recall if it was removed recently (prevents resurrection through polling)
+    if (wasRemovedRecently(key)) return null;
     const entry = recentMagnets.get(key);
     if (!entry) return null;
     if ((Date.now() - entry.ts) > maxAgeMs) {
@@ -642,6 +678,10 @@ router.delete('/torrent/:infoHash', (req, res) => {
     const { destroyStore = false } = req.query;
 
     const removed = getTorrentManager().removeTorrent(infoHash, destroyStore === 'true');
+    if (removed) {
+      // Mark magnet as removed to prevent automatic re-add via polling recall
+      markRemovedMagnet(infoHash);
+    }
     
     if (!removed) {
       return res.status(404).json({
@@ -680,14 +720,16 @@ router.get('/progress/:infoHash/:fileIndex?', async (req, res) => {
 
     let torrent = getTorrentManager().getTorrent(infoHash);
     if (!torrent) {
-      // Optionally try to kick off add if a magnet is provided, but do not block the response
-      const magnet = magnetParam || recallMagnet(infoHash);
-      if (magnet && getTorrentManager().isReady()) {
-        try {
-          // Fire-and-forget; deduplicated in manager
-          getTorrentManager().addTorrent(magnet, { name: `torrent-${infoHash}` })
-            .catch(() => {});
-        } catch (_) {}
+      // Only attempt to re-add if it was NOT removed recently
+      if (!wasRemovedRecently(infoHash)) {
+        const magnet = magnetParam || recallMagnet(infoHash);
+        if (magnet && getTorrentManager().isReady()) {
+          try {
+            // Fire-and-forget; deduplicated in manager
+            getTorrentManager().addTorrent(magnet, { name: `torrent-${infoHash}` })
+              .catch(() => {});
+          } catch (_) {}
+        }
       }
 
       // Provide a graceful "not ready yet" status with a cached total if available

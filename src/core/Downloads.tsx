@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAlerts } from './Alerts';
 import { runTauriCommand } from './TauriCommands';
-import { createCachedSpotifyClient } from './SpotifyClient';
+import { useDB } from './Database';
 
 // Contract
 // - id: create_cache_filename(trackId, sourceType, sourceHash)
@@ -68,7 +68,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     }
   })();
 
-  const spotifyClient = useMemo(() => createCachedSpotifyClient(), []);
+  const { getTrack } = useDB();
 
   // Heuristics
   const isLikelyInfoHash = (s: any): boolean => {
@@ -98,12 +98,13 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   // Function to get track name from track ID
   const getTrackName = async (trackId: string): Promise<string> => {
     try {
-      if (trackId.startsWith('spotify:track:')) {
-        const id = trackId.replace('spotify:track:', '');
-        const track = await spotifyClient.getTrack(id);
-        return track?.name || trackId;
-      }
-      return trackId;
+      const isUri = trackId.startsWith('spotify:track:');
+      const id = isUri ? trackId.replace('spotify:track:', '') : trackId;
+      // Always try DB for a name; fall back only if missing
+  const rec = await getTrack(id);
+  const name = rec?.spotify?.name;
+      if (name && typeof name === 'string') return name;
+      return trackId; // fallback to original string if no name found
     } catch (error) {
       console.error('Error fetching track name:', error);
       return trackId;
@@ -119,13 +120,18 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       
       // Prefer existing or known trackId; avoid overwriting with probable infohashes
       const candidateTrackId = (patch.trackId as string) || '';
-      const safeTrackId = existing?.trackId
+      let safeTrackId = existing?.trackId
         || knownTrackIdsRef.current[id]
         || (isLikelyInfoHash(candidateTrackId) ? '' : candidateTrackId);
+      // Fallback: derive from composite id when not available or looks like a hash
+      if (!safeTrackId || isLikelyInfoHash(safeTrackId)) {
+        const parsed = parseTrackIdFromCompositeId(id);
+        if (parsed) safeTrackId = parsed;
+      }
       const next: DownloadItem = {
         id,
         sessionId,
-        trackId: safeTrackId,
+  trackId: safeTrackId,
         sourceType: existing?.sourceType || (patch.sourceType as string) || '',
         sourceHash: existing?.sourceHash || (patch.sourceHash as string) || '',
         status: existing?.status || 'queued',
@@ -185,141 +191,96 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           return { id, trackId, sourceType, sourceHash };
         };
 
+        // Extract bytes/total from cache or playback payloads
+        const extractBytesTotal = (payload: any, kind: 'cache' | 'playback') => {
+          if (kind === 'cache') {
+            const bytes = Number(payload.bytes_downloaded || 0) || 0;
+            const total = payload.total_bytes != null ? Number(payload.total_bytes) : undefined;
+            return { bytes, total } as { bytes: number; total?: number };
+          }
+          const data = payload?.data || payload;
+          const downloaded = data?.downloaded_bytes ?? data?.data?.downloaded_bytes;
+          const total = data?.total_bytes ?? data?.data?.total_bytes;
+          return { bytes: Number(downloaded) || 0, total: typeof total === 'number' ? Number(total) : undefined } as { bytes: number; total?: number };
+        };
+
+        // Announce completion and remove item (idempotent)
+        const scheduleRemoval = (id: string) => {
+          if (pendingRemovalRef.current.has(id)) return;
+          pendingRemovalRef.current.add(id);
+          const resolvedId = knownTrackIdsRef.current[id]
+            || itemsRef.current[id]?.trackId
+            || parseTrackIdFromCompositeId(id)
+            || 'Download';
+          (async () => {
+            const name = await getTrackName(resolvedId);
+            try { pushAlert(`${name} downloaded`, 'info'); } catch {}
+          })();
+          setTimeout(() => {
+            setItems(prev => {
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
+            pendingRemovalRef.current.delete(id);
+          }, 1000);
+        };
+
+        // Cache: ready
         const un1 = await listen('cache:download:ready', (evt: any) => {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
           if (trackId) knownTrackIdsRef.current[id] = trackId;
-          const bytes = Number(p.bytes_downloaded || 0) || 0;
-          const total = p.total_bytes != null ? Number(p.total_bytes) : undefined;
-          // If already complete, skip adding
-          if (typeof total === 'number' && total > 0 && bytes >= total) return;
-          upsert(id, {
-            trackId, sourceType, sourceHash,
-            status: 'ready', origin: 'cache',
-            tmpPath: p.tmpPath,
-            bytes,
-            total,
-          });
+          const { bytes, total } = extractBytesTotal(p, 'cache');
+          if (typeof total === 'number' && total > 0 && bytes >= total) return; // already complete
+          upsert(id, { trackId, sourceType, sourceHash, status: 'ready', origin: 'cache', tmpPath: p.tmpPath, bytes, total });
         });
         unsubs.push(un1);
 
+        // Cache: progress
         const un2 = await listen('cache:download:progress', (evt: any) => {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
           if (trackId) knownTrackIdsRef.current[id] = trackId;
-          const bytes = Number(p.bytes_downloaded || 0) || 0;
-          const total = p.total_bytes != null ? Number(p.total_bytes) : undefined;
-          // If completed (bytes >= total when total is known), announce and schedule removal
+          const { bytes, total } = extractBytesTotal(p, 'cache');
           if (typeof total === 'number' && total > 0 && bytes >= total) {
-            if (!pendingRemovalRef.current.has(id)) {
-              pendingRemovalRef.current.add(id);
-              const trackId = knownTrackIdsRef.current[id]
-                || itemsRef.current[id]?.trackId
-                || parseTrackIdFromCompositeId(id)
-                || 'Download';
-              (async () => {
-                const name = await getTrackName(trackId);
-                try { pushAlert(`${name} downloaded`, 'info'); } catch {}
-              })();
-              setTimeout(() => {
-                setItems(prev => {
-                  const next = { ...prev };
-                  delete next[id];
-                  return next;
-                });
-                pendingRemovalRef.current.delete(id);
-              }, 1000);
-            }
+            scheduleRemoval(id);
             return;
           }
-          upsert(id, {
-            trackId, sourceType, sourceHash,
-            status: 'downloading', origin: 'cache',
-            bytes,
-            total,
-          });
+          upsert(id, { trackId, sourceType, sourceHash, status: 'downloading', origin: 'cache', bytes, total });
         });
         unsubs.push(un2);
 
+        // Cache: complete
         const un3 = await listen('cache:download:complete', (evt: any) => {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId } = derive(p);
           if (trackId) knownTrackIdsRef.current[id] = trackId;
-          if (!pendingRemovalRef.current.has(id)) {
-            pendingRemovalRef.current.add(id);
-            const currentTrackId = knownTrackIdsRef.current[id]
-              || itemsRef.current[id]?.trackId
-              || trackId
-              || parseTrackIdFromCompositeId(id)
-              || 'Download';
-            (async () => {
-              const name = await getTrackName(currentTrackId);
-              try { pushAlert(`${name} downloaded`, 'info'); } catch {}
-            })();
-            setTimeout(() => {
-              setItems(prev => {
-                const next = { ...prev };
-                delete next[id];
-                return next;
-              });
-              pendingRemovalRef.current.delete(id);
-            }, 1000);
-          }
+          scheduleRemoval(id);
         });
         unsubs.push(un3);
 
-        const un4 = await listen('cache:download:error', (evt: any) => {
+        // Cache: error / paused / resumed / removed
+        const simpleStatus = async (evt: any, status: DownloadStatus | 'removed') => {
           if (!mounted) return;
           const p: any = evt.payload || evt;
           const { id, trackId, sourceType, sourceHash } = derive(p);
+          if (status === 'removed') {
+            setItems(prev => { const next = { ...prev }; delete next[id]; return next; });
+            return;
+          }
           if (trackId) knownTrackIdsRef.current[id] = trackId;
-          upsert(id, {
-            trackId, sourceType, sourceHash,
-            status: 'error', origin: 'cache',
-          });
-        });
-        unsubs.push(un4);
+          upsert(id, { trackId, sourceType, sourceHash, status: status as DownloadStatus, origin: 'cache' });
+        };
 
-        // Handle pause/resume/remove events from backend controls
-        const un5a = await listen('cache:download:paused', (evt: any) => {
-          if (!mounted) return;
-          const p: any = evt.payload || evt;
-          const { id, trackId, sourceType, sourceHash } = derive(p);
-          if (trackId) knownTrackIdsRef.current[id] = trackId;
-          // Represent paused state as 'queued' so UI shows Pause/Resume state consistently
-          upsert(id, {
-            trackId, sourceType, sourceHash,
-            status: 'queued', origin: 'cache',
-          });
-        });
-        unsubs.push(un5a);
-
-        const un5b = await listen('cache:download:resumed', (evt: any) => {
-          if (!mounted) return;
-          const p: any = evt.payload || evt;
-          const { id, trackId, sourceType, sourceHash } = derive(p);
-          if (trackId) knownTrackIdsRef.current[id] = trackId;
-          upsert(id, {
-            trackId, sourceType, sourceHash,
-            status: 'downloading', origin: 'cache',
-          });
-        });
-        unsubs.push(un5b);
-
-        const un5c = await listen('cache:download:removed', (evt: any) => {
-          if (!mounted) return;
-          const p: any = evt.payload || evt;
-          const { id } = derive(p);
-          setItems(prev => {
-            const next = { ...prev };
-            delete next[id];
-            return next;
-          });
-        });
-        unsubs.push(un5c);
+        const un4 = await listen('cache:download:error', (evt: any) => simpleStatus(evt, 'error'));
+        const un5a = await listen('cache:download:paused', (evt: any) => simpleStatus(evt, 'queued'));
+        const un5b = await listen('cache:download:resumed', (evt: any) => simpleStatus(evt, 'downloading'));
+        const un5c = await listen('cache:download:removed', (evt: any) => simpleStatus(evt, 'removed'));
+        unsubs.push(un4, un5a, un5b, un5c);
 
         // Playback ack: only track the current id, do NOT create a list item yet
         const un6 = await listen('playback:start:ack', (evt: any) => {
@@ -332,54 +293,23 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           const id = createId(trackId, sourceType, sourceHash);
           currentPlaybackIdRef.current = id;
           knownTrackIdsRef.current[id] = trackId;
-          // Avoid upserting here to prevent adding cached items that won't download
         });
         unsubs.push(un6);
 
-        // Listen for playback download progress events (replaces polling)
+        // Playback: progress
         const un7 = await listen('playback:download:progress', (evt: any) => {
           if (!mounted) return;
           const p: any = evt.payload || evt;
-          const data = p?.data || p;
-          if (!data || data.success === false) return;
-          
-          const downloaded = data.downloaded_bytes ?? data.data?.downloaded_bytes;
-          const total = data.total_bytes ?? data.data?.total_bytes;
-          if (typeof downloaded === 'number') {
-            const id = currentPlaybackIdRef.current;
-            if (id) {
-              const target = itemsRef.current[id];
-              const totalNum = typeof total === 'number' ? Number(total) : (typeof target?.total === 'number' ? target.total : undefined);
-              const bytesNum = Number(downloaded) || 0;
-              // If we know total and reached/exceeded it, alert and schedule removal
-              if (typeof totalNum === 'number' && totalNum > 0 && bytesNum >= totalNum) {
-                if (!pendingRemovalRef.current.has(id)) {
-                  pendingRemovalRef.current.add(id);
-                  const trackId = knownTrackIdsRef.current[id]
-                    || itemsRef.current[id]?.trackId
-                    || parseTrackIdFromCompositeId(id)
-                    || 'Download';
-                  (async () => {
-                    const name = await getTrackName(trackId);
-                    try { pushAlert(`${name} downloaded`, 'info'); } catch {}
-                  })();
-                  setTimeout(() => {
-                    setItems(prev => {
-                      const next = { ...prev };
-                      delete next[id];
-                      return next;
-                    });
-                    pendingRemovalRef.current.delete(id);
-                  }, 1000);
-                }
-              } else {
-                upsert(id, {
-                  status: 'downloading', origin: (target?.origin ?? 'playback'),
-                  bytes: bytesNum,
-                  total: totalNum,
-                });
-              }
-            }
+          const { bytes, total } = extractBytesTotal(p, 'playback');
+          const id = currentPlaybackIdRef.current;
+          if (!id) return;
+          const target = itemsRef.current[id];
+          const totalNum = typeof total === 'number' ? Number(total) : (typeof target?.total === 'number' ? target.total : undefined);
+          const bytesNum = Number(bytes) || 0;
+          if (typeof totalNum === 'number' && totalNum > 0 && bytesNum >= totalNum) {
+            scheduleRemoval(id);
+          } else {
+            upsert(id, { status: 'downloading', origin: (target?.origin ?? 'playback'), bytes: bytesNum, total: totalNum });
           }
         });
         unsubs.push(un7);
@@ -399,7 +329,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<DownloadsContextValue>(() => ({
     items,
-    list: Object.values(items).sort((a, b) => a.sessionId - b.sessionId), // Sort by session order (oldest first)
+  list: Object.values(items).sort((a, b) => b.sessionId - a.sessionId), // Newest first for better visibility
     get: (id: string) => items[id],
     makeId: createId,
     prune: ({ olderThanMs } = {}) => {

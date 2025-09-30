@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { env } from './AccessEnv';
 import { useDB } from './Database'
+import type { TrackMeta } from './Database';
 
 // Performance and configuration constants
 const SPOTIFY_CONSTANTS = {
@@ -47,6 +48,8 @@ const LOG_PREFIXES = {
 interface DatabaseCache {
   getApiCache: (key: string) => Promise<any | null>;
   setApiCache: (key: string, data: any) => Promise<void>;
+  // optional richer DB API for upserting track records (when available via useDB)
+  upsertTrack?: (trackId: string, patch: any) => Promise<void>;
 }
 
 interface SearchOptions {
@@ -165,10 +168,10 @@ class SpotifySearchManager {
  * Now uses the pre-warmed client from the app startup process.
  */
 export function useSpotifyClient(): SpotifyClient {
-  const { getApiCache, setApiCache, ready } = useDB();
+  const { getApiCache, setApiCache, upsertTrack, ready } = useDB();
   
   // Memoize database cache object to prevent unnecessary recreations
-  const dbCache = useMemo(() => ({ getApiCache, setApiCache }), [getApiCache, setApiCache]);
+  const dbCache = useMemo(() => ({ getApiCache, setApiCache, upsertTrack }), [getApiCache, setApiCache, upsertTrack]);
   
   // Memoize client creation logic
   const client = useMemo(() => {
@@ -342,7 +345,7 @@ export class SpotifyClient {
   async setMarket() { return this.cfg.market = await env('SPOTIFY_DEFAULT_MARKET'); }
 
   // Inject database cache functions
-  setDatabaseCache(db: { getApiCache: (key: string) => Promise<any | null>; setApiCache: (key: string, data: any) => Promise<void> }) {
+  setDatabaseCache(db: { getApiCache: (key: string) => Promise<any | null>; setApiCache: (key: string, data: any) => Promise<void>; upsertTrack?: (trackId: string, patch: any) => Promise<void> }) {
     this.db = db;
   }
 
@@ -689,7 +692,7 @@ export class SpotifyClient {
     }
     const json = await this.get('/tracks/' + id, { market: this.cfg.market });
     // Persist to DB (best-effort)
-    if (this.db && json && json.id) {
+  if (this.db && json && json.id) {
       try {
         this.db.setApiCache(this.entityCacheKey('TRACK', String(json.id)), json).catch(() => {});
         // Also persist nested album and artists when available
@@ -705,6 +708,15 @@ export class SpotifyClient {
           const linkedId = this.extractSpotifyId(String(linked)) || (typeof linked === 'string' ? linked : undefined);
           if (linkedId && String(linkedId) !== String(json.id)) {
             this.db.setApiCache(this.entityCacheKey('TRACK', String(linkedId)), json).catch(() => {});
+          }
+        } catch {}
+
+        // Upsert TrackRecord.spotify snapshot to make TrackRecord the single truth for track data
+        try {
+          const meta: TrackMeta = SpotifyMapper.toTrackMeta(SpotifyMapper.mapTrack(json), 'track');
+          // @ts-ignore - upsertTrack exists in DBContext at runtime, but is not part of DatabaseCache type
+          if ((this.db as any).upsertTrack) {
+            await (this.db as any).upsertTrack(String(json.id), { track_id: String(json.id), spotify: meta });
           }
         } catch {}
       } catch { /* ignore */ }
@@ -821,6 +833,15 @@ export class SpotifyClient {
             }
           }
         }
+
+        // Also upsert TrackRecord.spotify snapshot
+        try {
+          const meta: TrackMeta = SpotifyMapper.toTrackMeta(track, 'track');
+          // @ts-ignore
+          if ((this.db as any).upsertTrack) {
+            await (this.db as any).upsertTrack(String(track.id), { track_id: String(track.id), spotify: meta });
+          }
+        } catch {}
       } catch { /* ignore cache errors */ }
     });
 
@@ -893,9 +914,16 @@ export class SpotifyClient {
     do {
       const json = await this.get(`/albums/${id}/tracks`, { market, limit: String(limit), offset: String(offset) });
       total = json.total ?? total;
-      const tracks = (json.items || []).map((t: any) => SpotifyMapper.mapTrack(t, albumMeta));
+  const tracks = (json.items || []).map((t: any) => SpotifyMapper.mapTrack(t, albumMeta));
       items.push(...tracks);
       raws.push(json);
+      // Upsert TrackRecord.spotify for each fetched track (best effort)
+      try {
+        if (this.db && (this.db as any).upsertTrack) {
+          const upserts = tracks.map(t => (this.db as any).upsertTrack(String(t.id), { track_id: String(t.id), spotify: SpotifyMapper.toTrackMeta(t, 'album') }).catch(() => {}));
+          await Promise.all(upserts);
+        }
+      } catch {}
       offset += tracks.length;
       page++;
       if (!fetchAll) break;
@@ -922,7 +950,14 @@ export class SpotifyClient {
   /** Fetch an artist's top tracks (market required by API; uses configured market). */
   async getArtistTopTracks(id: string, market?: string): Promise<SpotifyTrack[]> {
     const json = await this.get(`/artists/${id}/top-tracks`, { market: market || this.cfg.market });
-    const items: SpotifyTrack[] = (json.tracks || []).map((t: any) => SpotifyMapper.mapTrack(t));
+  const items: SpotifyTrack[] = (json.tracks || []).map((t: any) => SpotifyMapper.mapTrack(t));
+    // best-effort upsert
+    try {
+      if (this.db && (this.db as any).upsertTrack) {
+        const upserts = items.map(t => (this.db as any).upsertTrack(String(t.id), { track_id: String(t.id), spotify: SpotifyMapper.toTrackMeta(t, 'track') }).catch(() => {}));
+        await Promise.all(upserts);
+      }
+    } catch {}
     return items;
   }
   /** Fetch artist albums by include groups (album,single,appears_on,compilation). Defaults to all. */
@@ -1216,6 +1251,34 @@ class SpotifyMapper {
       ownerName: p.owner?.display_name || p.owner?.id,
       totalTracks: p.tracks?.total
     };
+  }
+
+  // Convert SpotifyTrack to TrackMeta snapshot that we persist in TrackRecord
+  static toTrackMeta(t: SpotifyTrack, infoSource?: 'album' | 'track'): TrackMeta {
+    return {
+      id: t.id,
+      name: t.name,
+      url: t.url,
+      durationMs: t.durationMs,
+      explicit: t.explicit,
+      trackNumber: t.trackNumber,
+      discNumber: t.discNumber,
+      previewUrl: t.previewUrl,
+      popularity: t.popularity,
+      artists: (t.artists || []).map(a => ({ id: a.id, name: a.name, url: a.url })),
+      album: t.album ? {
+        id: t.album.id,
+        name: t.album.name,
+        url: t.album.url,
+        albumType: t.album.albumType,
+        releaseDate: t.album.releaseDate,
+        totalTracks: t.album.totalTracks,
+        images: t.album.images,
+        artists: (t.album.artists || []).map(a => ({ id: a.id, name: a.name, url: a.url }))
+      } : { id: '', name: '', images: [] },
+      linked_from: t.linked_from,
+      infoSource
+    } as TrackMeta;
   }
 }
 

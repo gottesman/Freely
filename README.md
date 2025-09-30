@@ -4,6 +4,8 @@
 	<img src="public/icon-192.png" alt="Freely splash screen" width="192" />
 </p>
 
+> ⚠️ Work In Progress: Freely is under active development and may break or be unstable at any time. Features can change without notice.
+
 **Freely** is an experimental music player focused on **peer-to-peer streaming** and **local-first data ownership**.
 
 The idea: stream music directly from other peers, work offline, and carry your playlists, favorites, and settings anywhere.
@@ -18,54 +20,75 @@ The idea: stream music directly from other peers, work offline, and carry your p
 
 ## Current Status
 
-✨ **Prototype** — core P2P transport, local DB, UI.
-Missing: robust chunking, polished UX, small-screen (PIP), importing and exporting configurations, plugins and a system tray icon.
+🚧 Active WIP — core P2P transport, local DB, and desktop app via Tauri v2 are in place. Daily development focuses on stability, source reliability, and UX polish.
 
-## Development
+What to expect today:
+- Search and play from multiple sources (YouTube, torrents, HTTP) with local caching
+- A desktop-first Tauri app (no standalone web build)
+- Basic playlists and playback controls using a native audio backend
 
-This repository includes an experimental Tauri target for a native build which often produces smaller executables versus an electron build (less than 10MB vs more than 90MB installer).
+Known gaps (being worked on): robust multi-source downloads, modding APIs, richsync lyrics performance, proxy settings, and better UX.
 
-Quick run (dev):
+Tip: After starting the app in dev mode, do not open the dev server URL in a browser; it’s reserved for the Tauri window.
+
+## Usage
+
+1) Launch the desktop app (see Quick start below)
+2) Search for a song/artist
+3) In results, open “Sources” and pick a source (YouTube/torrent/HTTP)
+4) Click Play to stream or Download to cache locally (downloads panel shows progress)
+5) Manage playback via the bottom player; tracks are cached for faster replays
+
+### Development
+
+Freely targets Tauri v2 for native desktop builds.
+
+Quick start (dev):
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-Build (production):
+Production build:
 
 ```bash
 npm install
 npm run tauri:build
 ```
 
-**See the [Development](#development) and [Building](#building) sections below for comprehensive instructions.**
-
 Notes:
-- Tauri requires a Rust toolchain and platform-specific dependencies. See https://tauri.app/start/prerequisites for setup.
-- The Tauri config is in `src-tauri/tauri.conf.json` and the minimal Rust entry is in `src-tauri/src/main.rs`.
+- Tauri requires a Rust toolchain and platform-specific dependencies: https://tauri.app/start/prerequisites
+- Tauri config: `src-tauri/tauri.conf.json`; Rust main: `src-tauri/src/main.rs`
 
 ### Environment Setup
 
-Create a local `.env` (copy from `.env.example`) and add your API credentials:
+Create a local `.env` by copying the provided example and then edit values:
 
 ```bash
-cp .env.example .env # then edit values
+# Windows PowerShell
+Copy-Item .env.example .env
+
+# macOS/Linux
+cp .env.example .env
 ```
 
-Only variables prefixed with `VITE_` are exposed to the renderer bundle. Keep `GENIUS_CLIENT_SECRET` private.
+Environment variables in the renderer are resolved via `src/core/AccessEnv.tsx`:
+- You can override defaults with `VITE_*` variables (e.g., `VITE_SPOTIFY_TOKEN_ENDPOINT`)
+- Tauri/Rust may also read OS-level envs (e.g., `SPOTIFY_TOKEN_ENDPOINT`) directly
+- Keep secrets out of the renderer; prefer external endpoints (see Spotify section)
+
+Key variables:
+- `SPOTIFY_TOKEN_ENDPOINT` or `VITE_SPOTIFY_TOKEN_ENDPOINT` — URL of your Cloudflare Worker for Spotify tokens
+- `CHARTS_SPOTIFY_ENDPOINT` or `VITE_CHARTS_SPOTIFY_ENDPOINT` — URL for Spotify charts proxy
+- `GENIUS_ENDPOINT` or `VITE_GENIUS_ENDPOINT` — URL for Genius proxy
 
 ### Development Commands
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start frontend dev server and build server (parallel) |
-| `npm run dev:frontend` | Start only Vite dev server |
-| `npm run build:server` | Build Node.js server bundle |
-| `npm run typecheck` | Run TypeScript type checking |
-| `npm run lint:css` | Validate CSS styles with Stylelint |
-| `npm run fetch:ytdlp` | Download/update YouTube-DL binary |
-| `npm run fetch:bass` | Download/update BASS audio libraries |
+- `npm run tauri dev` — Run the app in development (recommended)
+- `npm run typecheck` — TypeScript type checking
+- `npm run build:server` — Build the Node.js server bundle
+- `npm run fetch:bass` — Download/update BASS audio libraries
 
 ### Testing
 
@@ -148,25 +171,15 @@ npm run fetch:bass
 rustup update
 ```
 
-### Spotify API
+### Spotify API (optional)
 
-For richer, high-quality metadata (track durations, preview URLs, popularity, artist genres) the app can use the Spotify Web API (client credentials flow) purely for read-only public data.
+Freely can use Spotify for richer metadata (public data only). The recommended approach is to use an external token endpoint so your Spotify client secret never resides on your machine.
 
-Add the following to your `.env` (direct main-process credential flow):
+#### External Token Endpoint (recommended)
 
-```
-SPOTIFY_CLIENT_ID=your_client_id
-SPOTIFY_CLIENT_SECRET=your_client_secret
-SPOTIFY_DEFAULT_MARKET=US
-```
+Set up a tiny Cloudflare Worker that performs the Client Credentials exchange and returns only `{ access_token, expires_in }`. The app will call this endpoint from the Tauri/server side and never handle your secret directly.
 
-These are used only in the Electron main process to obtain an app access token; secrets are never exposed to the renderer. Search, Track, Album, Artist queries will prefer Spotify where available (future UI integration pending).
-
-#### Recommended: External Token Endpoint (Cloudflare Worker)
-
-To avoid even storing the Spotify client secret locally, deploy a tiny Cloudflare Worker that performs the Client Credentials exchange and returns only `{ access_token, expires_in }`. Then set `SPOTIFY_TOKEN_ENDPOINT` and omit `SPOTIFY_CLIENT_SECRET` from your local `.env`.
-
-Worker example (`src/index.js` in a Worker project):
+Worker example (`src/index.js` in your Worker project):
 
 ```js
 export default {
@@ -180,12 +193,12 @@ export default {
 			},
 			body: 'grant_type=client_credentials'
 		});
-		if(!r.ok){
-			return new Response(JSON.stringify({ error: 'spotify_http_'+r.status }), { status: 500, headers:{'Content-Type':'application/json'} });
+		if (!r.ok) {
+			return new Response(JSON.stringify({ error: 'spotify_http_' + r.status }), { status: 500, headers: { 'Content-Type': 'application/json' } });
 		}
 		const j = await r.json();
 		return new Response(JSON.stringify({ access_token: j.access_token, expires_in: j.expires_in }), {
-			headers: { 'Content-Type': 'application/json', 'Cache-Control':'public,max-age=240' }
+			headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public,max-age=240' }
 		});
 	}
 }
@@ -194,29 +207,46 @@ export default {
 Deploy steps:
 1. `npm install -g wrangler`
 2. `wrangler init freely-spotify-token --no-open --type=javascript`
-3. Replace generated `src/index.js` with above.
+3. Replace generated `src/index.js` with the example above
 4. Set secrets:
 	 - `wrangler secret put SPOTIFY_CLIENT_ID`
 	 - `wrangler secret put SPOTIFY_CLIENT_SECRET`
 5. `wrangler deploy`
-6. Copy the deployed URL and set in `.env`:
+6. Copy the deployed URL and set it in your local `.env` as:
 	 - `SPOTIFY_TOKEN_ENDPOINT=https://your-worker-subdomain.workers.dev`
 
-In Electron main we read `process.env.SPOTIFY_TOKEN_ENDPOINT`; if present the app fetches the token from there (no secret locally). The Tests tab has a Token Status button that logs debug info (status, body snippet) to help diagnose hosting issues (e.g. HTML challenge pages).
+App configuration:
+- The app reads `SPOTIFY_TOKEN_ENDPOINT` from environment variables and uses it to request an app access token when needed.
+- No Spotify secrets are bundled in the renderer.
+- For development, the app runs without Spotify if the endpoint is not configured.
 
-<!-- Electron desktop build instructions removed. Project now targets Tauri for native desktop builds. -->
+## Roadmap / TODO
 
-## Roadmap
+- Achieve a reliable way to download from different sources (YouTube/torrent/HTTP)
+- Implement modding capabilities (plugins/themeable UI with sandboxing)
+- Improve performance with richsync lyrics
+- Improve overall UX and error handling
+- Implement proxy settings
+- Editable/custom covers for playlists (optionally generate mosaics from track art)
+- Avoid app not working when installed in a custom disk/folder
+- Better streaming reliability (chunk hashing, multi-peer fetch)
+- More language options
+- Mobile build & WebRTC fixes
 
-1. Better streaming reliability (chunk hashing, multi-peer fetch)
-2. More language options
-3. IndexedDB option for web
-4. Plugin manager & sandboxing
-5. Mobile build & WebRTC fixes
+### Long-term (far future)
 
-## CSS / Styling Architecture
+- Multi-platform releases: Windows, Linux, and Android
+	- Windows: stable installers and auto-update flow
+	- Linux: packaging targets (AppImage/.deb/.rpm) and distro testing
+	- Android: explore Tauri Mobile or alternative runtime for a mobile build
 
-Styles have been modularized (see `STYLES.md` for detailed structure). The root `src/styles.css` aggregates partials under `src/styles/` (tokens, base reset, components, feature views, player, background, alerts, tests). Design tokens live in `variables.css` and are consumed via CSS custom properties. Run `npm run lint:css` to validate style rules with Stylelint.
+## Known limitations
+
+- WIP: Expect unstable behavior and breaking changes
+- Source reliability varies; downloads may intermittently fail
+- Richsync lyrics can be heavy; performance optimizations are ongoing
+- Proxy settings not yet implemented
+- Some environments may fail when installed to custom locations; this is being addressed
 
 ## Why?
 
@@ -226,4 +256,4 @@ I couldn’t find a music player that was P2P, plugin-friendly, customizable, an
 
 **License:** MIT
 
-*This is a prototype. Expect breaking changes and rough edges.*
+This is a prototype. Expect breaking changes and rough edges.

@@ -471,9 +471,10 @@ const useDragInteraction = (
 };
 
 export const QueueTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) => {
-  const queueIds = usePlaybackSelector(s => s.queueIds ?? []);
-  const currentIndex = usePlaybackSelector(s => s.currentIndex ?? 0);
-  const trackCache = usePlaybackSelector(s => s.trackCache ?? {});
+  // Fallbacks ensure we render correctly before the first playback snapshot arrives
+  const queueIds = usePlaybackSelector(s => s.queueIds) ?? [];
+  const currentIndex = usePlaybackSelector(s => s.currentIndex) ?? 0;
+  const trackCache = usePlaybackSelector(s => s.trackCache) ?? {};
   const { t } = useI18n();
   
   const [state, setState] = useState<QueueState>({
@@ -489,6 +490,8 @@ export const QueueTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) => {
 
   // Memoized derived values
   const queueData = useMemo(() => {
+    // Debug visibility to help diagnose empty queue list
+    try { console.debug('[QueueTab] queueIds:', queueIds.length, 'currentIndex:', currentIndex); } catch {}
     const currentId = queueIds[currentIndex];
     const restIds = queueIds.filter((_, i) => i !== currentIndex);
     return { currentId, restIds };

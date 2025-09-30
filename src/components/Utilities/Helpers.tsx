@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { SpotifyAlbum, SpotifyArtist, SpotifyTrack, useSpotifyClient } from '../../core/SpotifyClient';
+import { useDB } from '../../core/Database';
 import GeniusClient from '../../core/Genius';
 
 // Shared helpers for tabs/components (time formatting, etc.)
@@ -19,6 +20,39 @@ export function fmtTotalMs(ms?: number){
   const s = totalSec % 60;
   if (h >= 1) return `${h}h ${m}m`;
   return `${m}m ${s}s`;
+}
+
+// Parse human-readable sizes like "3.4 MB" into bytes
+export function parseByteSizeString(size?: string): number | undefined {
+  if (!size) return undefined;
+  const m = String(size).match(/([0-9.]+)\s*(kb|mb|gb|tb|b)/i);
+  if (!m) return undefined;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return undefined;
+  switch (m[2].toLowerCase()) {
+    case 'b': return Math.round(n);
+    case 'kb': return Math.round(n * 1024);
+    case 'mb': return Math.round(n * 1024 * 1024);
+    case 'gb': return Math.round(n * 1024 * 1024 * 1024);
+    case 'tb': return Math.round(n * 1024 * 1024 * 1024 * 1024);
+    default: return undefined;
+  }
+}
+
+// Format bytes into human-friendly string
+export function formatBytes(bytes?: number, decimals = 1): string {
+  if (bytes === undefined || bytes === null || isNaN(bytes as any)) return '0 B';
+  const b = Math.max(0, Number(bytes));
+  if (b < 1024) return `${b} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let val = b / 1024;
+  let unit = 0;
+  while (val >= 1024 && unit < units.length - 1) {
+    val /= 1024;
+    unit++;
+  }
+  const fixed = val.toFixed(decimals);
+  return `${Number(fixed)} ${units[unit]}`;
 }
 
 // Helper to safely resolve a hero image URL from spotify-style images array
@@ -118,14 +152,15 @@ export function filterNewTracks(trackIds: string[], existingQueue: string[] = []
 // Custom hook for creating stable API reference with both Spotify and Genius clients
 export function useStableTabAPI() {
   const spotifyClient = useSpotifyClient();
+  const { getTrack } = useDB();
   
   return useMemo(() => {
-    const geniusClient = new GeniusClient();
-    const w = window as any;
+  const geniusClient = new GeniusClient();
+  const w = window as any;
     
     return {
-      // Legacy compatibility - hasElectron check for existing HomeTab code
-      hasElectron: !!w.electron?.spotify,
+  // Explicitly no electron in this app variant
+  hasElectron: false,
       
       // Image resolution helper for legacy compatibility
       imageRes: (images?: Array<{url?: string}>, idx = 1) => {
@@ -134,12 +169,13 @@ export function useStableTabAPI() {
         return images[Math.min(idx, images.length - 1)]?.url || images[0]?.url || null;
       },
       
-      // Spotify API methods with electron fallback
+      // Spotify API methods (no electron fallback)
       getTrack: async (id: string): Promise<SpotifyTrack | undefined> => {
         try {
-          if (w.electron?.spotify?.getTrack) {
-            return await w.electron.spotify.getTrack(id);
-          }
+          // Prefer DB single source for UI; DB.getTrack will self-populate via Spotify when missing
+          const rec = await getTrack(id);
+          if (rec?.spotify) return rec.spotify as unknown as SpotifyTrack;
+          // Final fallback to direct call
           return await spotifyClient.getTrack(id);
         } catch (error) {
           console.warn('Failed to fetch track:', error);
@@ -149,9 +185,6 @@ export function useStableTabAPI() {
       
       getTracks: async (ids: string[]): Promise<SpotifyTrack[]> => {
         try {
-          if (w.electron?.spotify?.getTracks) {
-            return await w.electron.spotify.getTracks(ids);
-          }
           return await spotifyClient.getTracks(ids);
         } catch (error) {
           console.warn('Failed to fetch tracks:', error);
@@ -161,9 +194,6 @@ export function useStableTabAPI() {
       
       getPlaylist: async (id: string): Promise<any> => {
         try {
-          if (w.electron?.spotify?.getPlaylist) {
-            return await w.electron.spotify.getPlaylist(id);
-          }
           return await spotifyClient.getPlaylist(id);
         } catch (error) {
           console.warn('Failed to fetch playlist:', error);
@@ -173,9 +203,6 @@ export function useStableTabAPI() {
       
       getAlbum: async (id: string): Promise<SpotifyAlbum | undefined> => {
         try {
-          if (w.electron?.spotify?.getAlbum) {
-            return await w.electron.spotify.getAlbum(id);
-          }
           return await spotifyClient.getAlbum(id);
         } catch (error) {
           console.warn('Failed to fetch album:', error);
@@ -185,9 +212,6 @@ export function useStableTabAPI() {
       
       getArtist: async (id: string): Promise<SpotifyArtist | undefined> => {
         try {
-          if (w.electron?.spotify?.getArtist) {
-            return await w.electron.spotify.getArtist(id);
-          }
           return await spotifyClient.getArtist(id);
         } catch (error) {
           console.warn('Failed to fetch artist:', error);
@@ -197,10 +221,6 @@ export function useStableTabAPI() {
       
       getAlbumTracks: async (id: string, options?: { fetchAll?: boolean; limit?: number }): Promise<SpotifyTrack[]> => {
         try {
-          if (w.electron?.spotify?.getAlbumTracks) {
-            const res = await w.electron.spotify.getAlbumTracks(id);
-            return res?.items || [];
-          }
           const res = await spotifyClient.getAlbumTracks(id, { 
             fetchAll: false, 
             limit: 50, 
@@ -215,9 +235,6 @@ export function useStableTabAPI() {
       
       getArtistTopTracks: async (id: string, options?: any): Promise<SpotifyTrack[]> => {
         try {
-          if (w.electron?.spotify?.getArtistTopTracks) {
-            return await w.electron.spotify.getArtistTopTracks(id, options);
-          }
           return await spotifyClient.getArtistTopTracks(id, options);
         } catch (error) {
           console.warn('Failed to fetch artist top tracks:', error);
@@ -227,10 +244,6 @@ export function useStableTabAPI() {
       
       getArtistAlbums: async (id: string, options?: any): Promise<SpotifyAlbum[]> => {
         try {
-          if (w.electron?.spotify?.getArtistAlbums) {
-            const res = await w.electron.spotify.getArtistAlbums(id, options);
-            return res?.items || [];
-          }
           const res = await spotifyClient.getArtistAlbums(id, options);
           return res?.items || [];
         } catch (error) {
@@ -241,9 +254,6 @@ export function useStableTabAPI() {
       
       getRecommendations: async (options: any): Promise<any> => {
         try {
-          if (w.electron?.spotify?.getRecommendations) {
-            return await w.electron.spotify.getRecommendations(options);
-          }
           return await spotifyClient.getRecommendations(options);
         } catch (error) {
           console.warn('Failed to get recommendations:', error);
@@ -253,10 +263,6 @@ export function useStableTabAPI() {
       
       searchPlaylists: async (query: string): Promise<any[]> => {
         try {
-          if (w.electron?.spotify?.searchPlaylists) {
-            const res = await w.electron.spotify.searchPlaylists(query);
-            return res?.items || res?.playlists?.items || [];
-          }
           const res = await spotifyClient.searchPlaylists(query);
           return res?.items || [];
         } catch (error) {
@@ -265,12 +271,9 @@ export function useStableTabAPI() {
         }
       },
       
-      // Genius API methods
+      // Genius API methods (no electron fallback)
       geniusSearch: async (query: string): Promise<any> => {
         try {
-          if (w.electron?.genius?.search) {
-            return await w.electron.genius.search(query);
-          }
           return await geniusClient.search(query);
         } catch (error) {
           console.warn('Failed to search Genius:', error);
@@ -280,9 +283,6 @@ export function useStableTabAPI() {
       
       geniusGetSong: async (id: number): Promise<any> => {
         try {
-          if (w.electron?.genius?.getSong) {
-            return await w.electron.genius.getSong(id);
-          }
           return await geniusClient.getSong(id);
         } catch (error) {
           console.warn('Failed to get Genius song:', error);
@@ -292,9 +292,6 @@ export function useStableTabAPI() {
       
       geniusGetArtist: async (id: number): Promise<any> => {
         try {
-          if (w.electron?.genius?.getArtist) {
-            return await w.electron.genius.getArtist(id);
-          }
           return await geniusClient.getArtist(id);
         } catch (error) {
           console.warn('Failed to get Genius artist:', error);

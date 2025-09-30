@@ -713,6 +713,8 @@ export default function Settings(){
     
     setIsLoadingAudio(true);
     try {
+      // Persist device selection before reinitialization so backend state is consistent
+      try { await setAudioSettings({ device: deviceId }); } catch (e) { console.warn('Failed to persist device before reinit:', e); }
       await reinitializeAudio(deviceId, audioSettings.sample_rate, audioSettings.buffer_size);
       
       // Reload settings after reinitialization
@@ -736,6 +738,20 @@ export default function Settings(){
     
     setIsLoadingAudio(true);
     try {
+      // Persist all advanced settings first so reinitialization uses the latest values
+      try {
+        await setAudioSettings({
+          device: audioSettings.device,
+          sample_rate: audioSettings.sample_rate,
+          buffer_size: audioSettings.buffer_size,
+          bit_depth: audioSettings.bit_depth,
+          output_channels: audioSettings.output_channels,
+          exclusive_mode: audioSettings.exclusive_mode,
+          net_buffer: audioSettings.net_buffer,
+        });
+      } catch (persistErr) {
+        console.warn('Failed to persist advanced audio settings before reinit:', persistErr);
+      }
       await reinitializeAudio(audioSettings.device, audioSettings.sample_rate, audioSettings.buffer_size);
       pushAlert(t('settings.audio.advancedApplied'), 'info');
     } catch (error) {
@@ -1080,7 +1096,7 @@ export default function Settings(){
                     <input
                       type="checkbox"
                       checked={audioSettings.exclusive_mode}
-                      onChange={e => setAudioSettingsState({...audioSettings, exclusive_mode: e.target.checked})}
+                      onChange={e => updateAudioSetting('exclusive_mode', e.target.checked)}
                       disabled={isLoadingAudio}
                       style={{ marginRight: '8px' }}
                     />

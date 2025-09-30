@@ -14,12 +14,12 @@ module.exports = {
     filename: '[name].js',
   },
   externals: {
-    // Externalize native modules we cannot bundle; utp-native is aliased to a shim instead
-    'node-datachannel': 'commonjs node-datachannel'
+    // Externalize native modules we cannot bundle; native modules are aliased to shims instead
   },
   resolve: {
     alias: {
-      'utp-native': path.resolve(__dirname, 'server', 'utils', 'shims', 'utp-native.js')
+      'utp-native': path.resolve(__dirname, 'server', 'utils', 'shims', 'utp-native.js'),
+      'node-datachannel': path.resolve(__dirname, 'server', 'utils', 'shims', 'node-datachannel.js')
     }
   },
   module: {

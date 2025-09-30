@@ -61,6 +61,10 @@ input:not([type]),
 	background-clip: content-box;
 }
 
+:focus-visible {
+    outline: none;
+}
+
 /* Utility Classes */
 .u-flex { display: flex; }
 

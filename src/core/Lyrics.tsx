@@ -100,7 +100,7 @@ const LYRICS_CONSTANTS = {
     FOCUS_POST_BUFFER_S: 0.1,
     FOCUS_OFFSET: 20, // Allow focus to trigger slightly before line start
     ARTIFICIAL_INWARD_BUFFER_S: 0.8,
-    RAF_THROTTLE_MS: (1/30)*1000, // ~30fps for smoother wave animations
+    RAF_THROTTLE_MS: (1/60)*1000,
     SCROLL_DEBOUNCE_MS: 20,
     INTERLUDE_THRESHOLD_S: 3.0
 } as const;
@@ -523,15 +523,15 @@ export function useLyricsData(synced?: SyncedLyrics | MusixmatchRichSync) {
                     const interludeStart = currentLine.end;
                     const interludeEnd = nextLine.start;
                     const interludeDuration = interludeEnd - interludeStart;
-                    const dots = ['•', '•', '•'];
-                    const partDuration = interludeDuration / dots.length;
+                    const dots = '•••';
 
                     linesWithInterludes.push({
-                        text: '•••',
+                        text: dots,
                         start: interludeStart,
                         end: interludeEnd,
                         isArtificial: true,
-                        parts: dots.map((dot, index) => ({ text: dot, start: interludeStart + (index * partDuration) })),
+                        // Single part so the three dots are one word and move together
+                        parts: [{ text: dots, start: interludeStart }],
                     });
                 }
             }

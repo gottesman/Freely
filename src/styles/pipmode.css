@@ -1,3 +1,9 @@
+.app.pip-mode{
+    box-shadow: none;
+    -webkit-mask-image: radial-gradient(white, white);
+    mask-image: radial-gradient(#000 0 100%);
+    overflow: visible   ;
+}
 .pip-mode .titlebar{
     justify-content: flex-end;
     position: absolute;
@@ -101,6 +107,11 @@
     zoom: 1;
     transition: zoom 0.3s ease;
     filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));
+}
+.pip-mode .meta{
+    max-width: 100%;
+    position: relative;
+    overflow: hidden;
 }
 .pip-mode .bottom-player::before {
     content: "";

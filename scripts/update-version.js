@@ -53,7 +53,7 @@ const filesToUpdate = [
     replacement: `APP_USER_AGENT: "FreelyPlayer/${newVersion}"`
   },
   {
-    file: 'src/core/musicdata.tsx',
+    file: 'src/core/Genius.tsx',
     type: 'regex',
     pattern: /const DEFAULT_USER_AGENT = 'FreelyPlayer\/[^']+'/,
     replacement: `const DEFAULT_USER_AGENT = 'FreelyPlayer/${newVersion}'`

@@ -55,7 +55,7 @@ function executeYoutubeDl(args) {
       return;
     }
 
-    console.log(`[youtube-dl] Executing: ${youtubeDlPath} with args:`, args);
+    console.log(`[youtube-dl] Executing: ${youtubeDlPath} with args:`, args.join(' '));
 
     const child = spawn(youtubeDlPath, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -289,51 +289,45 @@ class YtDlpManager {
 
     try {
       const platform = process.platform;
-      const binName = platform === 'win32' ? 'youtube-dl.exe' : 'youtube-dl';
+      // Prefer yt-dlp naming even though we store it as youtube-dl for compatibility
+      const candidateNames = platform === 'win32'
+        ? ['yt-dlp.exe', 'youtube-dl.exe']
+        : ['yt-dlp', 'youtube-dl'];
       
       console.log('[youtube-dl] Initializing on platform:', platform);
-      console.log('[youtube-dl] Looking for binary:', binName);
+      console.log('[youtube-dl] Looking for binaries:', candidateNames.join(', '));
 
       // Get the base directory for binary search
       const baseDir = await getInstalledDirectory();
       let foundPath = null;
 
-      // Create list of paths to check
-      const bundledPaths = [];
-      
-      // Add base directory paths first if available
-      if (baseDir) {
-        bundledPaths.push(
-          path.join(baseDir, 'bin', binName),
-          path.join(baseDir, binName)
-        );
+      // Log minimal environment for diagnostics
+      console.log('[youtube-dl] process.execPath:', process.execPath);
+      if (process.resourcesPath) console.log('[youtube-dl] resourcesPath:', process.resourcesPath);
+      if (baseDir) console.log('[youtube-dl] baseDir:', baseDir);
+
+      // Expand bundledPaths for each candidate name
+      const expandedPaths = [];
+      for (const name of candidateNames) {
+        const pathsFor = [
+          baseDir && path.join(baseDir, 'bin', name),
+          baseDir && path.join(baseDir, name),
+          name,
+          path.join('.', name),
+          path.join('.', 'bin', name),
+          path.join('bin', name),
+          path.join('..', 'bin', name),
+          path.join(process.resourcesPath || '', 'bin', name),
+          path.join(process.resourcesPath || '', name),
+          path.join(__dirname, '..', '..', 'bin', name),
+          path.join(__dirname, '..', '..', 'src-tauri', 'bin', name),
+          path.join(path.dirname(process.execPath), 'bin', name),
+          path.join(path.dirname(process.execPath), name)
+        ].filter(Boolean);
+        expandedPaths.push(...pathsFor);
       }
 
-      // Add comprehensive fallback paths
-      bundledPaths.push(
-        // Relative paths (same as BASS approach)
-        binName,
-        path.join('.', binName),
-        path.join('.', 'bin', binName),
-        path.join('bin', binName),
-        path.join('..', 'bin', binName),
-        // Tauri production paths
-        path.join(process.resourcesPath || '', 'bin', binName),
-        path.join(process.resourcesPath || '', binName),
-        // Development/fallback paths
-        path.join(__dirname, '..', '..', 'bin', binName),
-        path.join(__dirname, '..', '..', 'src-tauri', 'bin', binName),
-        // Relative to executable
-        path.join(path.dirname(process.execPath), 'bin', binName),
-        path.join(path.dirname(process.execPath), binName)
-      );
-
-      console.log('[youtube-dl] process.resourcesPath:', process.resourcesPath);
-      console.log('[youtube-dl] process.execPath:', process.execPath);
-      console.log('[youtube-dl] __dirname:', __dirname);
-      console.log('[youtube-dl] baseDir:', baseDir);
-
-      for (const binPath of bundledPaths) {
+      for (const binPath of expandedPaths) {
         const exists = fs.existsSync(binPath);
 
         if (exists) {
@@ -361,7 +355,10 @@ class YtDlpManager {
         console.warn('[youtube-dl] Checked paths:', bundledPaths);
       }
 
-      await this.updateYtDlpBinary();
+      // Update only if we found a supported binary
+      if (youtubeDlAvailable) {
+        await this.updateYtDlpBinary();
+      }
 
       this.initialized = true;
       console.log('[youtube-dl] Manager initialized successfully');
@@ -376,14 +373,14 @@ class YtDlpManager {
     if (!youtubeDlAvailable || !youtubeDlPath) {
       throw new Error('youtube-dl not available for update');
     }
-    console.log('[youtube-dl] Updating binary at:', youtubeDlPath);
+    console.log('[youtube-dl] Checking for binary updates at:', youtubeDlPath);
     try {
       const args = ['-U'];
       const updateResult = await executeYoutubeDl(args);
       console.log('[youtube-dl]', updateResult);
       return true;
     } catch (e) {
-      console.error('[youtube-dl] Failed to update binary:', e.message);
+      console.warn('[youtube-dl] Update check failed or not supported:', e.message);
       return false;
     }
   }
@@ -528,7 +525,8 @@ class YtDlpManager {
       };
 
     } catch (e) {
-      console.error('[youtube-dl] Request failed with args:',jsonArgs, ". Error:", e.message);
+      console.error('[youtube-dl] Request failed with args:',jsonArgs.join(' '));
+      console.error('[youtube-dl] Error:', e.message, ". Error:", e.message);
       throw new Error(`Failed to get video info: ${e.message}`);
     }
   }

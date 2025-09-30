@@ -94,6 +94,94 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo clean",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"clean",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Fetch BASS libs",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"fetch:bass"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Tauri build (check)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri:build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build Rust (tauri dev quick)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri",
+				"dev"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
 		}
 	]
 }

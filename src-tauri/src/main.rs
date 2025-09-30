@@ -35,6 +35,46 @@ use tauri_plugin_dialog::DialogExt;
 // Global app handle for event emission
 static APP_HANDLE: Lazy<Mutex<Option<tauri::AppHandle>>> = Lazy::new(|| Mutex::new(None));
 
+// Open a native file dialog for selecting an audio file and return its absolute path as String
+#[tauri::command]
+async fn open_audio_file_dialog(app: tauri::AppHandle) -> Option<String> {
+    // Use the dialog plugin on the main thread; convert callback to Future via oneshot
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+
+    let mut builder = app.dialog().file();
+    // Add common audio filters
+    builder = builder.add_filter("Audio", &[
+        "m4a", "mp3", "opus", "ogg", "flac", "wav", "aac", "webm"
+    ]);
+    // Optionally prefer the user's Music or Downloads folder
+    if let Ok(music_dir) = app.path().audio_dir() {
+        builder = builder.set_directory(music_dir);
+    } else if let Ok(download_dir) = app.path().download_dir() {
+        builder = builder.set_directory(download_dir);
+    }
+
+    builder.pick_file(move |fp| {
+        let _ = tx.send(fp);
+    });
+
+    match rx.await.ok().flatten() {
+        Some(fp) => Some(fp.to_string()),
+        None => None,
+    }
+}
+
+// Simple existence check for a local path. Accepts plain path or file:// URL.
+#[tauri::command]
+async fn fs_exists(path_or_url: String) -> bool {
+    use std::path::PathBuf;
+    let p = if let Some(stripped) = path_or_url.strip_prefix("file://") {
+        PathBuf::from(stripped)
+    } else {
+        PathBuf::from(&path_or_url)
+    };
+    p.exists()
+}
+
 #[tauri::command]
 async fn save_file_dialog(app: tauri::AppHandle) -> Option<String> {
     // The plugin exposes an async callback-based API on the `app` via DialogExt
@@ -190,6 +230,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Window commands
             app_ready,
+            open_audio_file_dialog,
+            fs_exists,
             save_file_dialog,
             save_file_and_write,
             update_loading_status,

@@ -18,3 +18,18 @@
 @import "./styles/settings.css";
 @import "./styles/search-results.css";
 @import "./styles/pipmode.css";
+
+/* Themed icon using external SVG masks painted with text color */
+.icon-themed {
+    display: inline-block;
+    background-color: var(--text);
+    -webkit-mask-image: var(--icon-url);
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    -webkit-mask-size: contain;
+    mask-image: var(--icon-url);
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
+    vertical-align: middle;
+}

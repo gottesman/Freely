@@ -5,6 +5,7 @@ import { useI18n } from '../../core/i18n';
 import { useContextMenu } from '../../core/ContextMenu';
 import { runTauriCommand } from '../../core/TauriCommands';
 import { buildDownloadsContextMenuItems } from '../Utilities/ContextMenu';
+import { formatBytes } from '../Utilities/Helpers';
 import { createCachedSpotifyClient } from '../../core/SpotifyClient';
 import { useDB } from '../../core/Database';
 
@@ -132,20 +133,6 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
     return Math.round(clamped * 100);
   }, [progress]);
 
-  // Format bytes helper
-  const formatBytes = useCallback((bytes?: number) => {
-    if (!bytes || bytes <= 0) return '';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0;
-    let n = bytes;
-    while (n >= 1024 && i < units.length - 1) {
-      n /= 1024;
-      i++;
-    }
-    const precision = i <= 1 ? 0 : 1; // show 0 decimals for B/KB, 1 for MB+
-    return `${n.toFixed(precision)} ${units[i]}`;
-  }, []);
-
   // Poll torrent progress to get peers and authoritative file size
   useEffect(() => {
     let active = true;
@@ -159,20 +146,8 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
         // Only applicable for torrent sources
         if (sourceType !== 'torrent') return;
 
-        // Try to retrieve the selected file index from DB store
+        // Selected file index is not fetched from legacy DB anymore; server progress will infer defaults
         let fileIndex: number | undefined = undefined;
-        try {
-          if (trackId && getSource) {
-            const saved = await getSource(`selected:${trackId}`);
-            if (saved) {
-              const parsed = JSON.parse(saved);
-              if (parsed && parsed.type === 'torrent') {
-                const idx = parsed.fileIndex ?? parsed.meta?.fileIndex;
-                if (typeof idx === 'number' && idx >= 0) fileIndex = idx | 0;
-              }
-            }
-          }
-        } catch (_) {}
 
         // Derive infoHash from id or sourceHash portion of id
         // Our DownloadItem id is sanitized: <trackId>_<sourceType>_<sourceHash>
@@ -276,7 +251,9 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
         </span>
       </span>
       <span className="track overflow-ellipsis" style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
-        <span className='track overflow-ellipsis'>{trackData?.name || 'Loading…'}</span>
+        <span className='track overflow-ellipsis'>
+          {trackData?.name || 'Unknown track'}
+        </span>
         <small className="artist overflow-ellipsis" style={{ fontSize: '11px' }}>
           {trackData?.artists?.map(a => a.name).join(', ') || ''}
         </small>
@@ -317,11 +294,25 @@ export const DownloadsTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) 
   // Fetch missing track metadata
   const missingMetadata = useMissingTrackMetadata(trackIds);
   
-  // Combine trackCache with fetched metadata
-  const combinedTrackData = useMemo(() => ({
-    ...trackCache,
-    ...missingMetadata
-  }), [trackCache, missingMetadata]);
+  // Combine trackCache with fetched metadata and add URI/ID aliases so lookups work with either form
+  const combinedTrackData = useMemo(() => {
+    const base: Record<string, TrackData> = {
+      ...(trackCache as any),
+      ...missingMetadata
+    };
+    const withAliases: Record<string, TrackData> = { ...base };
+    for (const [key, val] of Object.entries(base)) {
+      if (!key) continue;
+      if (key.startsWith('spotify:track:')) {
+        const raw = key.slice('spotify:track:'.length);
+        if (raw && !withAliases[raw]) withAliases[raw] = val as any;
+      } else {
+        const uri = `spotify:track:${key}`;
+        if (!withAliases[uri]) withAliases[uri] = val as any;
+      }
+    }
+    return withAliases;
+  }, [trackCache, missingMetadata]);
 
   // Listen to default CustomEvents for downloads actions emitted by ContextMenu
   useEffect(() => {
@@ -403,6 +394,7 @@ export const DownloadsTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) 
           const prog = total ? Math.max(0, Math.min(1, bytes / total)) : 0;
           // Consider 'queued' as paused. 'ready' means playable but still downloading, not paused.
           const paused = d.status === 'queued';
+          const td = combinedTrackData[d.trackId];
         
           return (
             <DownloadsItem
@@ -412,7 +404,7 @@ export const DownloadsTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) 
               isDownloading={d.status === 'downloading' || d.status === 'ready'}
               progress={prog}
               isPaused={paused}
-              trackData={combinedTrackData[d.trackId] as TrackData | undefined}
+              trackData={td as TrackData | undefined}
               sourceType={d.sourceType}
               total={total}
             />

@@ -3,6 +3,55 @@ import React, { createContext, useContext, useEffect, useState, useMemo, useCall
 // Types and constants
 type AnyDB = IDBDatabase;
 
+// Structured per-track cache types
+export type TrackSource = {
+  type: 'youtube' | 'torrent' | 'http' | 'local' | string;
+  // Standardized fields (legacy fields removed)
+  url?: string | null;        // resolved URL (http stream, magnet URI, youtube stream, local path if preferred)
+  hash?: string | null;       // Stable identifier (infoHash for torrents, video id for youtube, etc.)
+  file_path?: string | null;  // Absolute file path if cached/local
+  file_size?: number | null;  // Size in bytes when known
+  file_index?: number | null; // Torrent file index when applicable
+  title?: string | null;      // Human-friendly label
+  selected?: boolean;         // Exactly one true across sources array
+};
+
+export type TrackLyrics = {
+  genius_html?: string;                       // rendered HTML from Genius
+  musixmatch_plain?: string;                  // plain lyrics text
+  musixmatch_richsync?: any;                  // normalized synced lyrics object
+  musixmatch_offset_ms?: number;              // user-applied offset for richsync
+  source?: 'genius' | 'musixmatch' | 'none';  // last used source
+};
+
+// Subset of Spotify track metadata we persist for fast UI without re-fetching
+// Persist a full snapshot shaped like SpotifyTrack for zero-copy UI usage
+export type TrackMeta = {
+  id: string;
+  name: string;
+  url: string;
+  durationMs: number;
+  explicit: boolean;
+  trackNumber: number;
+  discNumber: number;
+  previewUrl?: string;
+  popularity?: number;
+  artists: { id: string; name: string; url: string }[];
+  album: { id: string; name: string; url?: string; albumType?: string; releaseDate?: string; totalTracks?: number; images?: { url: string; width?: number; height?: number }[]; artists?: { id: string; name: string; url: string }[] };
+  linked_from?: { id: string; type: string; uri: string };
+  infoSource?: 'album' | 'track';
+};
+
+export type TrackRecord = {
+  track_id: string;
+  updated_at: number;
+  times_played: number;
+  last_played_at?: number;
+  sources?: TrackSource[]; // replaces selected_source
+  lyrics?: TrackLyrics;
+  spotify?: TrackMeta; // cached spotify metadata snapshot
+};
+
 type DBContext = {
   db: AnyDB | null;
   ready: boolean;
@@ -23,13 +72,19 @@ type DBContext = {
   getPlayCountForTrack: (trackId: string) => Promise<number>;
   getRecentPlays: (limit?: number) => Promise<Array<{ id: number; track_id: string; played_at: number }>>;
   getTopPlayed: (limit?: number) => Promise<Array<{ track_id: string; count: number }>>;
+  // Per-track structured cache
+  getTrack: (trackId: string) => Promise<TrackRecord | null>;
+  upsertTrack: (trackId: string, patch: Partial<TrackRecord>) => Promise<void>;
+  setTrackSources: (trackId: string, sources: TrackSource[]) => Promise<void>;
+  selectTrackSource: (trackId: string, source: TrackSource | null) => Promise<void>;
+  setTrackLyrics: (trackId: string, lyrics: Partial<TrackLyrics> & { updated_at?: number }) => Promise<void>;
 };
 
 // Database configuration
 const DB_CONFIG = {
   NAME: 'freely-db',
-  VERSION: 3,
-  STORES: ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'sources', 'api_cache', 'followed_artists'] as const
+  VERSION: 4,
+  STORES: ['users', 'plays', 'favorites', 'playlists', 'playlist_items', 'plugins', 'settings', 'sources', 'api_cache', 'followed_artists', 'tracks'] as const
 } as const;
 
 type StoreName = typeof DB_CONFIG.STORES[number];
@@ -69,6 +124,12 @@ const STORE_CONFIGS = {
       { name: 'followed_at', keyPath: 'followed_at' }
     ]
   },
+  tracks: {
+    keyPath: 'track_id',
+    indexes: [
+      { name: 'updated_at', keyPath: 'updated_at' }
+    ]
+  },
 } as const;
 
 // Default context with no-ops
@@ -91,7 +152,12 @@ const DEFAULT_CONTEXT: DBContext = {
   addPlay: async () => 0,
   getPlayCountForTrack: async () => 0,
   getRecentPlays: async () => [],
-  getTopPlayed: async () => []
+  getTopPlayed: async () => [],
+  getTrack: async () => null,
+  upsertTrack: async () => {},
+  setTrackSources: async () => {},
+  selectTrackSource: async () => {},
+  setTrackLyrics: async () => {},
 };
 
 const ctx = createContext<DBContext>(DEFAULT_CONTEXT);
@@ -141,69 +207,6 @@ const DatabaseSetup = {
   }
 };
 
-// Migration function to move source data from settings to sources store
-const migrateSourceData = async (db: IDBDatabase): Promise<void> => {
-  try {
-    console.log('[DB] Starting source data migration...');
-    
-    const tx = db.transaction(['settings', 'sources'], 'readwrite');
-    const settingsStore = tx.objectStore('settings');
-    const sourcesStore = tx.objectStore('sources');
-    
-    // Get all settings
-    const settingsRequest = settingsStore.getAll();
-    const settings = await new Promise<any[]>((resolve, reject) => {
-      settingsRequest.onsuccess = () => resolve(settingsRequest.result);
-      settingsRequest.onerror = () => reject(settingsRequest.error);
-    });
-    
-    let migratedCount = 0;
-    
-    for (const setting of settings) {
-      if (setting.key && typeof setting.key === 'string') {
-        let newKey: string | null = null;
-        
-        // Migrate source:selected:* to selected:*
-        if (setting.key.startsWith('source:selected:')) {
-          newKey = setting.key.replace('source:selected:', 'selected:');
-        }
-        // Migrate sources:cache:* to cache:*
-        else if (setting.key.startsWith('sources:cache:')) {
-          newKey = setting.key.replace('sources:cache:', 'cache:');
-        }
-        
-        if (newKey) {
-          // Add to sources store
-          const sourceRecord = {
-            key: newKey,
-            value: setting.value,
-            updated_at: setting.updated_at || Date.now()
-          };
-          
-          await new Promise<void>((resolve, reject) => {
-            const addRequest = sourcesStore.put(sourceRecord);
-            addRequest.onsuccess = () => resolve();
-            addRequest.onerror = () => reject(addRequest.error);
-          });
-          
-          // Remove from settings store
-          await new Promise<void>((resolve, reject) => {
-            const deleteRequest = settingsStore.delete(setting.key);
-            deleteRequest.onsuccess = () => resolve();
-            deleteRequest.onerror = () => reject(deleteRequest.error);
-          });
-          
-          migratedCount++;
-        }
-      }
-    }
-    
-    console.log(`[DB] Source data migration completed: ${migratedCount} records migrated`);
-  } catch (error) {
-    console.error('[DB] Source data migration failed:', error);
-    // Don't throw - migration failures shouldn't break the app
-  }
-};
 
 // Optimized provider
 export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: string }>(({ children }) => {
@@ -212,7 +215,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
 
   useEffect(() => {
     let mounted = true;
-    const request = indexedDB.open(DB_CONFIG.NAME, DB_CONFIG.VERSION);
+  const request = indexedDB.open(DB_CONFIG.NAME, DB_CONFIG.VERSION);
 
     request.onupgradeneeded = (event) => {
       try {
@@ -242,7 +245,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
           }
         });
 
-        // Ensure default system data
+  // Ensure default system data
         DatabaseSetup.ensureDefaultData(transaction);
         
       } catch (err) {
@@ -271,14 +274,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         setDb(dbInst);
         setReady(true);
         
-        // Run source data migration if needed
-        setTimeout(() => {
-          if (mounted) {
-            migrateSourceData(dbInst).catch(e => 
-              console.warn('Source data migration failed:', e)
-            );
-          }
-        }, 100);
+        // No migrations in the new implementation
       }
     };
 
@@ -363,6 +359,113 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
       await promisifyRequest(sources.put({ k: key, v: value }));
     }), [performTx, promisifyRequest]);
 
+  // Track-level structured cache API
+
+  const upsertTrack = useCallback((trackId: string, patch: Partial<TrackRecord>): Promise<void> =>
+    performTx('tracks', 'readwrite', async ({ tracks }) => {
+      const existing = await promisifyRequest(tracks.get(trackId)) as any;
+      // Merge spotify snapshot with upgrade-only policy (album -> track)
+      let mergedSpotify = existing?.spotify as TrackMeta | undefined;
+      const incomingSpotify = patch.spotify as TrackMeta | undefined;
+      if (incomingSpotify) {
+        const existingSource = mergedSpotify?.infoSource;
+        const incomingSource = incomingSpotify.infoSource;
+        if (existingSource === 'track' && incomingSource === 'album') {
+          // Do not downgrade; keep existing full track snapshot
+        } else {
+          // Accept incoming (track replaces album or fills when empty; album sets when none)
+          mergedSpotify = incomingSpotify;
+        }
+      }
+
+      const next: TrackRecord = {
+        track_id: trackId,
+        updated_at: Date.now(),
+        times_played: existing?.times_played || 0,
+        last_played_at: existing?.last_played_at || undefined,
+        sources: patch.sources ?? existing?.sources ?? [],
+        lyrics: existing?.lyrics || undefined,
+        spotify: mergedSpotify ?? existing?.spotify ?? undefined,
+        ...patch,
+      } as TrackRecord;
+      await promisifyRequest(tracks.put(next));
+    }), [performTx, promisifyRequest]);
+
+  // Replace entire sources array
+  const setTrackSources = useCallback((trackId: string, sources: TrackSource[]): Promise<void> =>
+    upsertTrack(trackId, { sources }), [upsertTrack]);
+
+  // Select exactly one source; add/update it and clear others' selected flags
+  const selectTrackSource = useCallback(async (trackId: string, source: TrackSource | null): Promise<void> => {
+    return performTx('tracks', 'readwrite', async ({ tracks }) => {
+      const existing = await promisifyRequest(tracks.get(trackId)) as TrackRecord | null;
+      const current = existing?.sources ? [...existing.sources] : [] as TrackSource[];
+
+  const clearSelection = () => current.map(s => ({ ...s, selected: false as boolean }));
+
+      let nextSources: TrackSource[];
+      if (source === null) {
+        nextSources = clearSelection();
+      } else {
+        const incoming: TrackSource = {
+          type: source.type,
+          url: source.url ?? null,
+          hash: source.hash ?? null,
+          file_path: source.file_path ?? null,
+          file_size: source.file_size ?? null,
+          file_index: source.file_index ?? null,
+          title: source.title ?? null,
+          selected: true,
+        };
+
+        const matchBy = (s: TrackSource) =>
+          (incoming.hash && s.hash && s.hash === incoming.hash) ||
+          (incoming.file_path && s.file_path && s.file_path === incoming.file_path) ||
+          (incoming.url && s.url && s.url === incoming.url);
+
+        const idx = current.findIndex(matchBy);
+        const cleared = clearSelection();
+        if (idx >= 0) {
+          cleared[idx] = { ...cleared[idx], ...incoming, selected: true };
+          nextSources = cleared;
+        } else {
+          nextSources = [...cleared, incoming];
+        }
+      }
+
+      const next: TrackRecord = {
+        track_id: trackId,
+        updated_at: Date.now(),
+        times_played: existing?.times_played || 0,
+        last_played_at: existing?.last_played_at || undefined,
+        sources: nextSources,
+        lyrics: existing?.lyrics,
+        spotify: existing?.spotify,
+      } as TrackRecord;
+      await promisifyRequest(tracks.put(next));
+    });
+  }, [performTx, promisifyRequest]);
+
+  const setTrackLyrics = useCallback((trackId: string, lyrics: Partial<TrackLyrics> & { updated_at?: number }): Promise<void> =>
+    performTx('tracks', 'readwrite', async ({ tracks }) => {
+      const existing = await promisifyRequest(tracks.get(trackId)) as any;
+      const mergedLyrics: TrackLyrics | undefined = (() => {
+        const current: TrackLyrics | undefined = existing?.lyrics;
+        const next = { ...(current || {}), ...lyrics } as TrackLyrics;
+        return next;
+      })();
+      const next: TrackRecord = {
+        track_id: trackId,
+        updated_at: Date.now(),
+        times_played: existing?.times_played || 0,
+        last_played_at: existing?.last_played_at || undefined,
+        sources: existing?.sources || [],
+        lyrics: mergedLyrics,
+        spotify: existing?.spotify,
+      };
+      await promisifyRequest(tracks.put(next));
+    }), [performTx, promisifyRequest]);
+
   const getApiCache = useCallback((key: string): Promise<any | null> => 
     performTx('api_cache', 'readonly', async ({ api_cache }) => {
       const res = await promisifyRequest(api_cache.get(key));
@@ -383,6 +486,48 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         cached_at: Date.now() 
       }));
     }), [performTx, promisifyRequest]);
+
+  const getTrack = useCallback(async (trackId: string): Promise<TrackRecord | null> => {
+    // First try local store
+    const local = await performTx('tracks', 'readonly', async ({ tracks }) => {
+      const res = await promisifyRequest(tracks.get(trackId));
+      return (res as any) || null;
+    });
+    // If we have a record but it's missing spotify snapshot, try to enrich it
+    if (local && !local.spotify) {
+      try {
+        const mod: any = await import('./SpotifyClient');
+        const client: any = (mod.createCachedSpotifyClient
+          ? mod.createCachedSpotifyClient({ getApiCache, setApiCache, upsertTrack })
+          : new mod.SpotifyClient());
+        await client.getTrack(String(trackId));
+        // Re-read after enrichment attempt
+        return await performTx('tracks', 'readonly', async ({ tracks }) => {
+          const res = await promisifyRequest(tracks.get(trackId));
+          return (res as any) || local;
+        });
+      } catch (e) {
+        console.warn('[DB] getTrack enrich fetch failed:', e);
+        return local; // return what we have
+      }
+    }
+    if (local) return local;
+    // If missing, best-effort fetch from Spotify and upsert via SpotifyClient
+    try {
+      const mod: any = await import('./SpotifyClient');
+      const client: any = (mod.createCachedSpotifyClient
+        ? mod.createCachedSpotifyClient({ getApiCache, setApiCache, upsertTrack })
+        : new mod.SpotifyClient());
+      await client.getTrack(String(trackId));
+    } catch (e) {
+      console.warn('[DB] getTrack fallback fetch failed:', e);
+    }
+    // Read again
+    return await performTx('tracks', 'readonly', async ({ tracks }) => {
+      const res = await promisifyRequest(tracks.get(trackId));
+      return (res as any) || null;
+    });
+  }, [performTx, promisifyRequest, getApiCache, setApiCache, upsertTrack]);
 
   const clearCache = useCallback((): Promise<void> => 
     performTx('api_cache', 'readwrite', async ({ api_cache }) => {
@@ -468,9 +613,26 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
 
   // Play history operations
   const addPlay = useCallback((trackId: string, startedAt: number = Date.now()): Promise<number> =>
-    performTx('plays', 'readwrite', async ({ plays }) => {
+    performTx(['plays', 'tracks'], 'readwrite', async ({ plays, tracks }) => {
       const record = { track_id: trackId, played_at: startedAt } as any;
       const key = await promisifyRequest(plays.add(record) as IDBRequest<number>);
+      // Update aggregate on tracks store (keeps a lightweight counter)
+      try {
+        const existing = await promisifyRequest(tracks.get(trackId)) as any;
+        const times_played = (existing?.times_played || 0) + 1;
+        const next: TrackRecord = {
+          track_id: trackId,
+          updated_at: Date.now(),
+          times_played,
+          last_played_at: startedAt,
+          sources: existing?.sources || [],
+          lyrics: existing?.lyrics,
+          spotify: existing?.spotify,
+        };
+        await promisifyRequest(tracks.put(next));
+      } catch (e) {
+        console.warn('[DB] Failed updating track aggregate play count:', e);
+      }
       return key as number;
     }), [performTx, promisifyRequest]);
 
@@ -555,6 +717,11 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
     setSetting,
     getSource,
     setSource,
+    getTrack,
+    upsertTrack,
+    setTrackSources,
+    selectTrackSource,
+    setTrackLyrics,
     getApiCache,
     setApiCache,
     clearCache,
@@ -566,7 +733,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
     getTopPlayed
   }), [
     db, ready, exportJSON, importJSON, exportDB, importDB,
-    getSetting, setSetting, getSource, setSource, getApiCache, setApiCache,
+    getSetting, setSetting, getSource, setSource, getTrack, upsertTrack, setTrackSources, selectTrackSource, setTrackLyrics, getApiCache, setApiCache,
     clearCache, clearLocalData, saveNow,
     addPlay, getPlayCountForTrack, getRecentPlays, getTopPlayed
   ]);

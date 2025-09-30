@@ -66,17 +66,23 @@
 
 .np-hero-cover {
     width: calc(var(--np-hero-height) - 32px);
-    aspect-ratio: 1;
+    height: calc(var(--np-hero-height) - 32px);
     margin: 16px;
     margin-right: 0;
     border-radius: var(--radius-md);
     box-shadow: 0 4px 20px -8px #000;
     background: var(--glass-bg) var(--hero-image) no-repeat center / cover;
     flex-shrink: 0;
+    opacity: 1;
+    transition: margin var(--dur-med), width var(--dur-med), height var(--dur-med), box-shadow var(--dur-med), opacity var(--dur-med);
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1200px) {
     .np-hero-cover {
-        display: none;
+        width: 0;
+        height: calc(var(--np-hero-height) - 32px);
+        margin: 16px 0;
+        box-shadow: none;
+        opacity: 0;
     }
 }

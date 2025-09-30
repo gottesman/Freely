@@ -33,7 +33,7 @@
 .btn-icon:active {
     transform: scale(.92);
 }
-.ts-select, .ts-download {
+.btn-borderless {
   --material-opts: 'wght' 400, 'GRAD' 0, 'opsz' 24;
   width:34px;
   height:34px;
@@ -55,15 +55,15 @@
     to { transform: rotate(360deg); }
 }
 
-.ts-download.disabled {
+.btn-borderless.disabled {
     color: var(--muted);
     opacity: 0.5;
 }
 
-.ts-select.active, .ts-download:active{
+.btn-borderless:active{
   color: var(--text)
 }
-.ts-select:hover, .ts-download:not(.downloaded,.downloading):hover{
+.btn-borderless:hover, .btn-borderless:not(.downloaded,.downloading):hover{
   color: var(--accent)
 }
 .ts-files {

@@ -142,6 +142,18 @@ router.get('/youtube', async (req, res) => {
       return res.json(metadata);
     }
 
+    // Stream mode: redirect to the direct CDN URL for maximum performance
+    if (mode === 'stream') {
+      // Provide an expected length hint if available to help clients
+      const expected = chosen.filesize || chosen.filesize_approx || info?.duration ? undefined : undefined;
+      if (!res.headersSent) {
+        res.setHeader('Cache-Control', 'no-store');
+        if (expected) res.setHeader('X-Expected-Length', String(expected));
+      }
+      // Temporary redirect so the client fetches directly from Google CDN
+      return res.redirect(302, chosen.url);
+    }
+
   } catch (err) {
     const debug = String(req.query.debug || '').trim() === '1';
     if (debug) {

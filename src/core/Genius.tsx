@@ -3,7 +3,7 @@ import { env } from './AccessEnv';
 // Performance constants
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
-const DEFAULT_USER_AGENT = 'FreelyPlayer/0.13.5';
+const DEFAULT_USER_AGENT = 'FreelyPlayer/1.3.0-test';
 
 // API configuration
 const API_ENDPOINTS = {

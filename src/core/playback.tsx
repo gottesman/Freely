@@ -1,7 +1,8 @@
-import React, { createContext, useEffect, useState, ReactNode, useMemo, useCallback, useReducer } from 'react';
+import React, { createContext, useEffect, useLayoutEffect, useState, ReactNode, useMemo, useCallback, useReducer } from 'react';
 import { runTauriCommand, isTauriUnavailable } from './TauriCommands';
-import { SpotifyTrack, createCachedSpotifyClient } from './SpotifyClient';
+import { SpotifyTrack } from './SpotifyClient';
 import { useDB } from './Database';
+import type { TrackRecord } from './Database';
 import AudioSourceProvider from './audioSource';
 import { startPlaybackWithSource } from './audioCache';
 
@@ -22,9 +23,17 @@ const CONFIG = {
 } as const;
 
 // Settings keys for persistence
+// These keys are used to persist playback state across app restarts:
+// - VOLUME/MUTED: Audio settings 
+// - CURRENT_TRACK: Currently selected track ID
+// - QUEUE: Array of track IDs in the current queue
+// - CURRENT_INDEX: Position in the queue (0-based index)
 const SETTINGS_KEYS = {
   VOLUME: 'audio_volume',
-  MUTED: 'audio_muted'
+  MUTED: 'audio_muted',
+  CURRENT_TRACK: 'playback_current_track',
+  QUEUE: 'playback_queue',
+  CURRENT_INDEX: 'playback_current_index'
 } as const;
 
 // Consolidated event constants
@@ -84,17 +93,17 @@ interface PlaybackState {
   codec?: string;
   sampleRate?: number;
   bitsPerSample?: number;
-  
-  // Volume state
+
+  // Volume
   volume: number;
   muted: boolean;
-  
-  // Playback transition state
+
+  // Transitions
   isTransitioning: boolean;
   transitioningToTrackId?: string;
   awaitingBackendConfirmation: boolean;
-  
-  // Cache and control state
+
+  // Cache status and async flags
   cacheStatus: {
     isCaching: boolean;
     cacheProgress?: number;
@@ -113,7 +122,7 @@ type PlaybackAction =
   | { type: 'SET_ERROR'; error?: string }
   | { type: 'SET_QUEUE'; queueIds: string[]; currentIndex: number }
   | { type: 'SET_CURRENT_INDEX'; index: number }
-  | { type: 'UPDATE_TRACK_CACHE'; trackId: string; track: SpotifyTrack }
+  | { type: 'UPDATE_TRACK_CACHE'; trackId: string; track?: SpotifyTrack }
   | { type: 'SET_PLAYBACK_URL'; url?: string }
   | { type: 'SET_PLAYING'; playing: boolean }
   | { type: 'SET_POSITION'; position: number }
@@ -132,16 +141,23 @@ type PlaybackAction =
 
 const initialState: PlaybackState = {
   trackId: CONFIG.QUEUE.TEST_TRACKS[0],
+  currentTrack: undefined,
   loading: false,
-  queueIds: [...CONFIG.QUEUE.TEST_TRACKS], // Create mutable copy
+  error: undefined,
+  queueIds: [...CONFIG.QUEUE.TEST_TRACKS],
   currentIndex: CONFIG.QUEUE.DEFAULT_INDEX,
   trackCache: {},
+  playbackUrl: undefined,
   playing: false,
   duration: 0,
   position: 0,
+  codec: undefined,
+  sampleRate: undefined,
+  bitsPerSample: undefined,
   volume: CONFIG.VOLUME.DEFAULT,
   muted: false,
   isTransitioning: false,
+  transitioningToTrackId: undefined,
   awaitingBackendConfirmation: false,
   cacheStatus: { isCaching: false },
   fetchInProgress: null,
@@ -362,17 +378,19 @@ export function usePlaybackTransition() {
 
 export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(playbackReducer, initialState);
-  const { getApiCache, setApiCache, addPlay, ready, getSetting, setSetting, getSource } = useDB();
+  const { addPlay, ready, getSetting, setSetting, getSource, getTrack } = useDB();
   
   // Refs for performance optimization
   const seekDebounceRef = React.useRef<any>(null);
   const lastSeekSentRef = React.useRef<number>(0);
   const pendingSeekRef = React.useRef<number | null>(null);
 
-  // Memoize Spotify client
-  const spotifyClient = useMemo(() => {
-    return ready ? createCachedSpotifyClient({ getApiCache, setApiCache }) : null;
-  }, [ready, getApiCache, setApiCache]);
+  // Build a Spotify-like shape from TrackRecord snapshot for UI compatibility
+  const buildTrackFromRecord = useCallback((rec: TrackRecord | null): SpotifyTrack | undefined => {
+    if (!rec || !rec.spotify) return undefined;
+    // The DB snapshot already matches SpotifyTrack shape; ensure id matches record id
+    return { ...(rec.spotify as any), id: rec.track_id } as SpotifyTrack;
+  }, []);
 
   // Optimized track fetching with consolidated state management
   const fetchTrack = useCallback(async (id: string) => {
@@ -390,59 +408,55 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SET_ERROR', error: undefined });
     
     try {
-      const w: any = typeof window !== 'undefined' ? window : {};
-      let track: SpotifyTrack;
-      
-      if (w.electron?.spotify?.getTrack) {
-        const resp = await w.electron.spotify.getTrack(id);
-        if (resp && (resp as any).error) throw new Error((resp as any).error);
-        track = resp as any;
-      } else if (spotifyClient) {
-        track = await spotifyClient.getTrack(id);
-      } else {
-        throw new Error('No Spotify client available');
-      }
-
-      // Load and attach selected source from database if available
-      if (ready && getSource) {
+      let rec = await getTrack(id);
+      if (!rec) throw new Error('Track not found');
+      let track = buildTrackFromRecord(rec);
+      if (!track) {
+        // Best-effort: fetch directly from Spotify and let DB upsert
         try {
-          const savedSource = await getSource(`selected:${id}`);
-          console.log('[playback] Loaded source for track:', id, savedSource ? 'found' : 'not found');
-          
-          if (savedSource && savedSource.trim()) {
-            const parsedSource = JSON.parse(savedSource);
-            
-            // Determine the correct value based on source type
-            let sourceValue: string = '';
-            if (parsedSource.type === 'youtube') {
-              sourceValue = parsedSource.id || parsedSource.value || '';
-            } else if (parsedSource.type === 'torrent') {
-              sourceValue = parsedSource.infoHash || parsedSource.magnetURI || '';
-            } else if (parsedSource.type === 'http') {
-              sourceValue = parsedSource.playUrl || parsedSource.url || '';
-            } else if (parsedSource.type === 'local') {
-              sourceValue = parsedSource.playUrl || parsedSource.path || '';
-            } else {
-              sourceValue = parsedSource.playUrl || parsedSource.value || '';
-            }
+          const mod: any = await import('./SpotifyClient');
+          const client: any = (mod.createCachedSpotifyClient
+            ? mod.createCachedSpotifyClient()
+            : new mod.SpotifyClient());
+          const fetched = await client.getTrack(id);
+          track = fetched as SpotifyTrack;
+          // attempt to re-read DB for consistency
+          try { rec = await getTrack(id); } catch {}
+        } catch (e) {
+          console.warn('[playback] direct Spotify fetch after missing snapshot failed:', e);
+        }
+      }
+      if (!track) throw new Error('Track metadata unavailable');
+
+      // Load and attach selected source from database (new tracks store)
+      if (ready) {
+        try {
+          const selected = (rec?.sources || []).find((s: any) => s?.selected);
+          if (selected) {
+            let sourceType = selected.type;
+            let sourceValue = '' as string;
+            if (sourceType === 'youtube') sourceValue = selected.hash || '';
+            else if (sourceType === 'torrent') sourceValue = selected.hash || selected.url || '';
+            else if (sourceType === 'http') sourceValue = selected.url || '';
+            else if (sourceType === 'local') sourceValue = selected.file_path || selected.url || '';
+            else sourceValue = selected.url || selected.hash || '';
 
             if (sourceValue) {
-              // Attach source metadata to track
               (track as any).source = {
-                type: parsedSource.type,
+                type: sourceType,
                 value: sourceValue,
                 meta: {
-                  id: parsedSource.id,
-                  infoHash: parsedSource.infoHash,
-                  magnetURI: parsedSource.magnetURI,
-                  playUrl: parsedSource.playUrl,
-                  title: parsedSource.title,
-                  fileIndex: parsedSource.fileIndex
+                  playUrl: selected.url,
+                  title: selected.title,
+                  fileIndex: selected.file_index,
+                  filePath: selected.file_path,
+                  fileSize: selected.file_size,
+                  infoHash: sourceType === 'torrent' ? selected.hash : undefined,
+                  id: sourceType === 'youtube' ? selected.hash : undefined,
                 }
               };
               console.log('[playback] Attached source to track:', id, (track as any).source);
 
-              // Proactively query cache for format metadata (helps UI show codec/rate/bits early)
               try {
                 const cacheResult = await runTauriCommand('cache_get_file', {
                   trackId: id,
@@ -457,7 +471,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
                   if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
                 }
               } catch (e) {
-                // Non-critical
                 console.debug('[playback] Cache prefetch for format failed/ignored:', e);
               }
             }
@@ -492,7 +505,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'SET_FETCH_IN_PROGRESS', trackId: null });
       dispatch({ type: 'SET_LOADING', loading: false });
     }
-  }, [spotifyClient, ready, getSetting, state.fetchInProgress, state.trackId]);
+  }, [ready, getSetting, state.fetchInProgress, state.trackId, getTrack, buildTrackFromRecord]);
 
   // Main track fetch effect - optimized with reduced dependencies
   useEffect(() => { 
@@ -580,6 +593,21 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               dispatch({ type: 'SET_ERROR', error: 'Invalid source metadata' });
             }
             return;
+          }
+
+          // Preflight: if it's a local file source, ensure the path exists before trying to play
+          if (sourceMeta.type === 'local') {
+            try {
+              const existsRes = await runTauriCommand('fs_exists', { path_or_url: sourceMeta.value });
+              if (!existsRes) {
+                console.warn('[playback] Local file not found, aborting playback start:', sourceMeta.value);
+                dispatch({ type: 'SET_PLAYING', playing: false });
+                dispatch({ type: 'SET_ERROR', error: 'Local file not found. Please reselect the file in Sources.' });
+                return;
+              }
+            } catch (e) {
+              console.warn('[playback] fs_exists check failed, proceeding but may error:', e);
+            }
           }
 
           // Use the backend's source resolution and hybrid caching
@@ -1232,6 +1260,132 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     initVolume();
   }, [ready, getSetting]);
 
+  // Initialize playback state from database
+  useEffect(() => {
+    const initPlaybackState = async () => {
+      if (!ready) return;
+
+      try {
+        console.log('[playback] Loading saved playback state from database');
+        
+        const [savedTrackId, savedQueue, savedIndex] = await Promise.all([
+          getSetting(SETTINGS_KEYS.CURRENT_TRACK),
+          getSetting(SETTINGS_KEYS.QUEUE),
+          getSetting(SETTINGS_KEYS.CURRENT_INDEX)
+        ]);
+
+        // Parse saved queue
+        let restoredQueue: string[] = [];
+        if (savedQueue) {
+          try {
+            const parsed = JSON.parse(savedQueue);
+            if (Array.isArray(parsed) && parsed.every(id => typeof id === 'string')) {
+              restoredQueue = parsed;
+            }
+          } catch (e) {
+            console.warn('[playback] Failed to parse saved queue:', e);
+          }
+        }
+
+        // Parse saved index
+        let restoredIndex: number = CONFIG.QUEUE.DEFAULT_INDEX;
+        if (savedIndex) {
+          const parsed = parseInt(savedIndex, 10);
+          if (!isNaN(parsed) && parsed >= 0) {
+            restoredIndex = parsed;
+          }
+        }
+
+        // Restore state if we have valid data
+        if (savedTrackId && restoredQueue.length > 0) {
+          // Ensure the saved track ID exists in the restored queue
+          if (restoredQueue.includes(savedTrackId)) {
+            const trackIndex = restoredQueue.indexOf(savedTrackId);
+            console.log('[playback] Restoring playback state:', {
+              trackId: savedTrackId,
+              queue: restoredQueue.length,
+              index: trackIndex
+            });
+            
+            dispatch({ type: 'SET_QUEUE', queueIds: restoredQueue, currentIndex: trackIndex });
+            dispatch({ type: 'SET_TRACK_ID', trackId: savedTrackId });
+          } else {
+            // Track not in queue, use the restored index if valid
+            const safeIndex = Math.min(restoredIndex, restoredQueue.length - 1);
+            console.log('[playback] Track not in restored queue, using index:', safeIndex);
+            
+            dispatch({ type: 'SET_QUEUE', queueIds: restoredQueue, currentIndex: safeIndex });
+            dispatch({ type: 'SET_TRACK_ID', trackId: restoredQueue[safeIndex] });
+          }
+        } else if (restoredQueue.length > 0) {
+          // Have queue but no track, use the restored index
+          const safeIndex = Math.min(restoredIndex, restoredQueue.length - 1);
+          console.log('[playback] Restoring queue without specific track:', {
+            queue: restoredQueue.length,
+            index: safeIndex
+          });
+          
+          dispatch({ type: 'SET_QUEUE', queueIds: restoredQueue, currentIndex: safeIndex });
+          dispatch({ type: 'SET_TRACK_ID', trackId: restoredQueue[safeIndex] });
+        } else {
+          console.log('[playback] No saved playback state found, using defaults');
+        }
+      } catch (e) {
+        console.warn('[playback] Failed to load saved playback state:', e);
+      }
+    };
+
+    initPlaybackState();
+  }, [ready, getSetting]);
+
+  // Persist current track ID when it changes
+  useEffect(() => {
+    if (!ready || !state.trackId) return;
+    
+    const saveTrackId = async () => {
+      try {
+        await setSetting(SETTINGS_KEYS.CURRENT_TRACK, state.trackId);
+        console.log('[playback] Saved current track ID:', state.trackId);
+      } catch (e) {
+        console.warn('[playback] Failed to save current track ID:', e);
+      }
+    };
+    
+    saveTrackId();
+  }, [ready, state.trackId, setSetting]);
+
+  // Persist queue when it changes
+  useEffect(() => {
+    if (!ready || state.queueIds.length === 0) return;
+    
+    const saveQueue = async () => {
+      try {
+        await setSetting(SETTINGS_KEYS.QUEUE, JSON.stringify(state.queueIds));
+        console.log('[playback] Saved queue:', state.queueIds.length, 'tracks');
+      } catch (e) {
+        console.warn('[playback] Failed to save queue:', e);
+      }
+    };
+    
+    saveQueue();
+  }, [ready, state.queueIds, setSetting]);
+
+  // Persist current index when it changes
+  useEffect(() => {
+    if (!ready) return;
+    
+    const saveIndex = async () => {
+      try {
+        await setSetting(SETTINGS_KEYS.CURRENT_INDEX, state.currentIndex.toString());
+        console.log('[playback] Saved current index:', state.currentIndex);
+      } catch (e) {
+        console.warn('[playback] Failed to save current index:', e);
+      }
+    };
+    
+    saveIndex();
+  }, [ready, state.currentIndex, setSetting]);
+
   // Optimize queue index synchronization
   useEffect(() => {
     const idx = state.queueIds.indexOf(state.trackId);
@@ -1257,9 +1411,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         
         // Prefetch track metadata
-        if (!state.trackCache[id] && spotifyClient) {
+        if (!state.trackCache[id]) {
           try {
-            const track = await spotifyClient.getTrack(id);
+            const rec = await getTrack(id);
+            const track = buildTrackFromRecord(rec);
             if (!cancelled) {
               dispatch({ type: 'UPDATE_TRACK_CACHE', trackId: id, track });
             }
@@ -1272,7 +1427,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     
     prefetchTracks();
     return () => { cancelled = true; };
-  }, [state.queueIds, state.trackCache, spotifyClient]);
+  }, [state.queueIds, state.trackCache, getTrack, buildTrackFromRecord]);
 
   // Optimize queue management functions with dispatch pattern
   const setQueue = useCallback((ids: string[], startIndex: number = CONFIG.QUEUE.DEFAULT_INDEX, shouldPlay: boolean = false) => {
@@ -1745,8 +1900,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     removeFromQueue, fetchTrack, switchToTrackSynchronously, state.trackId, state.trackCache, state.playing
   ]);
 
-  // Optimize event listeners registration
-  useEffect(() => {
+  // Optimize event listeners registration: use layout effect so listeners are ready before children effects
+  useLayoutEffect(() => {
     // Register all event listeners
     eventHandlers.forEach(({ event, handler }) => {
       window.addEventListener(event, handler as any);
