@@ -1,11 +1,12 @@
 import { WebSocketServer } from 'ws';
+import { logInfo } from './src/core/FrontendLogger';
 
 const wss = new WebSocketServer({ port: 8080 });
 
-console.log('Signaling server started on ws://localhost:8080');
+logInfo('Signaling server started on ws://localhost:8080');
 
 wss.on('connection', ws => {
-  console.log('Client connected');
+  logInfo('Client connected');
 
   ws.on('message', message => {
     // Reenviar el mensaje a todos los demás clientes
@@ -17,6 +18,6 @@ wss.on('connection', ws => {
   });
 
   ws.on('close', () => {
-    console.log('Client disconnected');
+    logInfo('Client disconnected');
   });
 });

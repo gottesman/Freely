@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { frontendLogger } from './FrontendLogger';
 import { env } from './AccessEnv';
 import { useDB } from './Database'
 import type { TrackMeta } from './Database';
@@ -80,7 +81,7 @@ class SpotifyClientCache {
     // Check for pre-warmed client from startup process
     if (!this.cachedClient && (window as any)[SPOTIFY_CONSTANTS.GLOBAL_KEYS.WARMED_CLIENT]) {
       this.cachedClient = (window as any)[SPOTIFY_CONSTANTS.GLOBAL_KEYS.WARMED_CLIENT];
-      console.log(`${LOG_PREFIXES.CLIENT} Using pre-warmed SpotifyClient instance`);
+      frontendLogger.log(`${LOG_PREFIXES.CLIENT} Using pre-warmed SpotifyClient instance`);
     }
     
     return this.cachedClient;
@@ -92,11 +93,11 @@ class SpotifyClientCache {
   static createFallbackClient(dbCache?: DatabaseCache): SpotifyClient {
     if (!this.cachedClient) {
       this.cachedClient = new SpotifyClient();
-      console.log(`${LOG_PREFIXES.FALLBACK} Created fallback SpotifyClient instance`);
+      frontendLogger.log(`${LOG_PREFIXES.FALLBACK} Created fallback SpotifyClient instance`);
       
       if (dbCache) {
         this.cachedClient.setDatabaseCache(dbCache);
-        console.log(`${LOG_PREFIXES.DATABASE} Injected database cache into fallback SpotifyClient`);
+        frontendLogger.log(`${LOG_PREFIXES.DATABASE} Injected database cache into fallback SpotifyClient`);
       }
     }
     
@@ -184,7 +185,7 @@ export function useSpotifyClient(): SpotifyClient {
     }
     
     if (!ready) {
-      console.log(`${LOG_PREFIXES.WAITING} Database not ready yet for SpotifyClient`);
+      frontendLogger.log(`${LOG_PREFIXES.WAITING} Database not ready yet for SpotifyClient`);
     }
     
     return currentClient;
@@ -201,7 +202,7 @@ export function createCachedSpotifyClient(dbCache?: DatabaseCache): SpotifyClien
   const client = new SpotifyClient();
   if (dbCache) {
     client.setDatabaseCache(dbCache);
-    console.log(`${LOG_PREFIXES.DATABASE} Database cache injected into new SpotifyClient`);
+    frontendLogger.log(`${LOG_PREFIXES.DATABASE} Database cache injected into new SpotifyClient`);
   }
   return client;
 }
@@ -224,29 +225,29 @@ export async function search(query: string, typeOrTypes: SearchTypes = SPOTIFY_C
   // Try electron preload first (keeps auth server-side)
   if (SpotifySearchManager.isPreloadSearchAvailable()) {
     try {
-      console.log(`${LOG_PREFIXES.PRELOAD} Using electron preload search`);
+      frontendLogger.log(`${LOG_PREFIXES.PRELOAD} Using electron preload search`);
       return await SpotifySearchManager.searchViaPreload(query, typeOrTypes, options);
     } catch (error) {
-      console.warn(`${LOG_PREFIXES.PRELOAD} Preload search failed, falling back to direct client:`, error);
+      frontendLogger.warn(`${LOG_PREFIXES.PRELOAD} Preload search failed, falling back to direct client:`, error);
     }
   }
 
   // Fallback to direct client search
-  console.log(`${LOG_PREFIXES.SEARCH} Using direct SpotifyClient search`);
+  frontendLogger.log(`${LOG_PREFIXES.SEARCH} Using direct SpotifyClient search`);
   const client = SpotifyClientCache.getClient() || new SpotifyClient();
 
   // Try multi-search if supported
   if (SpotifySearchManager.supportsMultiSearch(client)) {
     try {
-      console.log(`${LOG_PREFIXES.SEARCH} Using multi-search API`);
+      frontendLogger.log(`${LOG_PREFIXES.SEARCH} Using multi-search API`);
       return await SpotifySearchManager.performMultiSearch(client, query, normalizedTypes, normalizedLimit);
     } catch (error) {
-      console.warn(`${LOG_PREFIXES.SEARCH} Multi-search failed, falling back to individual calls:`, error);
+      frontendLogger.warn(`${LOG_PREFIXES.SEARCH} Multi-search failed, falling back to individual calls:`, error);
     }
   }
 
   // Fallback: individual search calls per type
-  console.log(`${LOG_PREFIXES.SEARCH} Using individual search calls`);
+  frontendLogger.log(`${LOG_PREFIXES.SEARCH} Using individual search calls`);
   return await performIndividualSearches(client, query, normalizedTypes, normalizedLimit);
 }
 
@@ -286,7 +287,7 @@ async function handleSearchCall(
     const response = await searchFn();
     results[type] = response.items || [];
   } catch (error) {
-    console.warn(`${LOG_PREFIXES.SEARCH} Search failed for type "${type}":`, error);
+    frontendLogger.warn(`${LOG_PREFIXES.SEARCH} Search failed for type "${type}":`, error);
     results[type] = [];
   }
 }
@@ -378,7 +379,7 @@ export class SpotifyClient {
     const isNotExpired = Date.now() < (exp - bufferMs);
     const isValid = hasToken && isNotExpired;
     
-    console.log('🔍 Token validation check:', {
+    frontendLogger.log('🔍 Token validation check:', {
       hasToken,
       expiresAt: exp,
       now: Date.now(),
@@ -398,7 +399,7 @@ export class SpotifyClient {
 
   // Public helper: clear invalid cached tokens
   public clearTokenCache(): void {
-    console.log('🧹 Clearing Spotify token cache');
+    frontendLogger.log('🧹 Clearing Spotify token cache');
     this.cfg.accessToken = undefined;
     this.cfg.tokenExpiresAt = undefined;
     SharedState.token.accessToken = '';
@@ -479,13 +480,13 @@ export class SpotifyClient {
         
         if (!r.ok) {
           const raw = await safeReadText(r);
-          console.error('❌ Token endpoint HTTP error:', r.status, raw);
+          frontendLogger.error('❌ Token endpoint HTTP error:', r.status, raw);
           throw new Error('token_http_' + r.status);
         }
         
         if (!/json/i.test(ct)) {
           const raw = await safeReadText(r);
-          console.error('❌ Token endpoint content-type error:', ct, 'body:', raw.slice(0, 40));
+          frontendLogger.error('❌ Token endpoint content-type error:', ct, 'body:', raw.slice(0, 40));
           throw new Error('token_ct:' + ct + ' snippet:' + raw.slice(0, 40));
         }
         
@@ -519,7 +520,7 @@ export class SpotifyClient {
     await this.ensureToken();
     try {
       const status = this.getTokenStatus();
-      console.log('🎫 Spotify request token status before fetch', { path, hasToken: status.hasToken, timeUntilExpiry: status.timeUntilExpiry });
+      frontendLogger.log('🎫 Spotify request token status before fetch', { path, hasToken: status.hasToken, timeUntilExpiry: status.timeUntilExpiry });
     } catch {}
     
     // Merge locale if not explicitly provided
@@ -564,9 +565,9 @@ export class SpotifyClient {
         // Try to read a small snippet of the error for diagnostics
         try {
           const text = await res.clone().text();
-          console.warn('Spotify 401/403 response snippet (pre-refresh):', text.slice(0, 160));
+          frontendLogger.warn('Spotify 401/403 response snippet (pre-refresh):', text.slice(0, 160));
         } catch {}
-        console.warn('Spotify token likely expired. Refreshing token and retrying request:', path);
+        frontendLogger.warn('Spotify token likely expired. Refreshing token and retrying request:', path);
         this.clearTokenCache();
         await this.ensureToken();
         res = await doFetch();
@@ -577,11 +578,11 @@ export class SpotifyClient {
 
     // If still unauthorized, force-fetch a brand new token and try one last time
     if ((res.status === 401 || res.status === 403)) {
-      console.warn('Spotify still unauthorized after refresh. Forcing new token and retrying once more:', path);
+      frontendLogger.warn('Spotify still unauthorized after refresh. Forcing new token and retrying once more:', path);
       try {
         try {
           const text = await res.clone().text();
-          console.warn('Spotify 401/403 response snippet (post-ensureToken):', text.slice(0, 160));
+          frontendLogger.warn('Spotify 401/403 response snippet (post-ensureToken):', text.slice(0, 160));
         } catch {}
         this.clearTokenCache();
         // Force a fresh token fetch bypassing any shared cache states
@@ -595,7 +596,7 @@ export class SpotifyClient {
     if (res.status === 401 || res.status === 403) {
       try {
         const text = await res.clone().text();
-        console.error('Spotify unauthorized after forced refresh. Final response snippet:', text.slice(0, 200));
+        frontendLogger.error('Spotify unauthorized after forced refresh. Final response snippet:', text.slice(0, 200));
       } catch {}
     }
 
@@ -760,7 +761,7 @@ export class SpotifyClient {
         // Cache the fetched tracks
         await this.cacheTracksBatch(apiTracks);
       } catch (e) {
-        console.warn('getTracks batch failed:', e);
+        frontendLogger.warn('getTracks batch failed:', e);
       }
     }
 
@@ -1073,7 +1074,7 @@ export class SpotifyClient {
     if (!res.ok) {
       let bodyText = '';
       try { bodyText = await res.text(); } catch (e) { bodyText = String(e); }
-      console.error('ReccoBeats error response:', res.status, bodyText);
+      frontendLogger.error('ReccoBeats error response:', res.status, bodyText);
       throw new Error('ReccoBeats recommendation HTTP ' + res.status + (bodyText ? ' - ' + bodyText : ''));
     }
     const json = await res.json();
@@ -1363,7 +1364,7 @@ export async function fetchAlbumTracks(albumId: string | number, options: FetchT
     const response = await client.getAlbumTracks(String(albumId), { fetchAll: false, limit });
     return mapTracksToSimple(response.items);
   } catch (error) {
-    console.warn('fetchAlbumTracks error:', error);
+    frontendLogger.warn('fetchAlbumTracks error:', error);
     return undefined;
   }
 }
@@ -1380,7 +1381,7 @@ export async function fetchPlaylistTracks(playlistId: string | number, options: 
     const tracks = response.tracks.slice(0, limit);
     return mapTracksToSimple(tracks);
   } catch (error) {
-    console.warn('fetchPlaylistTracks error:', error);
+    frontendLogger.warn('fetchPlaylistTracks error:', error);
     return undefined;
   }
 }
@@ -1396,7 +1397,7 @@ export async function fetchArtistTracks(artistId: string | number, options: Fetc
     const tracks = await client.getArtistTopTracks(String(artistId));
     return mapTracksToSimple(tracks.slice(0, limit));
   } catch (error) {
-    console.warn('fetchArtistTracks error:', error);
+    frontendLogger.warn('fetchArtistTracks error:', error);
     return undefined;
   }
 }

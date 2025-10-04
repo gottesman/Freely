@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { createPortal } from 'react-dom';
 import { ContextMenuOptions, ContextMenuItem } from '../../core/ContextMenu';
 import { playbackEvents } from './Helpers';
@@ -538,7 +539,7 @@ export default function ContextMenu({
           }
         }
       } catch (e) {
-        console.error('ContextMenu action error', e);
+        frontendLogger.error('ContextMenu action error', e);
       }
     }
 

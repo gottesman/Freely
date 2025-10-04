@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { hexToRgb, hexToHue } from './Appearance';
+import { useEffect, useState, useMemo } from 'react';
+import { frontendLogger } from './FrontendLogger';
+import { hexToRgb, hexToHue, APPEARANCE_DEFAULTS, unsplash, setAppearance } from './Appearance';
 // Import main stylesheet as URL so bundler includes and fingerprints it
 // (loaded lazily after fonts) 
 // Vite: ?url returns final asset URL
@@ -130,13 +131,13 @@ async function preloadCommonIcons(): Promise<void> {
  * Wait for font to be ready with retry logic
  */
 async function waitForFont(): Promise<boolean> {
-  console.log(`${LOG_PREFIXES.FONT} Waiting for Material Symbols font to load...`);
+  frontendLogger.log(`${LOG_PREFIXES.FONT} Waiting for Material Symbols font to load...`);
 
   let attempts = 0;
   while (attempts < READY_CONSTANTS.LIMITS.MAX_FONT_ATTEMPTS) {
     const isLoaded = await testFontLoaded();
     if (isLoaded) {
-      console.log(`${LOG_PREFIXES.FONT} Material Symbols font verified as loaded`);
+      frontendLogger.log(`${LOG_PREFIXES.FONT} Material Symbols font verified as loaded`);
       await preloadCommonIcons();
       return true;
     }
@@ -147,7 +148,7 @@ async function waitForFont(): Promise<boolean> {
     attempts++;
   }
 
-  console.warn(`${LOG_PREFIXES.FONT} Font loading timeout, proceeding anyway`);
+  frontendLogger.warn(`${LOG_PREFIXES.FONT} Font loading timeout, proceeding anyway`);
   return false;
 }
 
@@ -167,7 +168,7 @@ function isAppCssLoaded(): boolean {
  */
 async function loadAppStylesheet(): Promise<boolean> {
   if (isAppCssLoaded()) {
-    console.log(`${LOG_PREFIXES.CSS} App CSS already loaded`);
+    frontendLogger.log(`${LOG_PREFIXES.CSS} App CSS already loaded`);
     return true;
   }
 
@@ -177,25 +178,72 @@ async function loadAppStylesheet(): Promise<boolean> {
     link.href = appCssUrl;
     link.dataset.appCss = 'true';
 
+    let settled = false; // prevent double resolve
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let pollId: ReturnType<typeof setTimeout> | null = null;
+
+    const settle = (ok: boolean, reason?: string) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (pollId) clearTimeout(pollId);
+      resolve(ok);
+      if (reason) frontendLogger.debug(`${LOG_PREFIXES.CSS} Load settle reason: ${reason}`);
+    };
+
     const handleLoad = () => {
-      console.log(`${LOG_PREFIXES.CSS} App CSS loaded successfully`);
-      resolve(true);
+      frontendLogger.log(`${LOG_PREFIXES.CSS} App CSS load event fired`);
+      settle(true, 'load-event');
     };
 
     const handleError = () => {
-      console.warn(`${LOG_PREFIXES.CSS} App CSS failed to load, continuing anyway`);
-      resolve(false);
+      frontendLogger.warn(`${LOG_PREFIXES.CSS} App CSS failed to load, continuing anyway`);
+      settle(false, 'error-event');
     };
 
-    link.addEventListener('load', handleLoad);
-    link.addEventListener('error', handleError);
+    link.addEventListener('load', handleLoad, { once: true });
+    link.addEventListener('error', handleError, { once: true });
 
+    // Append early to start loading
     document.head.appendChild(link);
 
-    // Fallback timeout in case load/error events don't fire
-    setTimeout(() => {
-      console.warn(`${LOG_PREFIXES.CSS} CSS load timeout, assuming loaded`);
-      resolve(true);
+    // Some browsers / environments occasionally miss the load event. Poll readiness.
+    const startPoll = () => {
+      const poll = () => {
+        if (settled) return;
+        try {
+          // Accessing cssRules can throw if not loaded or cross-origin; treat success as loaded.
+          const sheet: any = link.sheet;
+          if (sheet && typeof sheet.cssRules !== 'undefined') {
+            // If there are rules or it's an empty but accessible sheet, consider it loaded.
+            if (sheet.cssRules.length >= 0) {
+              frontendLogger.log(`${LOG_PREFIXES.CSS} App CSS detected via polling`);
+              settle(true, 'poll-success');
+              return;
+            }
+          }
+        } catch (_) { /* ignore and keep polling */ }
+        pollId = setTimeout(poll, 100);
+      };
+      poll();
+    };
+    startPoll();
+
+    // Fallback timeout
+    timeoutId = setTimeout(() => {
+      if (!settled) {
+        // If sheet is accessible now, treat as loaded instead of warning.
+        try {
+          const sheet: any = link.sheet;
+          if (sheet && typeof sheet.cssRules !== 'undefined') {
+            frontendLogger.log(`${LOG_PREFIXES.CSS} Timeout reached but stylesheet readable; marking loaded`);
+            settle(true, 'timeout-readable');
+            return;
+          }
+        } catch { /* ignore */ }
+        frontendLogger.warn(`${LOG_PREFIXES.CSS} CSS load timeout, assuming loaded`);
+        settle(true, 'timeout-assumed');
+      }
     }, 3000);
   });
 }
@@ -240,7 +288,7 @@ async function waitForPreload(): Promise<boolean> {
  * Initialize Spotify client with database cache
  */
 async function warmupSpotifyClient(getApiCache: any, setApiCache: any): Promise<void> {
-  console.log(`${LOG_PREFIXES.WARMUP} Starting Spotify client warmup...`);
+  frontendLogger.log(`${LOG_PREFIXES.WARMUP} Starting Spotify client warmup...`);
 
   const spotifyClient = new SpotifyClient();
   spotifyClient.setDatabaseCache({ getApiCache, setApiCache });
@@ -248,7 +296,7 @@ async function warmupSpotifyClient(getApiCache: any, setApiCache: any): Promise<
   // Store globally for useSpotifyClient hook to use
   (window as any).__freelySpotifyClient = spotifyClient;
 
-  console.log(`${LOG_PREFIXES.WARMUP} Spotify client warmed up with database cache`);
+  frontendLogger.log(`${LOG_PREFIXES.WARMUP} Spotify client warmed up with database cache`);
 
   // Small delay to ensure everything is settled
   await new Promise(resolve =>
@@ -293,7 +341,7 @@ function setAppearanceVar(name: string, value: string | null | undefined): void 
 /**
  * Apply background-specific variables to .bg element
  */
-function applyBackgroundVars(bgImage: string, blurStr: string, blurAmountStr: string, animateStr: string, overlayColor: string, overlayOpacityStr: string): void {
+function applyBackgroundVars(bgImage: string, blurStr: string, blurAmountStr: string, overlayColor: string, overlayOpacityStr: string): void {
   const applyToBg = (bgElement: HTMLElement) => {
     // Apply background image
     if (bgImage && bgImage.trim()) {
@@ -306,17 +354,9 @@ function applyBackgroundVars(bgImage: string, blurStr: string, blurAmountStr: st
     const blurAmount = blurAmountStr != null ? Math.max(0, Math.min(200, Number(blurAmountStr))) : 200;
     if (blur && blurAmount > 0) {
       bgElement.style.setProperty('--bg-filter', `blur(${blurAmount}px)`);
-      bgElement.style.setProperty('--bg-size', '200%');
-      bgElement.style.setProperty('--bg-radius', '100em');
     } else {
       bgElement.style.setProperty('--bg-filter', 'none');
-      bgElement.style.setProperty('--bg-size', '100%');
-      bgElement.style.setProperty('--bg-radius', '0');
     }
-
-    // Apply animation
-    const animate = (animateStr == null || animateStr === '') ? true : parseBool(animateStr);
-    bgElement.style.setProperty('--bg-animation', animate ? 'rotate 40s linear infinite' : 'none');
 
     // Apply overlay (use defaults if not set)
     const finalOverlayColor = overlayColor || '#0A131A';
@@ -393,7 +433,6 @@ async function loadAndApplyAppearanceSettings(getSetting: any): Promise<void> {
       bgImage,
       blurStr,
       blurAmountStr,
-      animateStr,
       overlayColor,
       overlayOpacityStr,
       bgRgb,
@@ -405,21 +444,73 @@ async function loadAndApplyAppearanceSettings(getSetting: any): Promise<void> {
       getSetting('ui.bg.image'),
       getSetting('ui.bg.blur'),
       getSetting('ui.bg.blurAmount'),
-      getSetting('ui.bg.animate'),
       getSetting('ui.bg.overlayColor'),
       getSetting('ui.bg.overlayOpacity'),
       getSetting('ui.bg.rgb'),
       getSetting('ui.accent.rgb')
     ]);
 
-    // Apply background variables
-    applyBackgroundVars(bgImage, blurStr, blurAmountStr, animateStr, overlayColor, overlayOpacityStr);
+    // Resolve defaults when settings are missing
+    const resolveBg = (val?: string) => {
+      const v = (val && String(val).trim()) || '';
+      if (v.startsWith('unsplash:')) {
+        const id = v.split(':')[1];
+        return unsplash({ id });
+      }
+      return v || unsplash({ id: APPEARANCE_DEFAULTS.backgrounds[0].split(':')[1] });
+    };
+
+    const finalAccent = accent || APPEARANCE_DEFAULTS.accent;
+    const finalText = text || APPEARANCE_DEFAULTS.textColor;
+    const finalTextDark = textDark || APPEARANCE_DEFAULTS.textDarkColor;
+    const finalBgImage = resolveBg(bgImage);
+
+    // Derive bg rgb if missing from default shadowHex
+    const deriveRgbTripletFromHex = (hex: string) => {
+      const rgb = hexToRgb(hex);
+      return rgb ? `${rgb.r}, ${rgb.g}, ${rgb.b}` : '15, 23, 36';
+    };
+    const finalBgRgb = bgRgb || deriveRgbTripletFromHex(APPEARANCE_DEFAULTS.shadowHex);
+
+    // Derive accent rgb if missing from finalAccent
+    const finalAccentRgb = accentRgb || (() => {
+      const rgb = hexToRgb(finalAccent);
+      return rgb ? `${rgb.r}, ${rgb.g}, ${rgb.b}` : '';
+    })();
+
+    // Apply background variables (use defaults for overlay if not set)
+    applyBackgroundVars(
+      finalBgImage,
+      blurStr,
+      blurAmountStr,
+      overlayColor || APPEARANCE_DEFAULTS.bgOverlayColor,
+      overlayOpacityStr ?? String(APPEARANCE_DEFAULTS.bgOverlayOpacity)
+    );
 
     // Apply color variables
-    applyColorVars(accent, text, textDark, bgRgb, accentRgb, bgImage);
+    applyColorVars(finalAccent, finalText, finalTextDark, finalBgRgb, finalAccentRgb, finalBgImage);
+
+    // Persist unified runtime cache (build normalized state)
+    try {
+      setAppearance({
+        accent: finalAccent,
+        accentRgb: finalAccentRgb,
+        text: finalText,
+        textDark: finalTextDark,
+        bgImage: finalBgImage,
+        bgRgb: finalBgRgb,
+        blur: (blurStr == null || blurStr === '') ? true : (blurStr === '1' || blurStr === 'true'),
+        blurAmount: blurAmountStr != null ? Math.max(0, Math.min(200, Number(blurAmountStr))) : 200,
+        overlayColor: overlayColor || APPEARANCE_DEFAULTS.bgOverlayColor,
+        overlayOpacity: (() => {
+          if (overlayOpacityStr == null) return APPEARANCE_DEFAULTS.bgOverlayOpacity;
+          let op = Number(overlayOpacityStr); if (!isFinite(op)) op = APPEARANCE_DEFAULTS.bgOverlayOpacity; if (op > 1) op = op / 100; return Math.max(0, Math.min(1, op));
+        })()
+      });
+    } catch {/* ignore */}
 
   } catch (e) {
-    console.warn('🎨 Failed to apply appearance settings early:', e);
+    frontendLogger.warn('🎨 Failed to apply appearance settings early:', e);
   }
 }
 
@@ -436,7 +527,7 @@ class ReadyStateMonitor {
 
   startStep(stepName: string): void {
     this.stepTimings.set(stepName, { start: Date.now() });
-    console.log(`🚀 [${stepName}] Started at ${new Date().toISOString()}`);
+    frontendLogger.log(`🚀 [${stepName}] Started at ${new Date().toISOString()}`);
   }
 
   endStep(stepName: string, success: boolean = true, error?: string): void {
@@ -450,7 +541,7 @@ class ReadyStateMonitor {
 
       const status = success ? '✅' : '❌';
       const errorMsg = error ? ` (Error: ${error})` : '';
-      console.log(`${status} [${stepName}] Completed in ${duration}ms${errorMsg}`);
+      frontendLogger.log(`${status} [${stepName}] Completed in ${duration}ms${errorMsg}`);
     }
   }
 
@@ -496,6 +587,7 @@ function getStepDetails(stepName: string): string {
  * 5. Spotify client warmed up with database cache
  */
 export function useAppReady(dbReady: boolean): UseAppReadyReturn {
+
   const { getApiCache, setApiCache, getSetting } = useDB();
   const [fontsReady, setFontsReady] = useState(false);
   const [cssReady, setCssReady] = useState(false);
@@ -506,7 +598,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
   // Start monitoring when hook initializes
   useEffect(() => {
     readyMonitor.startStep('AppReady Hook');
-    console.log('🚀 App readiness monitoring started');
+    frontendLogger.log('🚀 App readiness monitoring started');
   }, []);
 
   // Apply appearance settings ASAP once DB is ready (before CSS load to avoid flash)
@@ -524,7 +616,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
           readyMonitor.endStep('Appearance Settings', true);
         }
       } catch (e) {
-        console.warn('🎨 Failed to apply appearance settings early:', e);
+        frontendLogger.warn('🎨 Failed to apply appearance settings early:', e);
         if (!cancelled) {
           readyMonitor.endStep('Appearance Settings', false, String(e));
         }
@@ -541,7 +633,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
     const timer = setTimeout(() => {
       setMinTimePassed(true);
       readyMonitor.endStep('Minimum Splash Time', true);
-      console.log('⏰ Minimum splash time completed');
+      frontendLogger.log('⏰ Minimum splash time completed');
     }, READY_CONSTANTS.TIMEOUTS.MIN_SPLASH_TIME);
     return () => clearTimeout(timer);
   }, []);
@@ -553,15 +645,15 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
 
     const initializeFonts = async () => {
       try {
-        console.log(`${LOG_PREFIXES.FONT} Waiting for Material Symbols font to load...`);
+        frontendLogger.log(`${LOG_PREFIXES.FONT} Waiting for Material Symbols font to load...`);
         const success = await waitForFont();
         if (!cancelled) {
           setFontsReady(true);
           readyMonitor.endStep('Font Loading', success);
-          console.log(`${LOG_PREFIXES.FONT} Fonts initialized, success: ${success}`);
+          frontendLogger.log(`${LOG_PREFIXES.FONT} Fonts initialized, success: ${success}`);
         }
       } catch (error) {
-        console.warn(`${LOG_PREFIXES.FONT} Font loading failed, continuing anyway:`, error);
+        frontendLogger.warn(`${LOG_PREFIXES.FONT} Font loading failed, continuing anyway:`, error);
         if (!cancelled) {
           setFontsReady(true); // Continue anyway for better UX
           readyMonitor.endStep('Font Loading', false, String(error));
@@ -582,14 +674,14 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
     
     const initializeCSS = async () => {
       try {
-        console.log(`${LOG_PREFIXES.CSS} Starting app CSS loading...`);
+        frontendLogger.log(`${LOG_PREFIXES.CSS} Starting app CSS loading...`);
         const success = await loadAppStylesheet();
         if (!cancelled) {
           setCssReady(true);
-          console.log(`${LOG_PREFIXES.CSS} CSS loading completed, success: ${success}`);
+          frontendLogger.log(`${LOG_PREFIXES.CSS} CSS loading completed, success: ${success}`);
         }
       } catch (error) {
-        console.warn(`${LOG_PREFIXES.CSS} CSS loading failed, continuing anyway:`, error);
+        frontendLogger.warn(`${LOG_PREFIXES.CSS} CSS loading failed, continuing anyway:`, error);
         if (!cancelled) {
           setCssReady(true);
         }
@@ -606,12 +698,12 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
 
     const initializePreload = async () => {
       try {
-        console.log('⚡ Checking preload APIs...');
+        frontendLogger.log('⚡ Checking preload APIs...');
 
         // In browser environment, skip preload check
         const isElectron = Boolean((window as any).electron);
         if (!isElectron) {
-          console.log('⚡ Browser environment detected, skipping preload check');
+          frontendLogger.log('⚡ Browser environment detected, skipping preload check');
           if (!cancelled) {
             setPreloadReady(true);
           }
@@ -624,10 +716,10 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
 
         if (!cancelled) {
           setPreloadReady(isReady);
-          console.log(`⚡ Preload check completed in ${duration}ms, ready: ${isReady}`);
+          frontendLogger.log(`⚡ Preload check completed in ${duration}ms, ready: ${isReady}`);
         }
       } catch (error) {
-        console.warn('⚡ Preload check failed:', error);
+        frontendLogger.warn('⚡ Preload check failed:', error);
         if (!cancelled) {
           setPreloadReady(true); // Continue anyway
         }
@@ -647,12 +739,12 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
     
     const initializeWarmup = async () => {
       try {
-        console.log(`${LOG_PREFIXES.WARMUP} Starting Spotify client warmup...`);
+        frontendLogger.log(`${LOG_PREFIXES.WARMUP} Starting Spotify client warmup...`);
         
         // In browser environment, create basic client; otherwise warmup via helper
         const isElectron = Boolean((window as any).electron);
         if (!isElectron) {
-          console.log(`${LOG_PREFIXES.WARMUP} Browser environment, creating basic client`);
+          frontendLogger.log(`${LOG_PREFIXES.WARMUP} Browser environment, creating basic client`);
           const spotifyClient = new SpotifyClient();
           spotifyClient.setDatabaseCache({ getApiCache, setApiCache });
           (window as any).__freelySpotifyClient = spotifyClient;
@@ -667,42 +759,42 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
             client.setDatabaseCache({ getApiCache, setApiCache });
           }
           
-          console.log(`${LOG_PREFIXES.WARMUP} Checking Spotify token validity...`);
+          frontendLogger.log(`${LOG_PREFIXES.WARMUP} Checking Spotify token validity...`);
           const tokenStatus = client.getTokenStatus();
-          console.log(`${LOG_PREFIXES.WARMUP} Current token status:`, tokenStatus);
+          frontendLogger.log(`${LOG_PREFIXES.WARMUP} Current token status:`, tokenStatus);
           
           if (!client.isTokenValid()) {
-            console.log(`${LOG_PREFIXES.WARMUP} Token invalid or expired, clearing cache and fetching new token...`);
+            frontendLogger.log(`${LOG_PREFIXES.WARMUP} Token invalid or expired, clearing cache and fetching new token...`);
             // Clear any invalid cached tokens
             client.clearTokenCache();
             
-            console.log(`${LOG_PREFIXES.WARMUP} Ensuring Spotify access token is valid...`);
+            frontendLogger.log(`${LOG_PREFIXES.WARMUP} Ensuring Spotify access token is valid...`);
             await client.ensureAccessToken();
-            console.log(`${LOG_PREFIXES.WARMUP} Spotify access token ensured`);
+            frontendLogger.log(`${LOG_PREFIXES.WARMUP} Spotify access token ensured`);
           } else {
-            console.log(`${LOG_PREFIXES.WARMUP} Spotify token is already valid`);
+            frontendLogger.log(`${LOG_PREFIXES.WARMUP} Spotify token is already valid`);
           }
         } catch (e) {
-          console.warn(`${LOG_PREFIXES.WARMUP} Failed to ensure Spotify token before ready:`, e);
+          frontendLogger.warn(`${LOG_PREFIXES.WARMUP} Failed to ensure Spotify token before ready:`, e);
           // If token validation fails, try clearing cache and retrying once
           try {
             const client: SpotifyClient = (window as any).__freelySpotifyClient || new SpotifyClient();
-            console.log(`${LOG_PREFIXES.WARMUP} Retrying with cleared token cache...`);
+            frontendLogger.log(`${LOG_PREFIXES.WARMUP} Retrying with cleared token cache...`);
             client.clearTokenCache();
             await client.ensureAccessToken();
-            console.log(`${LOG_PREFIXES.WARMUP} Spotify token retry successful`);
+            frontendLogger.log(`${LOG_PREFIXES.WARMUP} Spotify token retry successful`);
           } catch (retryError) {
-            console.error(`${LOG_PREFIXES.WARMUP} Spotify token retry also failed:`, retryError);
+            frontendLogger.error(`${LOG_PREFIXES.WARMUP} Spotify token retry also failed:`, retryError);
             // Continue; subsequent calls will attempt refresh again
           }
         }
         
         if (!cancelled) {
           setWarmupDone(true);
-          console.log(`${LOG_PREFIXES.WARMUP} Warmup completed successfully`);
+          frontendLogger.log(`${LOG_PREFIXES.WARMUP} Warmup completed successfully`);
         }
       } catch (error) {
-        console.warn(`${LOG_PREFIXES.WARMUP} Spotify client warmup failed:`, error);
+        frontendLogger.warn(`${LOG_PREFIXES.WARMUP} Spotify client warmup failed:`, error);
         if (!cancelled) {
           setWarmupDone(true); // Continue anyway
         }
@@ -716,7 +808,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
   // Optimize ready state calculation with useMemo
   const ready = useMemo(() => {
     const isReady = dbReady && fontsReady && cssReady && preloadReady && warmupDone && minTimePassed;
-    console.log('🚀 Ready state check:', {
+    frontendLogger.log('🚀 Ready state check:', {
       dbReady,
       fontsReady,
       cssReady,
@@ -730,7 +822,7 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
     if (isReady) {
       readyMonitor.endStep('AppReady Hook', true);
       const report = readyMonitor.getReport();
-      console.log('🚀 App readiness completed!', {
+      frontendLogger.log('🚀 App readiness completed!', {
         totalTime: `${report.totalTime}ms`,
         steps: report.steps
       });
@@ -788,3 +880,5 @@ export function useAppReady(dbReady: boolean): UseAppReadyReturn {
 
   return { ready, states, progress };
 }
+
+// (Legacy appearance cache helpers removed – unified appearanceRuntime used instead)

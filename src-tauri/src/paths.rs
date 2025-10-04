@@ -20,9 +20,6 @@ pub struct PathConfig {
     
     /// Log files
     pub logs: LogPaths,
-    
-    /// Server files
-    pub server: ServerPaths,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -35,12 +32,7 @@ pub struct LogPaths {
     pub server_errors: PathBuf,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ServerPaths {
-    pub script: PathBuf,
-    pub pid_file: PathBuf,
-    pub db_file: PathBuf,
-}
+// Legacy server fields removed
 
 impl PathConfig {
     /// Initialize path configuration using Tauri's APIs
@@ -82,13 +74,6 @@ impl PathConfig {
             server_errors: app_log_dir.join("server_errors.txt"),
         };
 
-        // Define server file paths
-        let server = ServerPaths {
-            script: resource_dir.join("server-dist").join("server.bundle.js"),
-            pid_file: app_config_dir.join(".server.pid"),
-            db_file: app_config_dir.join("freely.db"),
-        };
-
         let config = PathConfig {
             app_data_dir,
             app_log_dir,
@@ -98,7 +83,6 @@ impl PathConfig {
             youtube_dir,
             audio_cache_dir,
             logs,
-            server,
         };
 
         // Ensure all directories exist
@@ -134,7 +118,7 @@ impl PathConfig {
             .map_err(|e| format!("Failed to serialize path config: {}", e))
     }
 
-    /// Export path configuration for use by other processes (like Node.js server)
+    /// Export path configuration
     pub fn export_as_env_vars(&self) -> Vec<(String, String)> {
         vec![
             ("FREELY_APP_DATA_DIR".to_string(), self.app_data_dir.to_string_lossy().to_string()),
@@ -151,11 +135,6 @@ impl PathConfig {
             ("FREELY_FRONTEND_ERRORS".to_string(), self.logs.frontend_errors.to_string_lossy().to_string()),
             ("FREELY_SERVER_LOGS".to_string(), self.logs.server_logs.to_string_lossy().to_string()),
             ("FREELY_SERVER_ERRORS".to_string(), self.logs.server_errors.to_string_lossy().to_string()),
-            
-            // Server files (for backwards compatibility)
-            ("PID_FILE_PATH".to_string(), self.server.pid_file.to_string_lossy().to_string()),
-            ("LOG_FILE_PATH".to_string(), self.logs.server_logs.to_string_lossy().to_string()),
-            ("ERR_FILE_PATH".to_string(), self.logs.server_errors.to_string_lossy().to_string()),
         ]
     }
 }

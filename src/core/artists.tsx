@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
+import { frontendLogger } from './FrontendLogger';
 import { useDB } from './Database';
 import type { SpotifyArtist } from './SpotifyClient';
 
@@ -21,7 +22,7 @@ let globalArtistsCache: SpotifyArtist[] = [];
 // Optimized debug logging
 const debugLog = (message: string, ...args: any[]) => {
   if (DEBUG_ENABLED) {
-    console.log(`[artists] ${message}`, ...args);
+    frontendLogger.log(`[artists] ${message}`, ...args);
   }
 };
 
@@ -42,7 +43,7 @@ const notifySubscribers = () => {
     try { 
       fn(); 
     } catch (err) { 
-      console.warn('[artists] Subscriber error:', err); 
+      frontendLogger.warn('[artists] Subscriber error:', err); 
     }
   });
 
@@ -52,7 +53,7 @@ const notifySubscribers = () => {
       detail: { artists: globalArtistsCache } 
     })); 
   } catch (err) { 
-    console.warn('[artists] Legacy event dispatch failed:', err); 
+    frontendLogger.warn('[artists] Legacy event dispatch failed:', err); 
   }
 };
 
@@ -97,7 +98,7 @@ class ArtistDB {
       };
 
       cursorRequest.onerror = () => {
-        console.warn('[artists] Failed to read from DB:', cursorRequest.error);
+        frontendLogger.warn('[artists] Failed to read from DB:', cursorRequest.error);
         reject(cursorRequest.error);
       };
     });
@@ -122,7 +123,7 @@ class ArtistDB {
       const request = store.put(record);
       request.onsuccess = () => resolve();
       request.onerror = () => {
-        console.warn('[artists] Failed to insert artist:', request.error);
+        frontendLogger.warn('[artists] Failed to insert artist:', request.error);
         reject(request.error);
       };
     });
@@ -141,7 +142,7 @@ class ArtistDB {
       
       request.onsuccess = () => resolve();
       request.onerror = () => {
-        console.warn('[artists] Failed to remove artist:', request.error);
+        frontendLogger.warn('[artists] Failed to remove artist:', request.error);
         reject(request.error);
       };
     });
@@ -157,7 +158,7 @@ export function useFollowedArtists(){
   const pendingRemovalsRef = React.useRef<Set<string>>(new Set());
 
   React.useEffect(()=>{
-    console.log('[artists-debug] useFollowedArtists hook instance created');
+    frontendLogger.log('[artists-debug] useFollowedArtists hook instance created');
   }, []);
 
   const refresh = React.useCallback(async ()=>{
@@ -191,7 +192,7 @@ export function useFollowedArtists(){
   React.useEffect(()=>{
     const listener = () => { 
       try { 
-        console.log('[artists-debug] artist subscriber listener invoked, cached=', globalArtistsCache.length);
+        frontendLogger.log('[artists-debug] artist subscriber listener invoked, cached=', globalArtistsCache.length);
         const removalIds = pendingRemovalsRef.current;
         let base = globalArtistsCache.filter(a => !removalIds.has(a.id));
         if(pendingAddsRef.current.length){
@@ -200,68 +201,68 @@ export function useFollowedArtists(){
           }
         }
         setArtists(base);
-      } catch(err){ console.warn('[artists-debug] artist subscriber listener failed', err); } 
+      } catch(err){ frontendLogger.warn('[artists-debug] artist subscriber listener failed', err); } 
     };
     artistSubscribers.add(listener);
     return () => { artistSubscribers.delete(listener); };
   }, []);
 
   const followArtist = React.useCallback(async (artist: SpotifyArtist) => {
-    console.log('[artists-debug] followArtist called', artist?.id, 'db ready=', !!db, 'current cache length=', globalArtistsCache.length);
+    frontendLogger.log('[artists-debug] followArtist called', artist?.id, 'db ready=', !!db, 'current cache length=', globalArtistsCache.length);
     if(artist && !globalArtistsCache.some(a=> a.id === artist.id)){
       pendingAddsRef.current.push(artist);
       const next = [artist, ...globalArtistsCache.filter(a=> a.id !== artist.id)];
       updateGlobalCache(next);
       setArtists(next);
-      console.log('[artists-debug] followArtist local state updated, next=', next.length);
+      frontendLogger.log('[artists-debug] followArtist local state updated, next=', next.length);
     } else {
-      console.log('[artists-debug] followArtist skipped - artist already in cache or invalid artist');
+      frontendLogger.log('[artists-debug] followArtist skipped - artist already in cache or invalid artist');
     }
     
     notifySubscribers();
     
     if(!db){
-      try { console.log('[artists-debug] followArtist: no db -> returning after notification'); } catch(_){}
+      try { frontendLogger.log('[artists-debug] followArtist: no db -> returning after notification'); } catch(_){}
       return;
     }
     try { 
       // Calls the new IndexedDB-specific function
       await ArtistDB.insert(db, artist); 
     } catch(e){ 
-      console.warn('followArtist insert failed', e); 
+      frontendLogger.warn('followArtist insert failed', e); 
     }
     finally { 
       try { 
-        console.log('[artists-debug] followArtist: DB path finished -> notifySubscribers again'); 
+        frontendLogger.log('[artists-debug] followArtist: DB path finished -> notifySubscribers again'); 
         notifySubscribers(); 
       } catch(_){}
     }
   }, [db]);
 
   const unfollowArtist = React.useCallback(async (id: string) => {
-    console.log('[artists-debug] unfollowArtist called', id, 'db ready=', !!db, 'current cache length=', globalArtistsCache.length);
+    frontendLogger.log('[artists-debug] unfollowArtist called', id, 'db ready=', !!db, 'current cache length=', globalArtistsCache.length);
     pendingRemovalsRef.current.add(id);
     const next = globalArtistsCache.filter(a => a.id !== id);
     updateGlobalCache(next);
     setArtists(next);
-    console.log('[artists-debug] unfollowArtist local state updated, next=', next.length);
+    frontendLogger.log('[artists-debug] unfollowArtist local state updated, next=', next.length);
     
     notifySubscribers();
     
     if(!db){
-      try { console.log('[artists-debug] unfollowArtist: no db -> returning after notification'); } catch(_){}
+      try { frontendLogger.log('[artists-debug] unfollowArtist: no db -> returning after notification'); } catch(_){}
       return;
     }
     try { 
       // Calls the new IndexedDB-specific function
       await ArtistDB.remove(db, id); 
     } catch(e){ 
-      console.warn('unfollowArtist remove failed', e); 
+      frontendLogger.warn('unfollowArtist remove failed', e); 
     }
-    try { console.log('[artists-debug] unfollowArtist: after removeArtistFromDB await for id=', id); } catch(_){}
+    try { frontendLogger.log('[artists-debug] unfollowArtist: after removeArtistFromDB await for id=', id); } catch(_){}
     finally { 
       try { 
-        console.log('[artists-debug] unfollowArtist: DB path finished -> notifySubscribers again'); 
+        frontendLogger.log('[artists-debug] unfollowArtist: DB path finished -> notifySubscribers again'); 
         notifySubscribers(); 
       } catch(_){}
     }

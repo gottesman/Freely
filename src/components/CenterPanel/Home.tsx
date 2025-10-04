@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { getWeeklyTops } from '../../core/TopChart';
 import useFollowedArtists from '../../core/Artists';
 import { useDB } from '../../core/Database';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../../core/SpotifyClient';
 import InfoHeader from '../Utilities/InfoHeader';
-import { useStableTabAPI, useHeroImage, playbackEvents } from '../Utilities/Helpers';
+import { useStableTabAPI, playbackEvents } from '../Utilities/Helpers';
 
 // Constants for performance
 const CONSTANTS = {
@@ -61,6 +62,9 @@ export default function HomeTab() {
   });
   
   const [collectionCache, setCollectionCache] = useState<CollectionCache>({});
+  // Keep a ref in sync to allow stable callbacks to read latest cache
+  const cacheRef = useRef<CollectionCache>({});
+  useEffect(() => { cacheRef.current = collectionCache; }, [collectionCache]);
 
   // lightweight mounted ref to avoid stale setState
   const mountedRef = useRef(true);
@@ -168,7 +172,7 @@ export default function HomeTab() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      console.log('[HomeTab] Latest releases - Following', followedArtists?.length || 0, 'artists');
+      frontendLogger.log('[HomeTab] Latest releases - Following', followedArtists?.length || 0, 'artists');
 
       if (!followedArtists || followedArtists.length === 0) {
         if (!cancelled && mountedRef.current) {
@@ -181,7 +185,7 @@ export default function HomeTab() {
       if (!ready || !mountedRef.current || cancelled) return;
 
       const toQuery = followedArtists.slice(0, CONSTANTS.maxArtists).filter(a => !!a?.id);
-      console.log('[HomeTab] Fetching albums for', toQuery.length, 'artists');
+      frontendLogger.log('[HomeTab] Fetching albums for', toQuery.length, 'artists');
 
       // Use optimized concurrent task runner
       const albumTasks = toQuery.map(a => async () => {
@@ -199,10 +203,10 @@ export default function HomeTab() {
             items = resp.items;
           }
           
-          console.log('[HomeTab] Albums for artist', aid, ':', { count: items.length, firstAlbum: items[0]?.name });
+          frontendLogger.log('[HomeTab] Albums for artist', aid, ':', { count: items.length, firstAlbum: items[0]?.name });
           
           if (!items || !items.length) {
-            console.log('[HomeTab] No albums found for artist', aid);
+            frontendLogger.log('[HomeTab] No albums found for artist', aid);
             return null;
           }
           
@@ -214,7 +218,7 @@ export default function HomeTab() {
           });
           
           const pick = items[0];
-          console.log('[HomeTab] Latest album for', a?.name, ':', pick?.name, '(', pick?.releaseDate, ')');
+          frontendLogger.log('[HomeTab] Latest album for', a?.name, ':', pick?.name, '(', pick?.releaseDate, ')');
           
           return pick ? {
             id: pick.id,
@@ -224,7 +228,7 @@ export default function HomeTab() {
             rank: undefined,
           } as TopAlbum : null;
         } catch (error) {
-          console.error('[HomeTab] Error fetching albums for artist', aid, ':', error);
+          frontendLogger.error('[HomeTab] Error fetching albums for artist', aid, ':', error);
           return null;
         }
       });
@@ -244,7 +248,7 @@ export default function HomeTab() {
         if (deduped.length >= CONSTANTS.latestReleasesLimit) break;
       }
       
-      console.log('[HomeTab] Final latest releases:', deduped.length, 'albums');
+      frontendLogger.log('[HomeTab] Final latest releases:', deduped.length, 'albums');
       
       if (!cancelled && mountedRef.current) {
         setHomeData(prev => ({ ...prev, latestReleases: deduped }));
@@ -349,7 +353,7 @@ export default function HomeTab() {
     if (!id) return;
     const key = `${kind}:${id}`;
     // already loaded (including failed undefined)
-    if (collectionCache[key] !== undefined) return;
+    if (cacheRef.current[key] !== undefined) return;
     try {
       let tracks: any[] | undefined;
       if (kind === 'album') tracks = await fetchAlbumTracks(id, { limit: 10 }) as any;
@@ -359,7 +363,7 @@ export default function HomeTab() {
     } catch {
       setCollectionCache(prev => ({ ...prev, [key]: undefined }));
     }
-  }, [collectionCache]);
+  }, []);
 
   const addPlayButton = useCallback((tracks: any[] | undefined) => {
     if (!tracks || tracks.length === 0) return null;
@@ -392,7 +396,7 @@ export default function HomeTab() {
       );
     }
     const key = `${kind}:${id}`;
-    const cached = collectionCache[key];
+    const cached = cacheRef.current[key];
     if (cached && cached.length) return addPlayButton(cached);
 
     return (
@@ -420,7 +424,100 @@ export default function HomeTab() {
         <span className="material-symbols-rounded filled">play_arrow</span>
       </div>
     );
-  }, [collectionCache, addPlayButton, loadCollection, playNow, t]);
+  }, [addPlayButton, loadCollection, playNow, t]);
+
+  // Memoize InfoHeader actions to avoid recreating elements each render
+  const heroActions = useMemo(() => ([
+    <button key="play" className="np-icon" type="button" aria-label={t('home.cta.playDailyMix')}><span className="material-symbols-rounded filled">play_arrow</span></button>,
+    <button key="shuffle" className="np-icon" type="button" aria-label={t('home.cta.shuffleAll')}><span className="material-symbols-rounded filled">shuffle</span></button>,
+    <button key="queue" className="np-icon" type="button" aria-label={t('home.cta.openQueue')}><span className="material-symbols-rounded filled">queue_music</span></button>
+  ]), [t]);
+
+  // Memoize mapped UI lists to reduce re-renders when unrelated state changes
+  const latestReleasesList = useMemo(() => (
+    homeData.latestReleases && homeData.latestReleases.length ? (
+      homeData.latestReleases.map((al, i) => (
+        <div key={String(al.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (al.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:String(al.id), source:'home' } })); }}>
+          <div className="media-cover square">
+            <div className="media-cover-inner">
+              <img src={al.image || ''} alt={al.name || ''} />
+            </div>
+            {renderCollectionPlay('album', al.id ?? undefined)}
+          </div>
+          <h3 className="media-title">{al.name}</h3>
+          <div className="media-meta">{(al.artists && al.artists.map(a => a.name).join(', ')) || ''}</div>
+        </div>
+      ))
+    ) : (
+      <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
+    )
+  ), [homeData.latestReleases, renderCollectionPlay, t]);
+
+  const recommendedList = useMemo(() => (
+    homeData.recommended && homeData.recommended.length ? (
+      homeData.recommended.map((s, i) => (
+        <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (s.id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(s.id), source:'home-recommended' } })); }}>
+          <div className="media-cover square">
+            <div className="media-cover-inner"><img src={s.image || ''} alt={s.name || ''} /></div>
+            {renderCollectionPlay('track', s.id ?? undefined)}
+          </div>
+          <h3 className="media-title">{s.name}</h3>
+          <div className="media-meta">{(s.artists && s.artists.map(a => a.name).join(', ')) || ''}</div>
+        </div>
+      ))
+    ) : (
+      <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
+    )
+  ), [homeData.recommended, renderCollectionPlay, t]);
+
+  const trendingSongsList = useMemo(() => (
+    homeData.tops.songs.map((s: any, i: number) => (
+      <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (s.id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(s.id), source:'home-trending' } })); }}>
+        <div className="media-cover square" aria-hidden="true">
+          <div className="media-cover-inner"><img src={s.image || ''} alt="" /></div>
+          {renderCollectionPlay('track', s.id ?? undefined)}
+        </div>
+        <h3 className="media-title">{s.name}</h3>
+        <p className="media-meta">{(s.artists && s.artists.map((a: { name?: string }) => a.name).join(', ')) || ''}</p>
+      </div>
+    ))
+  ), [homeData.tops.songs, renderCollectionPlay]);
+
+  const topArtistsList = useMemo(() => (
+    homeData.tops.artists.map((a: any, i: number) => (
+      <div key={String(a.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:String(a.id), source:'home-top-artists' } })); }}>
+        <div className="media-cover circle" aria-hidden="true">
+          <div className="media-cover-inner"><img src={a.image || ''} alt="" /></div>
+          {renderCollectionPlay('artist', a.id ?? undefined)}
+        </div>
+        <h3 className="media-title">{a.name}</h3>
+        <p className="media-meta">{a.rank ? `#${a.rank}` : ''}</p>
+      </div>
+    ))
+  ), [homeData.tops.artists, renderCollectionPlay]);
+
+  const mostPlayedList = useMemo(() => (
+    homeData.mostPlayed && homeData.mostPlayed.length ? (
+      homeData.mostPlayed.map((m, i) => {
+        const info = m.info;
+        const name = info?.name || 'Unknown';
+        const img = info?.album?.images ? api.imageRes(info.album.images, 1) : null;
+        const artists = (info?.artists || []).map((a: any) => a.name).join(', ');
+        return (
+          <div key={String(m.track_id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (m.track_id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(m.track_id), source:'home-most-played' } })); }}>
+            <div className="media-cover square" aria-hidden="true">
+              <div className="media-cover-inner"><img src={img || ''} alt={name} /></div>
+              {renderCollectionPlay('track', m.track_id ?? undefined)}
+            </div>
+            <h3 className="media-title">{name}</h3>
+            <p className="media-meta">{artists}</p>
+          </div>
+        );
+      })
+    ) : (
+      <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
+    )
+  ), [homeData.mostPlayed, renderCollectionPlay, api, t]);
 
   // Memoized scroll controllers for better performance
   const scrollControllers = useMemo(() => ({
@@ -490,11 +587,7 @@ export default function HomeTab() {
         meta={null}
         initialShrink={1}
         titleColor="var(--accent)"
-        actions={[
-          <button key="play" className="np-icon" type="button" aria-label={t('home.cta.playDailyMix')}><span className="material-symbols-rounded filled">play_arrow</span></button>,
-          <button key="shuffle" className="np-icon" type="button" aria-label={t('home.cta.shuffleAll')}><span className="material-symbols-rounded filled">shuffle</span></button>,
-          <button key="queue" className="np-icon" type="button" aria-label={t('home.cta.openQueue')}><span className="material-symbols-rounded filled">queue_music</span></button>
-        ]}
+        actions={heroActions}
       />
 
       {/* Latest Releases */}
@@ -502,22 +595,7 @@ export default function HomeTab() {
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scLatest.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refLatest} className="media-row scroll-x">
-            {homeData.latestReleases && homeData.latestReleases.length ? (
-              homeData.latestReleases.map((al, i) => (
-                <div key={String(al.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (al.id) window.dispatchEvent(new CustomEvent('freely:selectAlbum',{ detail:{ albumId:String(al.id), source:'home' } })); }}>
-                  <div className="media-cover square">
-                    <div className="media-cover-inner">
-                      <img src={al.image || ''} alt={al.name || ''} />
-                    </div>
-                    {renderCollectionPlay('album', al.id ?? undefined)}
-                  </div>
-                  <h3 className="media-title">{al.name}</h3>
-                  <div className="media-meta">{(al.artists && al.artists.map(a => a.name).join(', ')) || ''}</div>
-                </div>
-              ))
-            ) : (
-              <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
-            )}
+            {latestReleasesList}
           </div>
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scLatest.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
@@ -528,20 +606,7 @@ export default function HomeTab() {
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scRecommended.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refRecommended} className="media-row scroll-x">
-            {homeData.recommended && homeData.recommended.length ? (
-              homeData.recommended.map((s, i) => (
-                <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (s.id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(s.id), source:'home-recommended' } })); }}>
-                  <div className="media-cover square">
-                    <div className="media-cover-inner"><img src={s.image || ''} alt={s.name || ''} /></div>
-                    {renderCollectionPlay('track', s.id ?? undefined)}
-                  </div>
-                  <h3 className="media-title">{s.name}</h3>
-                  <div className="media-meta">{(s.artists && s.artists.map(a => a.name).join(', ')) || ''}</div>
-                </div>
-              ))
-            ) : (
-              <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
-            )}
+            {recommendedList}
           </div>
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scRecommended.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
@@ -552,16 +617,7 @@ export default function HomeTab() {
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scTrending.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refTrending} className="media-row scroll-x dense">
-            {homeData.tops.songs.map((s: TopSong, i) => (
-              <div key={String(s.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (s.id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(s.id), source:'home-trending' } })); }}>
-                <div className="media-cover square" aria-hidden="true">
-                  <div className="media-cover-inner"><img src={s.image || ''} alt="" /></div>
-                  {renderCollectionPlay('track', s.id ?? undefined)}
-                </div>
-                <h3 className="media-title">{s.name}</h3>
-                <p className="media-meta">{(s.artists && s.artists.map((a: { name?: string }) => a.name).join(', ')) || ''}</p>
-              </div>
-            ))}
+            {trendingSongsList}
           </div>
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scTrending.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
@@ -572,16 +628,7 @@ export default function HomeTab() {
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scArtists.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refArtists} className="media-row scroll-x artists">
-            {homeData.tops.artists.map((a: TopArtist, i) => (
-              <div key={String(a.id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (a.id) window.dispatchEvent(new CustomEvent('freely:selectArtist',{ detail:{ artistId:String(a.id), source:'home-top-artists' } })); }}>
-                <div className="media-cover circle" aria-hidden="true">
-                  <div className="media-cover-inner"><img src={a.image || ''} alt="" /></div>
-                  {renderCollectionPlay('artist', a.id ?? undefined)}
-                </div>
-                <h3 className="media-title">{a.name}</h3>
-                <p className="media-meta">{a.rank ? `#${a.rank}` : ''}</p>
-              </div>
-            ))}
+            {topArtistsList}
           </div>
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scArtists.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
@@ -592,26 +639,7 @@ export default function HomeTab() {
         <div className="media-row-wrap">
           <button type="button" aria-label={t('home.scrollLeft', 'Scroll left')} className="np-icon scroll-btn left" onClick={scMostPlayed.left}><span className="material-symbols-rounded filled">chevron_left</span></button>
           <div ref={refMostPlayed} className="media-row scroll-x dense">
-            {homeData.mostPlayed && homeData.mostPlayed.length ? (
-              homeData.mostPlayed.map((m, i) => {
-                const info = m.info;
-                const name = info?.name || 'Unknown';
-                const img = info?.album?.images ? api.imageRes(info.album.images, 1) : null;
-                const artists = (info?.artists || []).map((a: any) => a.name).join(', ');
-                return (
-                  <div key={String(m.track_id || i)} className="media-card compact" role="button" tabIndex={0} onClick={() => { if (m.track_id) window.dispatchEvent(new CustomEvent('freely:selectTrack',{ detail:{ trackId:String(m.track_id), source:'home-most-played' } })); }}>
-                    <div className="media-cover square" aria-hidden="true">
-                      <div className="media-cover-inner"><img src={img || ''} alt={name} /></div>
-                      {renderCollectionPlay('track', m.track_id ?? undefined)}
-                    </div>
-                    <h3 className="media-title">{name}</h3>
-                    <p className="media-meta">{artists}</p>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="np-hint">{t('home.notAvailable', 'Not available for now')}</div>
-            )}
+            {mostPlayedList}
           </div>
           <button type="button" aria-label={t('home.scrollRight', 'Scroll right')} className="np-icon scroll-btn right" onClick={scMostPlayed.right}><span className="material-symbols-rounded filled">chevron_right</span></button>
         </div>
@@ -622,7 +650,7 @@ export default function HomeTab() {
 
 /* --- Internal compositional components --- */
 interface HomeSectionProps { id: string; title: string; children: React.ReactNode; more?: boolean }
-function HomeSection({ id, title, children, more }: HomeSectionProps) {
+const HomeSection = React.memo(function HomeSection({ id, title, children, more }: HomeSectionProps) {
   return (
     <section className="home-section" aria-labelledby={`${id}-title`}>
       <header className="home-sec-head">
@@ -632,4 +660,4 @@ function HomeSection({ id, title, children, more }: HomeSectionProps) {
       {children}
     </section>
   );
-}
+});

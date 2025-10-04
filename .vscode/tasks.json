@@ -182,6 +182,681 @@
 				"$tsc"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Build Rust (tauri dev quick)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri",
+				"dev"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build Rust (tauri dev quick)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri",
+				"dev"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (Rust)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (Rust)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (Rust)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (Rust)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Tauri build (check)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri:build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo clean",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"clean",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Tauri build (check)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri:build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (fast)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rust build check",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (single)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (retry)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (retry 2)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (clean)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (retry 3)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (retry 4)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust build check (retry 5)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "TypeScript typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"typecheck"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Tauri dev quick smoke",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri",
+				"dev"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rust build check after roots tweak",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run Tauri dev to see plugin logs",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"tauri",
+				"dev"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Rebuild after manifest resolver fix",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild after index.json fix",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild after resolver hardening",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild with resolver debug logs",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild with entry manifest debug",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild after absolute logic fix",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Typecheck Rust after snake_case rename",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild after manifest JSON snake_case",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rust typecheck after removing serde aliases",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (quick)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Cargo check (quick)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"check",
+				"--manifest-path",
+				"src-tauri/Cargo.toml"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
 		}
 	]
 }

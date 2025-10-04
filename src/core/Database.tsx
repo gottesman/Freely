@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react'
+import { frontendLogger } from './FrontendLogger';
 
 // Types and constants
 type AnyDB = IDBDatabase;
@@ -202,7 +203,7 @@ const DatabaseSetup = {
         }
       };
     } catch (e) {
-      console.warn('Failed to ensure default data:', e);
+      frontendLogger.warn('Failed to ensure default data:', e);
     }
   }
 };
@@ -240,7 +241,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
                 });
               }
             } catch (e) {
-              console.warn(`Failed to update indexes for ${name}:`, e);
+              frontendLogger.warn(`Failed to update indexes for ${name}:`, e);
             }
           }
         });
@@ -249,12 +250,12 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         DatabaseSetup.ensureDefaultData(transaction);
         
       } catch (err) {
-        console.error('Database upgrade error:', err);
+        frontendLogger.error('Database upgrade error:', err);
       }
     };
 
     request.onblocked = () => {
-      console.warn('IndexedDB upgrade blocked by another connection');
+      frontendLogger.warn('IndexedDB upgrade blocked by another connection');
     };
 
     request.onsuccess = () => {
@@ -268,7 +269,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
             } catch (_) {}
           };
         } catch (e) {
-          console.warn('Version change handler setup failed:', e);
+          frontendLogger.warn('Version change handler setup failed:', e);
         }
         
         setDb(dbInst);
@@ -279,7 +280,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
     };
 
     request.onerror = () => {
-      console.error('IndexedDB initialization error:', request.error);
+      frontendLogger.error('IndexedDB initialization error:', request.error);
     };
 
     return () => {
@@ -288,7 +289,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         try {
           db.close();
         } catch (e) {
-          console.warn('Database close error:', e);
+          frontendLogger.warn('Database close error:', e);
         }
       }
     };
@@ -507,7 +508,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
           return (res as any) || local;
         });
       } catch (e) {
-        console.warn('[DB] getTrack enrich fetch failed:', e);
+        frontendLogger.warn('[DB] getTrack enrich fetch failed:', e);
         return local; // return what we have
       }
     }
@@ -520,7 +521,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         : new mod.SpotifyClient());
       await client.getTrack(String(trackId));
     } catch (e) {
-      console.warn('[DB] getTrack fallback fetch failed:', e);
+      frontendLogger.warn('[DB] getTrack fallback fetch failed:', e);
     }
     // Read again
     return await performTx('tracks', 'readonly', async ({ tracks }) => {
@@ -591,7 +592,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
       const json = await exportJSON();
       return new TextEncoder().encode(json);
     } catch (e) {
-      console.error("Failed to export DB:", e);
+      frontendLogger.error("Failed to export DB:", e);
       return null;
     }
   }, [exportJSON]);
@@ -601,7 +602,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
       const json = new TextDecoder().decode(data);
       await importJSON(json);
     } catch (e) {
-      console.error("Failed to import DB:", e);
+      frontendLogger.error("Failed to import DB:", e);
       throw new Error("Import failed. Data may be corrupt.");
     }
   }, [importJSON]);
@@ -631,7 +632,7 @@ export const DBProvider = React.memo<{ children: React.ReactNode; dbPath?: strin
         };
         await promisifyRequest(tracks.put(next));
       } catch (e) {
-        console.warn('[DB] Failed updating track aggregate play count:', e);
+        frontendLogger.warn('[DB] Failed updating track aggregate play count:', e);
       }
       return key as number;
     }), [performTx, promisifyRequest]);

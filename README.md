@@ -4,7 +4,7 @@
 	<img src="public/icon-192.png" alt="Freely splash screen" width="192" />
 </p>
 
-> ⚠️ Work In Progress: Freely is under active development and may break or be unstable at any time. Features can change without notice.
+Freely is under active development; features may evolve rapidly. The desktop app is stable enough for daily use, and the backend is now fully implemented in Rust via Tauri commands (no embedded HTTP/Node server).
 
 **Freely** is an experimental music player focused on **peer-to-peer streaming** and **local-first data ownership**.
 
@@ -20,7 +20,7 @@ The idea: stream music directly from other peers, work offline, and carry your p
 
 ## Current Status
 
-🚧 Active WIP — core P2P transport, local DB, and desktop app via Tauri v2 are in place. Daily development focuses on stability, source reliability, and UX polish.
+Core P2P transport, local DB, and the desktop app via Tauri v2 are in place. Ongoing work focuses on stability, source reliability, and UX polish.
 
 What to expect today:
 - Search and play from multiple sources (YouTube, torrents, HTTP) with local caching
@@ -61,6 +61,18 @@ Notes:
 - Tauri requires a Rust toolchain and platform-specific dependencies: https://tauri.app/start/prerequisites
 - Tauri config: `src-tauri/tauri.conf.json`; Rust main: `src-tauri/src/main.rs`
 
+### Architecture (commands-only backend)
+
+The backend is implemented entirely in Rust and exposed to the React renderer through Tauri commands—no HTTP or Node server runs at runtime.
+
+- YouTube integration: yt-dlp binary is bundled and invoked from Rust (`src-tauri/src/youtube.rs`).
+- Torrent engine: `librqbit` powers downloads and file enumeration (`src-tauri/src/torrents.rs`). The feature flag `torrent-rqbit` enables it and is on by default.
+- Commands router: `src-tauri/src/commands.rs` provides a thin API surface for the UI.
+- Paths and resources: centralized in `src-tauri/src/paths.rs`.
+
+Feature flags
+- `torrent-rqbit`: Enables the torrent engine (default). You can disable it when building by excluding default features.
+
 ### Environment Setup
 
 Create a local `.env` by copying the provided example and then edit values:
@@ -73,22 +85,27 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-Environment variables in the renderer are resolved via `src/core/AccessEnv.tsx`:
+Environment variables are read both in the renderer (via `src/core/AccessEnv.tsx`) and directly by the Rust backend when needed:
 - You can override defaults with `VITE_*` variables (e.g., `VITE_SPOTIFY_TOKEN_ENDPOINT`)
 - Tauri/Rust may also read OS-level envs (e.g., `SPOTIFY_TOKEN_ENDPOINT`) directly
 - Keep secrets out of the renderer; prefer external endpoints (see Spotify section)
 
 Key variables:
-- `SPOTIFY_TOKEN_ENDPOINT` or `VITE_SPOTIFY_TOKEN_ENDPOINT` — URL of your Cloudflare Worker for Spotify tokens
-- `CHARTS_SPOTIFY_ENDPOINT` or `VITE_CHARTS_SPOTIFY_ENDPOINT` — URL for Spotify charts proxy
-- `GENIUS_ENDPOINT` or `VITE_GENIUS_ENDPOINT` — URL for Genius proxy
+- Backend (Rust):
+	- `SPOTIFY_TOKEN_ENDPOINT` — URL of your Cloudflare Worker for Spotify tokens
+	- `CHARTS_SPOTIFY_ENDPOINT` — URL for Spotify charts proxy
+	- `GENIUS_ACCESS_TOKEN` — Genius API token for lyrics/metadata fetching
+- Renderer (via VITE_*):
+	- `VITE_SPOTIFY_TOKEN_ENDPOINT`
+	- `VITE_CHARTS_SPOTIFY_ENDPOINT`
+	- If needed, keep secrets in backend-only envs; avoid VITE_* for secrets.
 
 ### Development Commands
 
 - `npm run tauri dev` — Run the app in development (recommended)
 - `npm run typecheck` — TypeScript type checking
-- `npm run build:server` — Build the Node.js server bundle
 - `npm run fetch:bass` — Download/update BASS audio libraries
+- `npm run fetch:ytdlp` — Download/update yt-dlp binary
 
 ### Testing
 
@@ -117,7 +134,7 @@ Configuration is in `.stylelintrc.cjs` following standard CSS rules.
 ```bash
 npm run build
 ```
-Creates optimized frontend build and server bundle.
+Creates an optimized frontend build for the Tauri app.
 
 ### Production Build
 ```bash
@@ -153,7 +170,6 @@ npm run tauri:build:release
 | Build Type | Output Location | Description |
 |------------|----------------|-------------|
 | Frontend | `dist/` | Vite-built React app |
-| Server | `src-tauri/server-dist/` | Bundled Node.js server |
 | Desktop | `src-tauri/target/` | Native executables |
 
 ### Troubleshooting Builds
@@ -257,3 +273,7 @@ I couldn’t find a music player that was P2P, plugin-friendly, customizable, an
 **License:** MIT
 
 This is a prototype. Expect breaking changes and rough edges.
+
+### Licenses for bundled binaries
+
+See `BINARIES_LICENSE_NOTICE.md` for notices covering included binaries (e.g., yt-dlp) and libraries (e.g., librqbit under Apache-2.0).

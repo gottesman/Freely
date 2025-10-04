@@ -179,7 +179,7 @@
   gap: 0;
 }
 
-.left-panel.collapsed .pl-controls, .left-panel.collapsed .left-artists-header, .left-panel.collapsed .pl-add, .left-panel.collapsed .pl-meta { opacity: 0!important; height: 0!important; padding:0!important; gap: 0; border-width: 0;}
+.left-panel.collapsed .pl-controls, .left-panel.collapsed .left-artists-header, .left-panel.collapsed .pl-meta { opacity: 0!important; height: 0!important; padding:0!important; gap: 0; border-width: 0;}
 .left-panel.collapsed .pl-meta { display: none!important; }
 
 .left-panel.collapsed .pl-list .pl-item {

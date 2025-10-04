@@ -1,9 +1,10 @@
+import { frontendLogger } from './FrontendLogger';
 import { env } from './AccessEnv';
 
 // Performance constants
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
-const DEFAULT_USER_AGENT = 'FreelyPlayer/1.3.0-test';
+const DEFAULT_USER_AGENT = 'FreelyPlayer/1.4.0-alpha';
 
 // API configuration
 const API_ENDPOINTS = {
@@ -451,7 +452,7 @@ export class GeniusClient {
         html = DescriptionProcessor.buildHtmlFromPlain(plain);
       }
     } catch (error) {
-      console.warn('[Genius] Description processing failed:', error);
+      frontendLogger.warn('[Genius] Description processing failed:', error);
     }
     
     return {

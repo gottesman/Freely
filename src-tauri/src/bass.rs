@@ -99,6 +99,16 @@ pub const BASS_ACTIVE_PAUSED: c_uint = 3;
 pub const BASS_ATTRIB_VOL: c_uint = 2;
 pub const BASS_ATTRIB_FREQ: c_uint = 1;
 
+// Sample format flags (used in channel info flags)
+pub const BASS_SAMPLE_8BITS: c_uint = 1;       // 8-bit resolution
+pub const BASS_SAMPLE_FLOAT: c_uint = 256;     // 32-bit floating point
+pub const BASS_SAMPLE_MONO: c_uint = 2;        // mono
+pub const BASS_SAMPLE_3D: c_uint = 8;          // 3D functionality
+pub const BASS_SAMPLE_SOFTWARE: c_uint = 16;   // software mixing
+pub const BASS_SAMPLE_MUTEMAX: c_uint = 32;    // mute at maximum distance
+// Additional format detection constants
+pub const BASS_SAMPLE_16BITS: c_uint = 0;      // 16-bit resolution (default when no flags set)
+
 // Tag types for BASS_ChannelGetTags
 pub const BASS_TAG_ID3: c_uint = 0; // ID3v1 tags : TAG_ID3 structure
 pub const BASS_TAG_ID3V2: c_uint = 1; // ID3v2 tags : variable length block
@@ -149,6 +159,15 @@ pub const BASS_CTYPE_STREAM_WAV_FLOAT: c_uint = 0x50003;
 // Values based on BASS plugin API docs; used for codec identification only
 pub const BASS_CTYPE_STREAM_FLAC: c_uint = 0x10900; // from bassflac
 pub const BASS_CTYPE_STREAM_FLAC_OGG: c_uint = 0x10901; // from bassflac (Ogg FLAC)
+
+// Additional plugin-based codec constants
+pub const BASS_CTYPE_STREAM_AAC: c_uint = 0x10b00; // from bass_aac 
+pub const BASS_CTYPE_STREAM_MP4: c_uint = 0x10b01; // from bass_aac
+pub const BASS_CTYPE_STREAM_OPUS: c_uint = 0x11200; // from bassopus
+pub const BASS_CTYPE_STREAM_WEBM: c_uint = 0x10e00; // from basswebm
+pub const BASS_CTYPE_STREAM_APE: c_uint = 0x10600; // from bass_ape
+pub const BASS_CTYPE_STREAM_ALAC: c_uint = 0x10b02; // from bass_aac (ALAC)
+
 pub const BASS_CTYPE_MUSIC_MOD: c_uint = 0x20000;
 pub const BASS_CTYPE_MUSIC_MTM: c_uint = 0x20001;
 pub const BASS_CTYPE_MUSIC_S3M: c_uint = 0x20002;
@@ -939,11 +958,23 @@ pub fn probe_audio_format_from_channel(lib: &Library, handle: u32) -> BassAudioF
     };
 
     if channel_get_info(lib, handle, &mut info) == 0 {
+        println!("[bass] Failed to get channel info for codec detection");
         return BassAudioFormatInfo {
             codec: None,
             sample_rate: None,
             bits_per_sample: None,
         };
+    }
+
+    println!("[bass] Channel info - ctype: 0x{:x}, freq: {}, chans: {}, flags: 0x{:x}, origres: {}", 
+        info.ctype, info.freq, info.chans, info.flags, info.origres);
+    
+    // Additional debugging for bit depth detection
+    if info.origres > 0 {
+        println!("[bass] Original resolution detected: {} bits", info.origres);
+        if info.origres == 24 {
+            println!("[bass] 24-bit audio detected!");
+        }
     }
 
     let mut actual_freq: f32 = 0.0;
@@ -955,9 +986,38 @@ pub fn probe_audio_format_from_channel(lib: &Library, handle: u32) -> BassAudioF
     };
 
     let bits_per_sample = if info.origres > 0 {
+        // BASS provides accurate original resolution for most formats
         Some(info.origres)
     } else {
-        None
+        // If origres is not available, try to determine from channel flags
+        let flags = info.flags;
+        if flags & BASS_SAMPLE_FLOAT != 0 {
+            Some(32) // 32-bit floating point
+        } else if flags & BASS_SAMPLE_8BITS != 0 {
+            Some(8)  // 8-bit integer
+        } else {
+            // For formats where BASS doesn't set specific flags but provides good origres,
+            // we might be missing 24-bit detection. Let's try some heuristics based on
+            // common audio format patterns
+            match info.ctype {
+                // Many high-quality formats commonly use 24-bit
+                BASS_CTYPE_STREAM_FLAC | BASS_CTYPE_STREAM_AIFF => {
+                    // For these formats, 24-bit is quite common if not 16-bit or 32-bit float
+                    if flags & (BASS_SAMPLE_8BITS | BASS_SAMPLE_FLOAT) == 0 {
+                        // Could be 16-bit or 24-bit, default to 16-bit but log for investigation
+                        println!("[bass] Potential 24-bit audio detected in format 0x{:x}, defaulting to 16-bit", info.ctype);
+                        Some(16)
+                    } else {
+                        Some(16)
+                    }
+                },
+                _ => {
+                    // Default assumption for most formats when flags don't indicate otherwise
+                    // Most common formats are 16-bit when flags don't indicate 8-bit or float
+                    Some(16)
+                }
+            }
+        }
     };
 
     let codec = if info.freq >= 352000 {
@@ -973,9 +1033,19 @@ pub fn probe_audio_format_from_channel(lib: &Library, handle: u32) -> BassAudioF
             BASS_CTYPE_STREAM_AIFF => Some("aiff".to_string()),
             BASS_CTYPE_STREAM_DSD | BASS_CTYPE_STREAM_DSD_RAW => Some("dsd".to_string()),
             BASS_CTYPE_STREAM_FLAC | BASS_CTYPE_STREAM_FLAC_OGG => Some("flac".to_string()),
+            BASS_CTYPE_STREAM_AAC => Some("aac".to_string()),
+            BASS_CTYPE_STREAM_MP4 => Some("mp4".to_string()),
+            BASS_CTYPE_STREAM_ALAC => Some("alac".to_string()),
+            BASS_CTYPE_STREAM_OPUS => Some("opus".to_string()),
+            BASS_CTYPE_STREAM_WEBM => Some("webm".to_string()),
+            BASS_CTYPE_STREAM_APE => Some("ape".to_string()),
             // CoreAudio / Media Foundation often indicate MP4/M4A family; refine via tags
             BASS_CTYPE_STREAM_CA | BASS_CTYPE_STREAM_MF => Some("m4a".to_string()),
-            _ => None,
+            _ => {
+                // For unknown ctypes, print the value for debugging
+                println!("[bass] Unknown ctype for codec detection: 0x{:x}", info.ctype);
+                None
+            }
         };
 
         // Then fallback to tags and HTTP headers
@@ -988,11 +1058,17 @@ pub fn probe_audio_format_from_channel(lib: &Library, handle: u32) -> BassAudioF
         Some(via_name.unwrap_or_else(|| "unknown".to_string()))
     };
 
-    BassAudioFormatInfo {
-        codec,
+    let format_info = BassAudioFormatInfo {
+        codec: codec.clone(),
         sample_rate,
         bits_per_sample,
-    }
+    };
+
+    // Final debugging output
+    println!("[bass] Detected format - codec: {:?}, sample_rate: {:?}, bits_per_sample: {:?}", 
+        format_info.codec, format_info.sample_rate, format_info.bits_per_sample);
+
+    format_info
 }
 
 /// Create a temporary BASS stream for URL and probe its format; the stream is freed before returning.

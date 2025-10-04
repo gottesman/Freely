@@ -217,10 +217,10 @@ body{
                             document.body.style.transition = 'opacity 0.3s ease-out';
                             document.body.style.opacity = '0';
                         });
-                        console.log('Using window.__TAURI__.event.listen');
+                        //console.log('Using window.__TAURI__.event.listen');
                         return true;
                     } catch (e) {
-                        console.warn('window.__TAURI__.event.listen failed:', e);
+                        //console.warn('window.__TAURI__.event.listen failed:', e);
                     }
                 }
 
@@ -237,10 +237,10 @@ body{
                             document.body.style.transition = 'opacity 0.3s ease-out';
                             document.body.style.opacity = '0';
                         });
-                        console.log('Using window.__TAURI_INTERNALS__.event.listen');
+                        //console.log('Using window.__TAURI_INTERNALS__.event.listen');
                         return true;
                     } catch (e) {
-                        console.warn('window.__TAURI_INTERNALS__.event.listen failed:', e);
+                        ///console.warn('window.__TAURI_INTERNALS__.event.listen failed:', e);
                     }
                 }
 
@@ -257,10 +257,10 @@ body{
                             document.body.style.transition = 'opacity 0.3s ease-out';
                             document.body.style.opacity = '0';
                         });
-                        console.log('Using window.__TAURI_INTERNALS__.listen');
+                        //console.log('Using window.__TAURI_INTERNALS__.listen');
                         return true;
                     } catch (e) {
-                        console.warn('window.__TAURI_INTERNALS__.listen failed:', e);
+                        //console.warn('window.__TAURI_INTERNALS__.listen failed:', e);
                     }
                 }
 
@@ -276,21 +276,21 @@ body{
                         document.body.style.transition = 'opacity 0.3s ease-out';
                         document.body.style.opacity = '0';
                     });
-                    console.log('Using DOM event listeners');
+                    ///console.log('Using DOM event listeners');
                     return true;
                 } catch (e) {
-                    console.warn('DOM event listeners failed:', e);
+                    //console.warn('DOM event listeners failed:', e);
                 }
 
                 return false;
             };
 
             if (!setupEventListeners()) {
-                console.warn('All event listening methods failed, using fallback');
+                //console.warn('All event listening methods failed, using fallback');
             }
         } else {
             // Fallback for development/non-Tauri environments
-            console.log('Running in development mode');
+            //console.log('Running in development mode');
             setTimeout(() => {
                 updateStatus({ status: 'Ready!', progress: 100, details: 'Application loaded successfully' });
             }, 4000);

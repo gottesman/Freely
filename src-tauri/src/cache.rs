@@ -3,7 +3,7 @@ use crate::utils::resolve_audio_source;
 use once_cell::sync::Lazy;
 use reqwest;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,39 @@ use tauri::Manager;
 use tokio::fs as tokio_fs;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
+
+// Validate that the tail of a file contains real (non-zero) data and, when an
+// expected total is known, that the file has reached at least ~98% of that size.
+// This guards against sparse preallocation when pieces are shared between files
+// in multi-file torrents.
+async fn has_nontrivial_tail(path: &Path, expect_total: Option<u64>) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use std::io::SeekFrom;
+    let meta = match tokio::fs::metadata(path).await { Ok(m) => m, Err(_) => return false };
+    let len = meta.len();
+    let total = expect_total.unwrap_or(len);
+    if total == 0 { return false; }
+    // Require near-complete size if we know the target size
+    if expect_total.is_some() {
+        let min_ok = (total as f64 * 0.98) as u64; // 98%
+        if len < min_ok { return false; }
+    }
+    let tail_len: u64 = std::cmp::min(64 * 1024, total).max(512);
+    let start = total.saturating_sub(tail_len);
+    if let Ok(mut f) = tokio::fs::File::open(path).await {
+        if f.seek(SeekFrom::Start(start)).await.is_ok() {
+            let mut buf = vec![0u8; tail_len as usize];
+            if let Ok(n) = f.read(&mut buf).await {
+                if n == 0 { return false; }
+                buf.truncate(n);
+                let non_zero = buf.iter().filter(|b| **b != 0).count() as u64;
+                let threshold = std::cmp::max(512u64, (buf.len() as u64) / 100);
+                return non_zero >= threshold;
+            }
+        }
+    }
+    false
+}
 
 #[derive(Debug)]
 pub struct CacheDownloadResult {
@@ -380,11 +413,26 @@ pub fn create_cache_filename_with_index(
 static CACHE: Lazy<Mutex<Option<AudioCache>>> = Lazy::new(|| Mutex::new(None));
 
 // Track inflight downloads: map cache_key -> (bytes_written, optional_total_bytes)
-static INFLIGHT_DOWNLOADS: Lazy<Mutex<HashMap<String, (u64, Option<u64>)>>> =
+pub static INFLIGHT_DOWNLOADS: Lazy<Mutex<HashMap<String, (u64, Option<u64>)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 // Track inflight metadata to recover identifiers for UI listing: cache_key -> (track_id, source_type, source_hash)
-static INFLIGHT_META: Lazy<Mutex<HashMap<String, (String, String, String)>>> =
+pub static INFLIGHT_META: Lazy<Mutex<HashMap<String, (String, String, String)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Track downloads that are in the process of starting to prevent duplicate spawns
+static STARTING_DOWNLOADS: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
+
+// Guard to ensure STARTING_DOWNLOADS entry is cleared on all exit paths
+struct StartGuard {
+    key: String,
+}
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        let mut starting = STARTING_DOWNLOADS.lock().unwrap();
+        starting.remove(&self.key);
+    }
+}
 
 // Recent cache miss log debouncing: map cache_key -> last_logged_unix_seconds
 const MISS_LOG_DEBOUNCE_SECS: u64 = 5;
@@ -564,6 +612,37 @@ pub fn get_inflight_status(
     inflight.get(&cache_key).cloned()
 }
 
+// Check that several windows in the middle of the file contain non-zero bytes to avoid caching sparse holes.
+async fn has_nonzero_middle_samples(path: &std::path::Path, total_opt: Option<u64>) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use std::io::SeekFrom;
+    let total = if let Some(t) = total_opt {
+        t
+    } else {
+        match tokio::fs::metadata(path).await { Ok(m) => m.len(), Err(_) => return false }
+    };
+    if total < 64 * 1024 {
+        // Tiny files: treat as OK if they exist
+        return true;
+    }
+    // Sample up to three windows: at 1/3, 1/2, and 2/3 of the file
+    // Each window reads up to 16KB and checks for any non-zero byte
+    let mut f = match tokio::fs::File::open(path).await { Ok(f) => f, Err(_) => return false };
+    let sample_points = [total / 3, total / 2, (total * 2) / 3];
+    for &pos in &sample_points {
+        if f.seek(SeekFrom::Start(pos)).await.is_err() { return false; }
+        let mut buf = vec![0u8; 16 * 1024];
+        let n = match f.read(&mut buf).await { Ok(n) => n, Err(_) => return false };
+        if n == 0 { continue; }
+        if buf[..n].iter().any(|&b| b != 0) {
+            // Found non-zero data in this window
+            return true;
+        }
+    }
+    // If all windows were zeros, treat as not ok
+    false
+}
+
 // Return the expected final (extension-less) path for a given cache key, if the cache is initialized.
 pub fn get_final_cache_path(
     track_id: &str,
@@ -679,16 +758,87 @@ pub async fn cache_download_and_store(
 ) -> Result<String, String> {
     println!("[cache] cache_download_and_store called with track_id: '{}', source_type: '{}', source_hash: '{}', url: '{}', file_index: {:?}", track_id, source_type, source_hash, &url[..50.min(url.len())], file_index);
 
+    // Compute base name key up-front for dedupe/lookups
+    let base_name = create_cache_filename_with_index(
+        &track_id,
+        &source_type,
+        &source_hash,
+        file_index,
+    );
+
+    // If already cached, short-circuit
+    {
+        let mut cache_guard = CACHE.lock().unwrap();
+        if let Some(cache) = cache_guard.as_mut() {
+            if let Some(file_path) = cache
+                .get_cached_file_with_index(&track_id, &source_type, &source_hash, file_index)
+            {
+                println!("[cache] Download request ignored; file already cached: {}", file_path.display());
+                return Ok("Already cached".to_string());
+            }
+        }
+    }
+
+    // If inflight for this key, avoid starting another
+    {
+        let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+        if inflight.contains_key(&base_name) {
+            println!("[cache] Duplicate download request suppressed (inflight): {}", base_name);
+            return Ok("Already in progress".to_string());
+        }
+    }
+
+    // If another caller is currently starting this download, dedupe
+    {
+        let mut starting = STARTING_DOWNLOADS.lock().unwrap();
+        if !starting.insert(base_name.clone()) {
+            println!("[cache] Duplicate download request suppressed (starting): {}", base_name);
+            return Ok("Already in progress".to_string());
+        }
+    }
+
     let (tx, _rx) = mpsc::unbounded_channel::<CacheDownloadResult>();
 
     // spawn background task to avoid blocking the command
     let app_clone = app.clone();
+    let starting_key = base_name.clone();
     tokio::spawn(async move {
+        // Ensure starting flag is cleared on any exit path
+        let _guard = StartGuard { key: starting_key };
         // For torrent downloads, implement retry logic
         if source_type == "torrent" {
             let mut retry_count = 0;
             let max_retries = 10; // Try for up to 10 times
             let mut last_progress: Option<u64> = None; // Track progress between retries
+
+            // Helper: validate that the tail of the file contains real data (not just sparse zeros)
+            // This helps when the torrent engine preallocates full length and fills pieces out-of-order,
+            // especially for start/end pieces shared with neighbor files.
+            async fn has_nontrivial_tail(p: &std::path::Path, expect_total: Option<u64>) -> bool {
+                use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                use std::io::SeekFrom;
+                let meta = match tokio::fs::metadata(p).await { Ok(m) => m, Err(_) => return false };
+                let len = meta.len();
+                let total = expect_total.unwrap_or(len);
+                if total == 0 { return false; }
+                // Read up to the last 64KB (or less if very small files)
+                let tail_len: u64 = std::cmp::min(64 * 1024, total).max(512);
+                let start = total.saturating_sub(tail_len);
+                if let Ok(mut f) = tokio::fs::File::open(p).await {
+                    if f.seek(SeekFrom::Start(start)).await.is_ok() {
+                        let mut buf = vec![0u8; tail_len as usize];
+                        if let Ok(n) = f.read(&mut buf).await {
+                            if n == 0 { return false; }
+                            buf.truncate(n);
+                            // Consider the tail valid if at least 1% or 512 bytes (whichever larger) are non-zero
+                            let non_zero = buf.iter().filter(|b| **b != 0).count() as u64;
+                            let threshold = std::cmp::max(512u64, (buf.len() as u64) / 100);
+                            return non_zero >= threshold;
+                        }
+                    }
+                }
+                false
+            }
 
             loop {
                 println!(
@@ -858,48 +1008,410 @@ pub async fn download_and_cache_audio(
     println!("[cache] Starting download for {} ({}:{}) from: {}... (file_index: {:?})", 
         track_id, source_type, source_hash, &url[..50.min(url.len())], file_index);
 
-    // Resolve the provided URL to a direct download URL when possible. This avoids
-    // hitting the local streaming endpoint which may return HTML/error pages.
-    let resolved = if source_type == "torrent" && file_index.is_some() {
-        // For torrents with specific file index, construct the server URL directly
-        let file_idx = file_index.unwrap();
-        if url.starts_with("magnet:") {
-            // Extract infoHash from magnet URI
-            if let Some(start) = url.find("xt=urn:btih:") {
-                let hash_start = start + 12;
-                if let Some(end) = url[hash_start..].find('&') {
-                    let info_hash = &url[hash_start..hash_start + end];
-                    format!(
-                        "http://localhost:9000/stream/{}/{}?magnet={}",
-                        info_hash.to_lowercase(),
-                        file_idx,
-                        urlencoding::encode(&url)
-                    )
-                } else {
-                    let info_hash = &url[hash_start..];
-                    format!(
-                        "http://localhost:9000/stream/{}/{}?magnet={}",
-                        info_hash.to_lowercase(),
-                        file_idx,
-                        urlencoding::encode(&url)
-                    )
+    // Torrent downloads: use the embedded torrent engine directly instead of localhost server
+    if source_type == "torrent" && file_index.is_some() {
+        if let Some(app_ref) = app.as_ref() {
+            use tokio::io::{AsyncReadExt, AsyncSeekExt};
+            use std::io::SeekFrom;
+            let idx = file_index.unwrap() as u32;
+            // Download torrent data into the temporary torrents folder under Roaming
+            let save_dir = app_ref.state::<crate::paths::PathConfig>().torrents_dir.clone();
+            let engine = crate::torrents::get_engine();
+
+            // Start the torrent download via engine (magnet or infohash is accepted)
+            if let Err(e) = tokio::task::spawn_blocking({
+                let url_c = url.clone();
+                let save_dir_c = save_dir.clone();
+                move || engine.start_download(&url_c, idx, &save_dir_c)
+            }).await.unwrap_or_else(|e| Err(format!("join error: {e}"))) {
+                println!(
+                    "[cache] Failed to start torrent download via engine for {} ({}:{}): {}",
+                    track_id, source_type, source_hash, e
+                );
+                let _ = app_ref.emit(
+                    "cache:download:error",
+                    serde_json::json!({
+                        "trackId": track_id,
+                        "sourceType": source_type,
+                        "sourceHash": source_hash,
+                        "message": format!("Failed to start torrent: {}", e)
+                    }),
+                );
+                return;
+            }
+
+            // Resolve the engine's file path; retry a few times until it becomes available
+            let engine_path = loop {
+                let maybe_path = tokio::task::spawn_blocking({
+                    let url_c = url.clone();
+                    let save_dir_c = save_dir.clone();
+                    move || engine.file_path(&url_c, idx, &save_dir_c)
+                }).await.ok().and_then(|r| r.ok());
+                if let Some(p) = maybe_path.clone() {
+                    if p.exists() { break p; }
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            };
+
+            // Prepare inflight bookkeeping using our final cache base name
+            let base_name = create_cache_filename_with_index(
+                &track_id,
+                &source_type,
+                &source_hash,
+                file_index,
+            );
+            downloads::ensure_control_for(&base_name);
+            let cache_dir = {
+                let cache_guard = CACHE.lock().unwrap();
+                if let Some(c) = cache_guard.as_ref() { c.cache_dir.clone() } else {
+                    println!("[cache] Cache not initialized, cannot cache {} ({}:{})", track_id, source_type, source_hash);
+                    return;
+                }
+            };
+            let final_path = cache_dir.join(&base_name);
+
+            // Mark inflight and emit initial progress
+            {
+                let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+                inflight.insert(base_name.clone(), (0u64, None));
+                let mut meta = INFLIGHT_META.lock().unwrap();
+                meta.insert(base_name.clone(), (track_id.clone(), source_type.clone(), source_hash.clone()));
+            }
+            let _ = app_ref.emit(
+                "cache:download:progress",
+                serde_json::json!({
+                    "trackId": track_id,
+                    "sourceType": source_type,
+                    "sourceHash": source_hash,
+                    "bytes_downloaded": 0u64,
+                    "total_bytes": null,
+                    "inflight": true
+                }),
+            );
+
+            // Copy loop: tail the engine file as it grows
+            let mut prefix_buf: Vec<u8> = Vec::with_capacity(8192);
+            let mut ready_emitted = false;
+            let mut last_progress_time = std::time::Instant::now();
+            let mut last_progress_bytes = 0u64;
+            let mut total_opt: Option<u64> = None;
+            const PROGRESS_TIME_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(250);
+            const PROGRESS_BYTES_THRESHOLD: u64 = 512 * 1024;
+
+            // Add timeout mechanism to prevent infinite loops when torrent doesn't start
+            let start_time = std::time::Instant::now();
+            let mut last_activity_time = start_time;
+            const INITIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60); // 1 minute for first bytes
+            const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);  // 5 minutes for stalls
+
+            loop {
+                // Respect pause/cancel controls
+                if downloads::is_cancelled(&base_name) {
+                    println!("[cache] Cancel requested for {} ({}:{})", track_id, source_type, source_hash);
+                    let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+                    inflight.remove(&base_name);
+                    let mut meta = INFLIGHT_META.lock().unwrap();
+                    meta.remove(&base_name);
+                    let _ = app_ref.emit(
+                        "cache:download:error",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "message": "cancelled"
+                        }),
+                    );
+                    downloads::clear_control(&base_name);
+                    return;
+                }
+                if downloads::is_paused(&base_name) {
+                    downloads::wait_while_paused_or_until_cancel(&base_name).await;
+                }
+                
+                // Determine available bytes and total via engine
+                let mut downloaded: u64 = match tokio::fs::metadata(&engine_path).await { Ok(m) => m.len(), Err(_) => 0 };
+                if let Ok(p) = tokio::task::spawn_blocking({
+                    let url_c = url.clone();
+                    move || engine.progress(&url_c, idx)
+                }).await.unwrap_or_else(|e| Err(format!("join error: {e}"))) {
+                    total_opt = Some(p.total);
+                    downloaded = p.bytes.max(downloaded);
+                }
+
+                // Check for progress to update activity time
+                if downloaded > last_progress_bytes {
+                    last_activity_time = std::time::Instant::now();
+                }
+
+                // Check for timeouts
+                let now = std::time::Instant::now();
+                let time_since_start = now.duration_since(start_time);
+                let time_since_activity = now.duration_since(last_activity_time);
+                
+                // Timeout if no initial progress within INITIAL_TIMEOUT or no activity for STALL_TIMEOUT
+                let has_initial_progress = downloaded > 0;
+                let should_timeout = if !has_initial_progress {
+                    time_since_start >= INITIAL_TIMEOUT
+                } else {
+                    time_since_activity >= STALL_TIMEOUT
+                };
+
+                if should_timeout {
+                    let timeout_reason = if !has_initial_progress {
+                        format!("No initial progress after {} seconds", INITIAL_TIMEOUT.as_secs())
+                    } else {
+                        format!("Download stalled for {} seconds at {:.2}MB", STALL_TIMEOUT.as_secs(), downloaded as f64 / (1024.0 * 1024.0))
+                    };
+                    
+                    println!("[cache] Torrent download timeout for {} ({}:{}): {}", track_id, source_type, source_hash, timeout_reason);
+                    
+                    // Clean up inflight tracking
+                    let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+                    inflight.remove(&base_name);
+                    let mut meta = INFLIGHT_META.lock().unwrap();
+                    meta.remove(&base_name);
+                    
+                    // Emit error to notify frontend
+                    let _ = app_ref.emit(
+                        "cache:download:error",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "message": format!("Torrent download timeout: {}", timeout_reason)
+                        }),
+                    );
+                    
+                    downloads::clear_control(&base_name);
+                    return;
+                }
+
+                // Emit ready once we have enough prefix and it's valid audio; require a bit more than 1KB to reduce false positives
+                if !ready_emitted && downloaded >= 16 * 1024 {
+                    if let Ok(mut in_f) = tokio::fs::File::open(&engine_path).await {
+                        if in_f.seek(SeekFrom::Start(0)).await.is_ok() {
+                            let to_read = 8192usize.min(downloaded as usize);
+                            prefix_buf.resize(to_read, 0);
+                            if let Ok(n) = in_f.read(&mut prefix_buf).await {
+                                prefix_buf.truncate(n);
+                                if is_valid_audio_content(&prefix_buf) {
+                                    ready_emitted = true;
+                                    let tmp_path_str = engine_path.to_string_lossy().to_string();
+                                    let _ = app_ref.emit(
+                                        "cache:download:ready",
+                                        serde_json::json!({
+                                            "trackId": track_id,
+                                            "sourceType": source_type,
+                                            "sourceHash": source_hash,
+                                            "tmpPath": tmp_path_str,
+                                            "bytes_downloaded": downloaded,
+                                            "total_bytes": total_opt,
+                                            "inflight": true
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Throttled progress updates
+                let time_since_last = now.duration_since(last_progress_time);
+                let bytes_since_last = downloaded.saturating_sub(last_progress_bytes);
+                if time_since_last >= PROGRESS_TIME_THRESHOLD || bytes_since_last >= PROGRESS_BYTES_THRESHOLD {
+                    {
+                        let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+                        if let Some(v) = inflight.get_mut(&base_name) { v.0 = downloaded; v.1 = total_opt; }
+                    }
+                    let _ = app_ref.emit(
+                        "cache:download:progress",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "bytes_downloaded": downloaded,
+                            "total_bytes": total_opt,
+                            "inflight": true
+                        }),
+                    );
+                    last_progress_time = now;
+                    last_progress_bytes = downloaded;
+                }
+
+                // Complete when engine reports full download, but guard against sparse preallocation:
+                // require a non-trivial tail AND non-zero samples in the middle before considering the file complete.
+                if let Some(t) = total_opt {
+                    if t > 0 && downloaded >= t {
+                        // Double-check the tail contains actual data; retry briefly if not
+                        let mut validated = false;
+                        for _ in 0..20 { // up to ~6s (20 * 300ms) of additional waiting
+                            if has_nontrivial_tail(&engine_path, total_opt).await {
+                                // Also verify that the middle of the file is not all zeros (sparse hole)
+                                if has_nonzero_middle_samples(&engine_path, Some(t)).await {
+                                    validated = true;
+                                    break;
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        }
+                        if validated { break; }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+            // Finalize: copy engine file into audio_cache with extensionless base name
+            // Validate prefix (be lenient for larger downloads)
+            if !is_valid_audio_content(&prefix_buf) {
+                println!("[cache] Torrent downloaded content did not pass validation for {} ({}:{}) - proceeding due to engine completion", track_id, source_type, source_hash);
+            }
+            // As an extra safety, ensure the file tail is non-trivial and we have non-zero samples in the middle
+            // before copying. This addresses cases where the engine preallocated size, writing start/end first
+            // and leaving zeros in the middle (sparse holes).
+            let expected_total = total_opt.unwrap_or(0);
+            if expected_total > 0 {
+                let tail_ok = has_nontrivial_tail(&engine_path, total_opt).await;
+                let middle_ok = has_nonzero_middle_samples(&engine_path, Some(expected_total)).await;
+                if !tail_ok || !middle_ok {
+                    println!("[cache] Torrent engine reported completion but tail validation failed for {} ({}:{}) - deferring finalization", track_id, source_type, source_hash);
+                    // Inform UI we're still inflight even though engine signaled completion once
+                    let downloaded_now = match tokio::fs::metadata(&engine_path).await { Ok(m) => Some(m.len()), Err(_) => None };
+                    let _ = app_ref.emit(
+                        "cache:download:progress",
+                        serde_json::json!({
+                            "trackId": track_id,
+                            "sourceType": source_type,
+                            "sourceHash": source_hash,
+                            "bytes_downloaded": downloaded_now,
+                            "total_bytes": total_opt,
+                            "inflight": true,
+                            "reason": if !tail_ok { "waiting_for_tail_validation" } else { "waiting_for_middle_pieces" }
+                        }),
+                    );
+                    // Keep control so pause/cancel still works; do not copy to cache yet
+                    return;
+                }
+            }
+            // Ensure parent exists (already ensured by cache init)
+            if final_path.exists() {
+                let _ = tokio::fs::remove_file(&final_path).await;
+            }
+            if let Err(e) = tokio::fs::copy(&engine_path, &final_path).await {
+                println!("[cache] Failed to copy engine file {:?} -> {:?}: {}", engine_path, final_path, e);
+                downloads::clear_control(&base_name);
+                return;
+            }
+
+            // Get final size
+            let file_size = match tokio::fs::metadata(&final_path).await {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    println!("[cache] Failed to stat finalized cache file {:?}: {}", final_path, e);
+                    // Attempt cleanup and abort
+                    let _ = tokio::fs::remove_file(&final_path).await;
+                    downloads::clear_control(&base_name);
+                    return;
+                }
+            };
+
+            // Add to cache index under lock; perform async cleanup after releasing the lock
+            let mut add_failed: Option<String> = None;
+            let cache_missing: bool;
+            {
+                let mut cache_guard = CACHE.lock().unwrap();
+                if let Some(cache) = cache_guard.as_mut() {
+                    if let Err(e) = cache.add_cached_file_with_index(
+                        track_id.clone(),
+                        source_type.clone(),
+                        source_hash.clone(),
+                        base_name.clone(),
+                        file_size,
+                        file_index,
+                    ) {
+                        add_failed = Some(e);
+                        cache_missing = false;
+                    } else {
+                        cache_missing = false;
+                    }
+                } else {
+                    cache_missing = true;
+                }
+            }
+            if let Some(e) = add_failed {
+                println!(
+                    "[cache] Failed to add torrent-cached file to index for {} ({}:{}): {}",
+                    track_id, source_type, source_hash, e
+                );
+                let _ = tokio::fs::remove_file(&final_path).await;
+                downloads::clear_control(&base_name);
+                return;
+            }
+            if cache_missing {
+                println!("[cache] Cache not initialized while finalizing torrent cache for {}", track_id);
+                let _ = tokio::fs::remove_file(&final_path).await;
+                downloads::clear_control(&base_name);
+                return;
+            }
+
+            // Send completion notification via channel
+            let cached_path = final_path.to_string_lossy().to_string();
+            let result = CacheDownloadResult {
+                track_id: track_id.clone(),
+                source_type: source_type.clone(),
+                source_hash: source_hash.clone(),
+                cached_path: cached_path.clone(),
+                file_size,
+            };
+            if let Err(e) = tx.send(result) {
+                println!(
+                    "[cache] Failed to send cache completion notification for {} ({}:{}): {}",
+                    track_id, source_type, source_hash, e
+                );
             } else {
                 println!(
-                    "[cache] Invalid magnet URI for torrent with file index: {}",
-                    url
+                    "[cache] Cache download completed (engine) for {} ({}:{}) -> {}",
+                    track_id, source_type, source_hash, cached_path
                 );
-                url.clone()
             }
-        } else {
-            // Assume it's already an infoHash
-            format!(
-                "http://localhost:9000/stream/{}/{}",
-                url.to_lowercase(),
-                file_idx
-            )
+
+            // Emit completion event
+            let _ = app_ref.emit(
+                "cache:download:complete",
+                serde_json::json!({
+                    "trackId": track_id,
+                    "sourceType": source_type,
+                    "sourceHash": source_hash,
+                    "cachedPath": cached_path,
+                    "fileSize": file_size
+                }),
+            );
+
+            // Clear inflight bookkeeping
+            {
+                let mut inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
+                inflight.remove(&base_name);
+                let mut meta = INFLIGHT_META.lock().unwrap();
+                meta.remove(&base_name);
+            }
+
+            // Clear control flag
+            downloads::clear_control(&base_name);
+
+            // Best-effort cleanup: defer removal of torrent data to avoid races with playback or copy operations
+            // We schedule a delayed cleanup that verifies the cached file exists before attempting to delete engine data.
+            // Prefer the engine-reported total size if available for a stronger stability check
+            schedule_torrent_cleanup(
+                url.clone(),
+                engine_path.clone(),
+                final_path.clone(),
+                total_opt,
+            );
+            return;
         }
-    } else {
+    }
+
+    // Resolve the provided URL to a direct download URL when possible. This avoids
+    // hitting the local streaming endpoint which may return HTML/error pages.
+    let resolved = {
         // Skip resolution for YouTube URLs that are already direct URLs (googlevideo.com, manifest URLs)
         // to avoid converting them to slow localhost streaming endpoints
         if source_type == "youtube" && (url.contains("googlevideo.com") || url.contains("youtube.com/api/manifest") || url.contains("manifest.googlevideo.com")) {
@@ -939,56 +1451,7 @@ pub async fn download_and_cache_audio(
 
     // Issue request (logging already done above)
 
-    // Check if it's a localhost request and verify server is running
-    if resolved.starts_with("http://localhost:9000") {
-        if let Some(app_ref) = app.as_ref() {
-            match app_ref
-                .state::<crate::paths::PathConfig>()
-                .get_server_status()
-                .await
-            {
-                Ok(status) => {
-                    let is_running = status.pid.is_some();
-                    println!(
-                        "[cache] Server status: running={}, pid={:?}, port={:?}",
-                        is_running, status.pid, status.port
-                    );
-                    if !is_running {
-                        println!(
-                            "[cache] Server is not running, cannot download from localhost:9000"
-                        );
-                        if let Some(app_ref) = app.as_ref() {
-                            let _ = app_ref.emit(
-                                "cache:download:error",
-                                serde_json::json!({
-                                    "trackId": track_id,
-                                    "sourceType": source_type,
-                                    "sourceHash": source_hash,
-                                    "message": "Torrent streaming server is not running"
-                                }),
-                            );
-                        }
-                        return;
-                    }
-                }
-                Err(e) => {
-                    println!("[cache] Server status check failed: {}", e);
-                    if let Some(app_ref) = app.as_ref() {
-                        let _ = app_ref.emit(
-                            "cache:download:error",
-                            serde_json::json!({
-                                "trackId": track_id,
-                                "sourceType": source_type,
-                                "sourceHash": source_hash,
-                                "message": format!("Server status check failed: {}", e)
-                            }),
-                        );
-                    }
-                    return;
-                }
-            }
-        }
-    }
+    // No localhost server dependency. We avoid the old localhost:9000 flow entirely.
 
     // Issue request with explicit identity encoding to receive raw bytes as-is
     // Build request with optional YouTube-specific headers to encourage fast direct CDN responses
@@ -1247,82 +1710,7 @@ pub async fn download_and_cache_audio(
         );
     }
 
-    // For torrents, start a progress polling task to get real-time server-side progress
-    let progress_task_handle = if source_type == "torrent" && file_index.is_some() {
-        let track_id_clone = track_id.clone();
-        let source_type_clone = source_type.clone();
-        let source_hash_clone = source_hash.clone();
-        let file_index_clone = file_index;
-        let app_clone = app.clone();
-        let base_name_clone = base_name.clone();
-
-        Some(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
-            interval.tick().await; // Skip first tick (immediate)
-
-            loop {
-                interval.tick().await;
-
-                // Poll server for progress
-                if let Ok(client) = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(5))
-                    .build()
-                {
-                    let progress_url = format!(
-                        "http://localhost:9000/progress/{}/{}",
-                        source_hash_clone,
-                        file_index_clone.unwrap_or(0)
-                    );
-
-                    if let Ok(resp) = client.get(&progress_url).send().await {
-                        if let Ok(progress_data) = resp.json::<serde_json::Value>().await {
-                            if let Some(data) = progress_data.get("data") {
-                                if let (Some(progress), Some(downloaded), Some(total)) = (
-                                    data.get("progress").and_then(|v| v.as_f64()),
-                                    data.get("downloaded").and_then(|v| v.as_u64()),
-                                    data.get("total").and_then(|v| v.as_u64()),
-                                ) {
-                                    if let Some(app_ref) = app_clone.as_ref() {
-                                        let _ = app_ref.emit(
-                                            "cache:download:progress",
-                                            serde_json::json!({
-                                                "trackId": track_id_clone,
-                                                "sourceType": source_type_clone,
-                                                "sourceHash": source_hash_clone,
-                                                "bytes_downloaded": downloaded,
-                                                "total_bytes": total,
-                                                "inflight": progress < 1.0, // Mark as inflight until 100% complete
-                                                "source": "torrent_polling"
-                                            }),
-                                        );
-                                    }
-
-                                    // Stop polling when file is 100% complete
-                                    if progress >= 1.0 {
-                                        break;
-                                    }
-                                }
-                            }
-                        } else {
-                            // If progress endpoint fails, check if download is still active
-                            let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                            if !inflight.contains_key(&base_name_clone) {
-                                break; // Download completed or cancelled
-                            }
-                        }
-                    } else {
-                        // If server request fails, check if download is still active
-                        let inflight = INFLIGHT_DOWNLOADS.lock().unwrap();
-                        if !inflight.contains_key(&base_name_clone) {
-                            break; // Download completed or cancelled
-                        }
-                    }
-                }
-            }
-        }))
-    } else {
-        None
-    };
+    // Removed obsolete localhost polling. Torrent progress is emitted directly by the engine branch.
 
     while let Some(item) = stream.next().await {
         // Respect pause/cancel controls
@@ -1471,10 +1859,7 @@ pub async fn download_and_cache_audio(
                     let mut meta = INFLIGHT_META.lock().unwrap();
                     meta.remove(&base_name);
 
-                    // Cancel progress polling task
-                    if let Some(handle) = progress_task_handle {
-                        handle.abort();
-                    }
+                    // No polling task to cancel
 
                     if let Some(app_ref) = app.as_ref() {
                         let _ = app_ref.emit(
@@ -1551,10 +1936,7 @@ pub async fn download_and_cache_audio(
             meta.remove(&base_name);
         }
 
-        // Cancel progress polling task
-        if let Some(handle) = progress_task_handle {
-            handle.abort();
-        }
+        // No polling task to cancel
 
         // Clear control state
         downloads::clear_control(&base_name);
@@ -1826,13 +2208,54 @@ pub async fn download_and_cache_audio(
         meta.remove(&base_name);
     }
 
-    // Cancel progress polling task
-    if let Some(handle) = progress_task_handle {
-        handle.abort();
-    }
+    // No polling task to cancel
 
     // Clear control on success
     downloads::clear_control(&base_name);
+}
+
+/// Schedule a deferred cleanup of torrent engine data after a successful cache finalization.
+/// This avoids deleting the original engine files while any late readers or copies might still occur.
+fn schedule_torrent_cleanup(url: String, engine_path: std::path::PathBuf, final_path: std::path::PathBuf, expected_size: Option<u64>) {
+    // Try a few times with exponential backoff to ensure the final file is stable and present
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        // Wait a short grace period to allow any consumers to release handles
+        let mut delay_ms = 500u64; // start at 0.5s
+        for attempt in 1..=6 { // ~0.5s + 1s + 2s + 4s + 8s + 16s ~= 31.5s total max
+            sleep(Duration::from_millis(delay_ms)).await;
+            let final_ok = match tokio::fs::metadata(&final_path).await {
+                Ok(meta) => {
+                    if let Some(exp) = expected_size { meta.len() >= exp.saturating_sub(1024) } else { meta.len() > 0 }
+                }
+                Err(_) => false,
+            };
+            if final_ok {
+                // Try to remove via engine now that final is confirmed
+                let engine = crate::torrents::get_engine();
+                match engine.remove(&url, true) {
+                    Ok(_) => {
+                        println!("[cache] Deferred torrent cleanup succeeded (attempt {}): removed engine data for {}", attempt, url);
+                        return;
+                    }
+                    Err(e) => {
+                        println!("[cache] Deferred torrent cleanup attempt {} failed for {}: {}", attempt, url, e);
+                    }
+                }
+            } else {
+                println!(
+                    "[cache] Deferred torrent cleanup attempt {}: final cache not stable yet: {:?}",
+                    attempt, final_path
+                );
+            }
+            delay_ms = (delay_ms * 2).min(20_000);
+        }
+        println!(
+            "[cache] Deferred torrent cleanup gave up after multiple attempts; keeping engine data for safety: {}",
+            url
+        );
+    });
 }
 
 #[tauri::command]

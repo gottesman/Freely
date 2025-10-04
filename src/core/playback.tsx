@@ -1,5 +1,6 @@
 import React, { createContext, useEffect, useLayoutEffect, useState, ReactNode, useMemo, useCallback, useReducer } from 'react';
-import { runTauriCommand, isTauriUnavailable } from './TauriCommands';
+import { frontendLogger } from './FrontendLogger';
+import { runTauriCommand } from './TauriCommands';
 import { SpotifyTrack } from './SpotifyClient';
 import { useDB } from './Database';
 import type { TrackRecord } from './Database';
@@ -321,7 +322,7 @@ function notifyPlaybackSubscribers(snapshot: PlaybackStateSnapshot) {
         entry.cb(next);
       }
     } catch (err) {
-      console.warn('[playback] subscriber error', err);
+      frontendLogger.warn('[playback] subscriber error', err);
     }
   });
 }
@@ -398,11 +399,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     
     // Prevent concurrent fetches
     if (state.fetchInProgress === id) {
-      console.log('[playback] Fetch already in progress for:', id);
+      frontendLogger.log('[playback] Fetch already in progress for:', id);
       return;
     }
     
-    console.log('[playback] Fetching track:', id, 'ready:', ready);
+    frontendLogger.log('[playback] Fetching track:', id, 'ready:', ready);
     dispatch({ type: 'SET_FETCH_IN_PROGRESS', trackId: id });
     dispatch({ type: 'SET_LOADING', loading: true });
     dispatch({ type: 'SET_ERROR', error: undefined });
@@ -423,7 +424,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           // attempt to re-read DB for consistency
           try { rec = await getTrack(id); } catch {}
         } catch (e) {
-          console.warn('[playback] direct Spotify fetch after missing snapshot failed:', e);
+          frontendLogger.warn('[playback] direct Spotify fetch after missing snapshot failed:', e);
         }
       }
       if (!track) throw new Error('Track metadata unavailable');
@@ -455,7 +456,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
                   id: sourceType === 'youtube' ? selected.hash : undefined,
                 }
               };
-              console.log('[playback] Attached source to track:', id, (track as any).source);
+              frontendLogger.log('[playback] Attached source to track:', id, (track as any).source);
 
               try {
                 const cacheResult = await runTauriCommand('cache_get_file', {
@@ -471,37 +472,37 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
                   if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
                 }
               } catch (e) {
-                console.debug('[playback] Cache prefetch for format failed/ignored:', e);
+                frontendLogger.debug('[playback] Cache prefetch for format failed/ignored:', e);
               }
             }
           }
         } catch (e) {
-          console.warn('Failed to load track source:', e);
+          frontendLogger.warn('Failed to load track source:', e);
         }
         dispatch({ type: 'ADD_SOURCE_LOAD_ATTEMPTED', trackId: id });
       } else {
-        console.log('[playback] Database not ready, skipping source loading for:', id);
+        frontendLogger.log('[playback] Database not ready, skipping source loading for:', id);
       }
       
-      console.log('[playback] Setting currentTrack for:', id, 'hasSource:', !!(track as any).source);
+      frontendLogger.log('[playback] Setting currentTrack for:', id, 'hasSource:', !!(track as any).source);
       // Only update currentTrack if this fetch is still for the current trackId
       if (id === state.trackId) {
         dispatch({ type: 'SET_CURRENT_TRACK', track });
       } else {
-        console.log('[playback] Skipping currentTrack update - fetch result for old track:', id, 'current:', state.trackId);
+        frontendLogger.log('[playback] Skipping currentTrack update - fetch result for old track:', id, 'current:', state.trackId);
       }
       dispatch({ type: 'UPDATE_TRACK_CACHE', trackId: id, track });
     } catch (e: any) {
-      console.error('[playback] Track fetch failed:', e);
+      frontendLogger.error('[playback] Track fetch failed:', e);
       dispatch({ type: 'SET_ERROR', error: e?.message || String(e) });
       // Only clear currentTrack if this fetch was for the current trackId
       if (id === state.trackId) {
         dispatch({ type: 'SET_CURRENT_TRACK', track: undefined });
       } else {
-        console.log('[playback] Skipping currentTrack clear - fetch error for old track:', id, 'current:', state.trackId);
+        frontendLogger.log('[playback] Skipping currentTrack clear - fetch error for old track:', id, 'current:', state.trackId);
       }
     } finally { 
-      console.log('[playback] Track fetch completed for:', id);
+      frontendLogger.log('[playback] Track fetch completed for:', id);
       dispatch({ type: 'SET_FETCH_IN_PROGRESS', trackId: null });
       dispatch({ type: 'SET_LOADING', loading: false });
     }
@@ -513,23 +514,23 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!ready) return;
     
     if (state.fetchInProgress === state.trackId) {
-      console.log('[playback] Fetch already in progress for:', state.trackId);
+      frontendLogger.log('[playback] Fetch already in progress for:', state.trackId);
       return;
     }
     
     // Check if we already have this track with source data
     const existingTrack = state.currentTrack?.id === state.trackId ? state.currentTrack : state.trackCache[state.trackId];
     if (existingTrack && (existingTrack as any).source) {
-      console.log('[playback] Track with source already available, skipping fetch:', state.trackId);
+      frontendLogger.log('[playback] Track with source already available, skipping fetch:', state.trackId);
       return;
     }
     
     if (existingTrack && state.sourceLoadAttempted.has(state.trackId)) {
-      console.log('[playback] Already attempted to load source for track, skipping fetch:', state.trackId);
+      frontendLogger.log('[playback] Already attempted to load source for track, skipping fetch:', state.trackId);
       return;
     }
     
-    console.log('[playback] Triggering track fetch for:', state.trackId);
+    frontendLogger.log('[playback] Triggering track fetch for:', state.trackId);
     fetchTrack(state.trackId); 
   }, [state.trackId, fetchTrack, ready]);
 
@@ -553,10 +554,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           try {
             const stopResult = await runTauriCommand('playback_stop');
             if (!stopResult.success) {
-              console.warn('[playback] Stop failed:', stopResult.error);
+              frontendLogger.warn('[playback] Stop failed:', stopResult.error);
             }
           } catch (e) {
-            console.warn('[playback] Stop failed:', e);
+            frontendLogger.warn('[playback] Stop failed:', e);
           }
         }
         dispatch({ type: 'SET_PLAYING', playing: false });
@@ -572,22 +573,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
       
       try {
-        console.log('[playback] Starting playback for URL:', state.playbackUrl);
+        frontendLogger.log('[playback] Starting playback for URL:', state.playbackUrl);
 
         // Get source information for the current track
         const track = (state.currentTrack?.id === state.trackId ? state.currentTrack : state.trackCache[state.trackId]) || state.currentTrack;
         const sourceMeta = (track as any)?.source;
 
-        console.log('[playback] Source metadata for playback:', { trackId: state.trackId, sourceMeta, hasTrack: !!track, playbackUrl: state.playbackUrl });
+        frontendLogger.log('[playback] Source metadata for playback:', { trackId: state.trackId, sourceMeta, hasTrack: !!track, playbackUrl: state.playbackUrl });
 
         // Use source-based playback system
         let result;
         if (state.trackId && sourceMeta && state.playbackUrl === 'source-based-playback') {
-          console.log('[playback] Using source-based playback for track:', state.trackId, 'with source:', sourceMeta);
+          frontendLogger.log('[playback] Using source-based playback for track:', state.trackId, 'with source:', sourceMeta);
 
           // Validate source metadata before starting playback
           if (!sourceMeta.type || !sourceMeta.value) {
-            console.error('[playback] Invalid source metadata:', sourceMeta);
+            frontendLogger.error('[playback] Invalid source metadata:', sourceMeta);
             if (!cancelled) {
               dispatch({ type: 'SET_PLAYING', playing: false });
               dispatch({ type: 'SET_ERROR', error: 'Invalid source metadata' });
@@ -600,13 +601,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             try {
               const existsRes = await runTauriCommand('fs_exists', { path_or_url: sourceMeta.value });
               if (!existsRes) {
-                console.warn('[playback] Local file not found, aborting playback start:', sourceMeta.value);
+                frontendLogger.warn('[playback] Local file not found, aborting playback start:', sourceMeta.value);
                 dispatch({ type: 'SET_PLAYING', playing: false });
                 dispatch({ type: 'SET_ERROR', error: 'Local file not found. Please reselect the file in Sources.' });
                 return;
               }
             } catch (e) {
-              console.warn('[playback] fs_exists check failed, proceeding but may error:', e);
+              frontendLogger.warn('[playback] fs_exists check failed, proceeding but may error:', e);
             }
           }
 
@@ -618,7 +619,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             true, // prefer cache
             sourceMeta.meta
           );
-          console.log('[playback] Source-based playback call completed (invoke or ack):', result);
+          frontendLogger.log('[playback] Source-based playback call completed (invoke or ack):', result);
 
           // The audioCache.startPlaybackWithSource now may return either:
           // - a full invoke result { success, data } (immediate playback info), OR
@@ -630,11 +631,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             result = { success: true, data: { cache_used: false, streaming_started: true } };
           }
         } else if (state.playbackUrl && state.playbackUrl !== 'source-based-playback') {
-          console.log('[playback] Using direct playback with URL:', state.playbackUrl);
+          frontendLogger.log('[playback] Using direct playback with URL:', state.playbackUrl);
           // Only use direct playback for actual URLs, not for placeholder values
           result = await runTauriCommand('playback_start', { url: state.playbackUrl });
         } else {
-          console.error('[playback] No valid playback method available:', { trackId: state.trackId, sourceMeta, playbackUrl: state.playbackUrl });
+          frontendLogger.error('[playback] No valid playback method available:', { trackId: state.trackId, sourceMeta, playbackUrl: state.playbackUrl });
           if (!cancelled) {
             dispatch({ type: 'SET_PLAYING', playing: false });
             dispatch({ type: 'SET_ERROR', error: 'No valid playback method available' });
@@ -642,24 +643,24 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        console.log('[playback] Start result:', result);
+        frontendLogger.log('[playback] Start result:', result);
 
         // Handle the response from the hybrid system
         if (result.success && result.data) {
-          console.log('[playback] Playback started successfully:', result.data);
+          frontendLogger.log('[playback] Playback started successfully:', result.data);
           
           // The backend will return duration and other info
           if (typeof result.data.duration === 'number') {
-            console.log('[playback] Setting duration from backend:', result.data.duration);
+            frontendLogger.log('[playback] Setting duration from backend:', result.data.duration);
             dispatch({ type: 'SET_DURATION', duration: result.data.duration });
           }
 
           // Check if cache was used immediately
           if (result.data.cache_used === true) {
-            console.log('[playback] Started playback using cached file immediately');
+            frontendLogger.log('[playback] Started playback using cached file immediately');
             dispatch({ type: 'SET_CACHE_STATUS', status: { isCaching: false } });
           } else if (result.data.streaming_started === true) {
-            console.log('[playback] Started streaming playback, caching in background');
+            frontendLogger.log('[playback] Started streaming playback, caching in background');
             dispatch({ type: 'SET_CACHE_STATUS', status: { isCaching: true } });
           }
           
@@ -667,14 +668,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             dispatch({ type: 'SET_PLAYING', playing: true });
           }
         } else {
-          console.error('[playback] Playback start failed:', result);
+          frontendLogger.error('[playback] Playback start failed:', result);
           if (!cancelled) {
             dispatch({ type: 'SET_PLAYING', playing: false });
             dispatch({ type: 'SET_ERROR', error: result.error || 'Unknown playback error' });
           }
         }
       } catch (error) {
-        console.error('[playback] Failed to start:', error);
+        frontendLogger.error('[playback] Failed to start:', error);
         if (error.message?.includes('invoke not available')) {
           dispatch({ type: 'SET_ERROR', error: 'Audio playback requires the desktop app. Please open the Tauri application window instead of the browser.' });
         } else {
@@ -704,7 +705,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     // Prioritize currentTrack if it matches the trackId, as it's more likely to have fresh source data
     const track = (state.currentTrack?.id === state.trackId ? state.currentTrack : state.trackCache[state.trackId]) || state.currentTrack;
     if (!track) {
-      console.log('[playback] No track found for ID:', state.trackId);
+      frontendLogger.log('[playback] No track found for ID:', state.trackId);
       dispatch({ type: 'SET_PLAYBACK_URL', url: undefined });
       return;
     }
@@ -712,11 +713,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const sourceMeta = (track as any).source;
 
     if (sourceMeta) {
-      console.log('[playback] Source metadata available, ready for source-based playback');
+      frontendLogger.log('[playback] Source metadata available, ready for source-based playback');
       
       // Check if we're transitioning to this track and waiting for source
       if (state.isTransitioning && state.transitioningToTrackId === state.trackId && state.awaitingBackendConfirmation) {
-        console.log('[playback] Track became ready during transition, continuing synchronous switch');
+        frontendLogger.log('[playback] Track became ready during transition, continuing synchronous switch');
         // Trigger the completion of synchronous switch - we'll handle this in a separate effect
         dispatch({ type: 'SET_SHOULD_FORCE_PLAY', shouldPlay: true });
         return;
@@ -724,7 +725,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       
       // Don't auto-start if we already have an active playback URL - prevents double-starting
       if (state.playbackUrl === 'source-based-playback' && !state.shouldForcePlay) {
-        console.log('[playback] Source-based playback already active, skipping auto-start');
+        frontendLogger.log('[playback] Source-based playback already active, skipping auto-start');
         return;
       }
       
@@ -737,33 +738,33 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'SET_PLAYBACK_URL', url: 'source-based-playback' });
         if (state.shouldForcePlay) {
           dispatch({ type: 'SET_SHOULD_FORCE_PLAY', shouldPlay: false });
-          console.log('[playback] Force-starting playback due to user action');
+          frontendLogger.log('[playback] Force-starting playback due to user action');
         } else if (state.isTransitioning && state.transitioningToTrackId === state.trackId) {
-          console.log('[playback] Auto-starting playback due to ongoing transition');
+          frontendLogger.log('[playback] Auto-starting playback due to ongoing transition');
         }
       } else {
-        console.log('[playback] Track ready but not auto-starting (no active playback)');
+        frontendLogger.log('[playback] Track ready but not auto-starting (no active playback)');
       }
     } else {
-      console.log('[playback] No source meta found - track has no selected source for:', state.trackId);
+      frontendLogger.log('[playback] No source meta found - track has no selected source for:', state.trackId);
       dispatch({ type: 'SET_PLAYBACK_URL', url: undefined });
       
       // Only clear transition state if this wasn't a user-initiated play action
       // If shouldForcePlay is true, we should wait for the source to load
       if (state.isTransitioning && state.transitioningToTrackId === state.trackId && !state.shouldForcePlay) {
-        console.log('[playback] Clearing transition state - no source available and not user-initiated');
+        frontendLogger.log('[playback] Clearing transition state - no source available and not user-initiated');
         dispatch({ type: 'SET_TRANSITIONING', isTransitioning: false });
         dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
         dispatch({ type: 'SET_LOADING', loading: false });
       } else if (state.shouldForcePlay) {
-        console.log('[playback] No source yet but user wants to play - keeping transition state and waiting');
+        frontendLogger.log('[playback] No source yet but user wants to play - keeping transition state and waiting');
       }
     }
   }, [state.trackId, state.currentTrack, state.isTransitioning, state.transitioningToTrackId, state.awaitingBackendConfirmation, state.shouldForcePlay, state.playing, state.playbackUrl]);
 
   // Optimized control helpers with dispatch pattern
   const play = useCallback(async () => { 
-    console.log('[playback] Play button clicked, playbackUrl:', state.playbackUrl);
+    frontendLogger.log('[playback] Play button clicked, playbackUrl:', state.playbackUrl);
     
     // If no playback URL but we have a ready track, set it up for source-based playback
     if (!state.playbackUrl) {
@@ -771,38 +772,38 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const sourceMeta = (track as any)?.source;
       
       if (state.trackId && sourceMeta) {
-        console.log('[playback] Setting up source-based playback for ready track');
+        frontendLogger.log('[playback] Setting up source-based playback for ready track');
         dispatch({ type: 'SET_PLAYBACK_URL', url: 'source-based-playback' });
         return;
       } else {
-        console.log('[playback] No playback URL available and no ready track, cannot play');
+        frontendLogger.log('[playback] No playback URL available and no ready track, cannot play');
         return; 
       }
     }
     
     try {
-      console.log('[playback] Resuming playback');
+      frontendLogger.log('[playback] Resuming playback');
       const result = await runTauriCommand('playback_resume');
-      console.log('[playback] Resume result:', result);
+      frontendLogger.log('[playback] Resume result:', result);
       if (!result.success) {
-        console.error('[playback] Resume failed:', result.error);
+        frontendLogger.error('[playback] Resume failed:', result.error);
         dispatch({ type: 'SET_PLAYING', playing: false });
       }
     } catch (error) {
-      console.error('[playback] Resume failed:', error);
+      frontendLogger.error('[playback] Resume failed:', error);
       dispatch({ type: 'SET_PLAYING', playing: false });
     }
   }, [state.playbackUrl, state.trackId, state.currentTrack, state.trackCache]);
   
   const pause = useCallback(async () => { 
     try {
-      console.log('[playback] Pausing playback');
+      frontendLogger.log('[playback] Pausing playback');
       const result = await runTauriCommand('playback_pause');
       if (!result.success) {
-        console.error('[playback] Pause failed:', result.error);
+        frontendLogger.error('[playback] Pause failed:', result.error);
       }
     } catch (error) {
-      console.error('[playback] Pause failed:', error);
+      frontendLogger.error('[playback] Pause failed:', error);
     }
   }, []);
   
@@ -813,7 +814,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   
   const seek = useCallback((time: number) => {
     if (!state.playbackUrl) return;
-    console.log('[playback] Seeking to:', time);
+    frontendLogger.log('[playback] Seeking to:', time);
     
     const originalPosition = state.position;
     dispatch({ type: 'SET_POSITION', position: time }); // optimistic UI update
@@ -831,27 +832,27 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           const reason = seekData?.reason || 'unknown';
           const message = seekData?.message || 'Unknown error';
           
-          console.warn('[playback] Seek failed:', reason, '-', message);
+          frontendLogger.warn('[playback] Seek failed:', reason, '-', message);
           
           // Handle different types of seek failures
           if (reason === 'data_not_available' || reason === 'not_buffered') {
-            console.warn('[playback] Seek position not yet buffered, ignoring seek failure');
+            frontendLogger.warn('[playback] Seek position not yet buffered, ignoring seek failure');
           } else if (reason === 'streaming_limitation' || reason === 'invalid_position') {
-            console.warn('[playback] Seek not supported or invalid position, rolling back');
+            frontendLogger.warn('[playback] Seek not supported or invalid position, rolling back');
             dispatch({ type: 'SET_POSITION', position: originalPosition });
           } else {
-            console.warn('[playback] General seek error, rolling back');
+            frontendLogger.warn('[playback] General seek error, rolling back');
             dispatch({ type: 'SET_POSITION', position: originalPosition });
           }
         } else {
           const seekPosition = result.data?.position || val;
-          console.log('[playback] Seek successful to:', seekPosition);
+          frontendLogger.log('[playback] Seek successful to:', seekPosition);
         }
         
         lastSeekSentRef.current = Date.now();
         pendingSeekRef.current = null;
       } catch (error) {
-        console.warn('[playback] Seek failed:', error);
+        frontendLogger.warn('[playback] Seek failed:', error);
         dispatch({ type: 'SET_POSITION', position: originalPosition });
       }
     };
@@ -876,20 +877,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   // Synchronous track switching implementation following the required steps
   const switchToTrackSynchronously = useCallback(async (newTrackId: string) => {
-    console.log('[playback] Starting synchronous track switch to:', newTrackId);
+    frontendLogger.log('[playback] Starting synchronous track switch to:', newTrackId);
     
     // Step 1: Stop current track from playing (if any)
-    console.log('[playback] Step 1: Stopping current track');
+    frontendLogger.log('[playback] Step 1: Stopping current track');
     dispatch({ type: 'SET_TRANSITIONING', isTransitioning: true, trackId: newTrackId });
     
     if (state.playing || state.playbackUrl) {
       try {
         const stopResult = await runTauriCommand('playback_stop');
         if (!stopResult.success) {
-          console.warn('[playback] Stop failed:', stopResult.error);
+          frontendLogger.warn('[playback] Stop failed:', stopResult.error);
         }
       } catch (e) {
-        console.warn('[playback] Stop failed:', e);
+        frontendLogger.warn('[playback] Stop failed:', e);
       }
       
       // Clear playback state
@@ -900,13 +901,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
     
     // Step 2: Check if the new current track has a "selected source"
-    console.log('[playback] Step 2: Checking selected source for track:', newTrackId);
+    frontendLogger.log('[playback] Step 2: Checking selected source for track:', newTrackId);
     const track = state.trackCache[newTrackId];
     const sourceMeta = (track as any)?.source;
     
     // Step 2.1: Check if there is a source selected for the track
     if (!sourceMeta || !sourceMeta.type || !sourceMeta.value) {
-      console.log('[playback] Step 2.1: No source selected, showing loading status');
+      frontendLogger.log('[playback] Step 2.1: No source selected, showing loading status');
       dispatch({ type: 'SET_LOADING', loading: true });
       dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: true });
       dispatch({ type: 'SET_SHOULD_FORCE_PLAY', shouldPlay: true }); // Mark as user-initiated
@@ -916,10 +917,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
     
-    console.log('[playback] Step 2.1: Source found:', sourceMeta);
+    frontendLogger.log('[playback] Step 2.1: Source found:', sourceMeta);
     
     // Step 2.2: Check if there is cache for the selected source
-    console.log('[playback] Step 2.2: Checking cache for selected source');
+    frontendLogger.log('[playback] Step 2.2: Checking cache for selected source');
     let hasCachedFile = false;
     try {
       const cacheResult = await runTauriCommand('cache_get_file', {
@@ -936,20 +937,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (typeof sampleRate === 'number') dispatch({ type: 'SET_SAMPLE_RATE', sampleRate });
         if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
       }
-      console.log('[playback] Cache check result:', { hasCachedFile, cacheResult });
+      frontendLogger.log('[playback] Cache check result:', { hasCachedFile, cacheResult });
     } catch (e) {
-      console.warn('[playback] Cache check failed:', e);
+      frontendLogger.warn('[playback] Cache check failed:', e);
     }
     
     // Step 2.3: If there is no source or no cache, show "loading" status for the player
     if (!hasCachedFile) {
-      console.log('[playback] Step 2.3: No cache available, showing loading status');
+      frontendLogger.log('[playback] Step 2.3: No cache available, showing loading status');
       dispatch({ type: 'SET_LOADING', loading: true });
       dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: true });
     }
     
     // Step 3: Start backend audio playback and wait for confirmation
-    console.log('[playback] Step 3: Starting backend audio playback');
+    frontendLogger.log('[playback] Step 3: Starting backend audio playback');
     try {
         let result = await startPlaybackWithSource(
           newTrackId,
@@ -959,7 +960,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           sourceMeta.meta
         );
         
-        console.log('[playback] Backend playback start result (invoke or ack):', result);
+        frontendLogger.log('[playback] Backend playback start result (invoke or ack):', result);
         if (result && typeof result === 'object' && (result.timeout || result.listen_error || result.async)) {
           // Normalize quick ack into a friendly success shape
           // so the UI doesn't treat the short-race outcome as an error
@@ -968,7 +969,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       
       if (result.success && result.data) {
         // Step 4: Wait for backend audio playback to start before removing loading status
-        console.log('[playback] Step 4: Backend confirmed playback start');
+        frontendLogger.log('[playback] Step 4: Backend confirmed playback start');
         
         // Set duration if provided
         if (typeof result.data.duration === 'number') {
@@ -977,10 +978,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         
         // Update cache status
         if (result.data.cache_used === true) {
-          console.log('[playback] Playback started using cached file');
+          frontendLogger.log('[playback] Playback started using cached file');
           dispatch({ type: 'SET_CACHE_STATUS', status: { isCaching: false } });
         } else if (result.data.streaming_started === true) {
-          console.log('[playback] Playback started streaming, caching in background');
+          frontendLogger.log('[playback] Playback started streaming, caching in background');
           dispatch({ type: 'SET_CACHE_STATUS', status: { isCaching: true } });
         }
         
@@ -990,15 +991,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'SET_PLAYING', playing: true });
         dispatch({ type: 'SET_PLAYBACK_URL', url: 'source-based-playback' });
         
-        console.log('[playback] Track switch completed successfully');
+        frontendLogger.log('[playback] Track switch completed successfully');
       } else {
-        console.error('[playback] Backend playback start failed:', result);
+        frontendLogger.error('[playback] Backend playback start failed:', result);
         dispatch({ type: 'SET_ERROR', error: result.error || 'Playback start failed' });
         dispatch({ type: 'SET_LOADING', loading: false });
         dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
       }
     } catch (error) {
-      console.error('[playback] Failed to start backend playback:', error);
+      frontendLogger.error('[playback] Failed to start backend playback:', error);
       dispatch({ type: 'SET_ERROR', error: `Playback failed: ${error}` });
       dispatch({ type: 'SET_LOADING', loading: false });
       dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
@@ -1018,11 +1019,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const sourceMeta = (track as any)?.source;
       
       if (sourceMeta) {
-        console.log('[playback] Continuing synchronous switch for ready track:', state.trackId);
+        frontendLogger.log('[playback] Continuing synchronous switch for ready track:', state.trackId);
         
         // Continue from step 2.2 (cache check) since we now have the source
         const continueSync = async () => {
-          console.log('[playback] Step 2.2: Checking cache for selected source');
+          frontendLogger.log('[playback] Step 2.2: Checking cache for selected source');
           
           try {
             // Check cache
@@ -1042,18 +1043,18 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
                 if (typeof sampleRate === 'number') dispatch({ type: 'SET_SAMPLE_RATE', sampleRate });
                 if (typeof bitsPerSample === 'number') dispatch({ type: 'SET_BITS_PER_SAMPLE', bitsPerSample });
               }
-              console.log('[playback] Cache check result:', { hasCachedFile, cacheResult });
+              frontendLogger.log('[playback] Cache check result:', { hasCachedFile, cacheResult });
             } catch (e) {
-              console.warn('[playback] Cache check failed:', e);
+              frontendLogger.warn('[playback] Cache check failed:', e);
             }
             
             if (!hasCachedFile) {
-              console.log('[playback] Step 2.3: No cache available, showing loading status');
+              frontendLogger.log('[playback] Step 2.3: No cache available, showing loading status');
               dispatch({ type: 'SET_LOADING', loading: true });
               dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: true });
             }
             
-            console.log('[playback] Step 3: Starting backend audio playback');
+            frontendLogger.log('[playback] Step 3: Starting backend audio playback');
             let result = await startPlaybackWithSource(
               state.trackId,
               sourceMeta.type,
@@ -1062,13 +1063,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               sourceMeta.meta
             );
             
-            console.log('[playback] Backend playback start result (invoke or ack):', result);
+            frontendLogger.log('[playback] Backend playback start result (invoke or ack):', result);
             if (result && typeof result === 'object' && (result.timeout || result.listen_error || result.async)) {
               (result as any) = { success: true, data: { cache_used: false, streaming_started: true } };
             }
 
             if (result.success) {
-              console.log('[playback] Step 4: Backend confirmed playback start');
+              frontendLogger.log('[playback] Step 4: Backend confirmed playback start');
               // Set playback URL to indicate active playback (only if not already set)
               if (state.playbackUrl !== 'source-based-playback') {
                 dispatch({ type: 'SET_PLAYBACK_URL', url: 'source-based-playback' });
@@ -1076,16 +1077,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
               dispatch({ type: 'SET_TRANSITIONING', isTransitioning: false });
               dispatch({ type: 'SET_SHOULD_FORCE_PLAY', shouldPlay: false });
-              console.log('[playback] Track switch completed successfully');
+              frontendLogger.log('[playback] Track switch completed successfully');
             } else {
-              console.error('[playback] Backend playback failed:', result);
+              frontendLogger.error('[playback] Backend playback failed:', result);
               dispatch({ type: 'SET_ERROR', error: 'Playback failed' });
               dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
               dispatch({ type: 'SET_TRANSITIONING', isTransitioning: false });
               dispatch({ type: 'SET_SHOULD_FORCE_PLAY', shouldPlay: false });
             }
           } catch (error) {
-            console.error('[playback] Error during synchronous switch continuation:', error);
+            frontendLogger.error('[playback] Error during synchronous switch continuation:', error);
             dispatch({ type: 'SET_ERROR', error: 'Synchronous switch failed' });
             dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
             dispatch({ type: 'SET_TRANSITIONING', isTransitioning: false });
@@ -1103,12 +1104,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.isTransitioning) {
       const timeout = setTimeout(() => {
-        console.warn('[playback] Transition timeout - clearing stuck transition state');
+        frontendLogger.warn('[playback] Transition timeout - clearing stuck transition state');
         dispatch({ type: 'SET_TRANSITIONING', isTransitioning: false });
         dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
         dispatch({ type: 'SET_LOADING', loading: false });
         // Don't clear shouldForcePlay - preserve user intent for when source becomes available
-        console.log('[playback] Preserving shouldForcePlay flag for delayed source loading');
+        frontendLogger.log('[playback] Preserving shouldForcePlay flag for delayed source loading');
       }, 10000); // 10 second timeout
       
       return () => clearTimeout(timeout);
@@ -1131,11 +1132,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         try {
           await setSetting(SETTINGS_KEYS.VOLUME, clampedVolume.toString());
         } catch (e) {
-          console.warn('Failed to save volume setting:', e);
+          frontendLogger.warn('Failed to save volume setting:', e);
         }
       }
     } catch (e) {
-      console.warn('Failed to set volume:', e);
+      frontendLogger.warn('Failed to set volume:', e);
     }
   }, [ready, setSetting]);
 
@@ -1151,11 +1152,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         try {
           await setSetting(SETTINGS_KEYS.MUTED, shouldMute.toString());
         } catch (e) {
-          console.warn('Failed to save mute setting:', e);
+          frontendLogger.warn('Failed to save mute setting:', e);
         }
       }
     } catch (e) {
-      console.warn('Failed to set mute:', e);
+      frontendLogger.warn('Failed to set mute:', e);
     }
   }, [state.volume, ready, setSetting]);
 
@@ -1171,11 +1172,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         try {
           await setSetting(SETTINGS_KEYS.MUTED, (result.data.muted || false).toString());
         } catch (e) {
-          console.warn('Failed to save mute setting:', e);
+          frontendLogger.warn('Failed to save mute setting:', e);
         }
       }
     } catch (e) {
-      console.warn('Failed to toggle mute:', e);
+      frontendLogger.warn('Failed to toggle mute:', e);
     }
   }, [state.volume, ready, setSetting]);
 
@@ -1187,7 +1188,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       try {
         await addPlay(state.trackId, Date.now());
       } catch (e) {
-        console.warn('Failed to record play:', e);
+        frontendLogger.warn('Failed to record play:', e);
       }
     };
     
@@ -1221,7 +1222,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               hasSavedSettings = true;
             }
           } catch (e) {
-            console.warn('Failed to load saved volume settings:', e);
+            frontendLogger.warn('Failed to load saved volume settings:', e);
           }
         }
 
@@ -1253,7 +1254,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'SET_VOLUME', volume: finalVolume, muted: finalMuted });
         }
       } catch (e) {
-        console.warn('Failed to get initial volume:', e);
+        frontendLogger.warn('Failed to get initial volume:', e);
       }
     };
     
@@ -1266,7 +1267,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (!ready) return;
 
       try {
-        console.log('[playback] Loading saved playback state from database');
+        frontendLogger.log('[playback] Loading saved playback state from database');
         
         const [savedTrackId, savedQueue, savedIndex] = await Promise.all([
           getSetting(SETTINGS_KEYS.CURRENT_TRACK),
@@ -1283,7 +1284,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               restoredQueue = parsed;
             }
           } catch (e) {
-            console.warn('[playback] Failed to parse saved queue:', e);
+            frontendLogger.warn('[playback] Failed to parse saved queue:', e);
           }
         }
 
@@ -1301,7 +1302,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           // Ensure the saved track ID exists in the restored queue
           if (restoredQueue.includes(savedTrackId)) {
             const trackIndex = restoredQueue.indexOf(savedTrackId);
-            console.log('[playback] Restoring playback state:', {
+            frontendLogger.log('[playback] Restoring playback state:', {
               trackId: savedTrackId,
               queue: restoredQueue.length,
               index: trackIndex
@@ -1312,7 +1313,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           } else {
             // Track not in queue, use the restored index if valid
             const safeIndex = Math.min(restoredIndex, restoredQueue.length - 1);
-            console.log('[playback] Track not in restored queue, using index:', safeIndex);
+            frontendLogger.log('[playback] Track not in restored queue, using index:', safeIndex);
             
             dispatch({ type: 'SET_QUEUE', queueIds: restoredQueue, currentIndex: safeIndex });
             dispatch({ type: 'SET_TRACK_ID', trackId: restoredQueue[safeIndex] });
@@ -1320,7 +1321,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         } else if (restoredQueue.length > 0) {
           // Have queue but no track, use the restored index
           const safeIndex = Math.min(restoredIndex, restoredQueue.length - 1);
-          console.log('[playback] Restoring queue without specific track:', {
+          frontendLogger.log('[playback] Restoring queue without specific track:', {
             queue: restoredQueue.length,
             index: safeIndex
           });
@@ -1328,10 +1329,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'SET_QUEUE', queueIds: restoredQueue, currentIndex: safeIndex });
           dispatch({ type: 'SET_TRACK_ID', trackId: restoredQueue[safeIndex] });
         } else {
-          console.log('[playback] No saved playback state found, using defaults');
+          frontendLogger.log('[playback] No saved playback state found, using defaults');
         }
       } catch (e) {
-        console.warn('[playback] Failed to load saved playback state:', e);
+        frontendLogger.warn('[playback] Failed to load saved playback state:', e);
       }
     };
 
@@ -1345,9 +1346,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const saveTrackId = async () => {
       try {
         await setSetting(SETTINGS_KEYS.CURRENT_TRACK, state.trackId);
-        console.log('[playback] Saved current track ID:', state.trackId);
+        frontendLogger.log('[playback] Saved current track ID:', state.trackId);
       } catch (e) {
-        console.warn('[playback] Failed to save current track ID:', e);
+        frontendLogger.warn('[playback] Failed to save current track ID:', e);
       }
     };
     
@@ -1361,9 +1362,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const saveQueue = async () => {
       try {
         await setSetting(SETTINGS_KEYS.QUEUE, JSON.stringify(state.queueIds));
-        console.log('[playback] Saved queue:', state.queueIds.length, 'tracks');
+        frontendLogger.log('[playback] Saved queue:', state.queueIds.length, 'tracks');
       } catch (e) {
-        console.warn('[playback] Failed to save queue:', e);
+        frontendLogger.warn('[playback] Failed to save queue:', e);
       }
     };
     
@@ -1377,9 +1378,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const saveIndex = async () => {
       try {
         await setSetting(SETTINGS_KEYS.CURRENT_INDEX, state.currentIndex.toString());
-        console.log('[playback] Saved current index:', state.currentIndex);
+        frontendLogger.log('[playback] Saved current index:', state.currentIndex);
       } catch (e) {
-        console.warn('[playback] Failed to save current index:', e);
+        frontendLogger.warn('[playback] Failed to save current index:', e);
       }
     };
     
@@ -1431,11 +1432,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   // Optimize queue management functions with dispatch pattern
   const setQueue = useCallback((ids: string[], startIndex: number = CONFIG.QUEUE.DEFAULT_INDEX, shouldPlay: boolean = false) => {
-    console.log('[playback] setQueue called:', { ids, startIndex, currentTrackId: state.trackId, shouldPlay });
+    frontendLogger.log('[playback] setQueue called:', { ids, startIndex, currentTrackId: state.trackId, shouldPlay });
     
     if (ids.length) {
       const safeIndex = queueUtils.safeIndex(startIndex, ids.length);
-      console.log('[playback] Setting current index to:', safeIndex, 'track:', ids[safeIndex]);
+      frontendLogger.log('[playback] Setting current index to:', safeIndex, 'track:', ids[safeIndex]);
       
       dispatch({ type: 'SET_QUEUE', queueIds: ids, currentIndex: safeIndex });
       dispatch({ type: 'SET_TRACK_ID', trackId: ids[safeIndex] });
@@ -1555,7 +1556,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         // If we were awaiting backend confirmation and now we have playing status, clear the flag
         // But don't treat seek responses as playback confirmation
         if (state.awaitingBackendConfirmation && isPlaying && pendingSeekRef.current === null) {
-          console.log('[playback] Backend confirmed playback, clearing awaiting flag');
+          frontendLogger.log('[playback] Backend confirmed playback, clearing awaiting flag');
           dispatch({ type: 'SET_AWAITING_BACKEND', awaiting: false });
           dispatch({ type: 'SET_LOADING', loading: false });
         }
@@ -1578,9 +1579,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           // Don't treat seek errors as critical playback errors
           if (status.error.includes('BASS_ERROR_NOTAVAIL')) {
             // This is likely a seek error, don't stop playback or show persistent error
-            console.debug('[playback] Backend seek error (not critical):', status.error);
+            frontendLogger.debug('[playback] Backend seek error (not critical):', status.error);
           } else {
-            console.warn('[playback] Backend error:', status.error);
+            frontendLogger.warn('[playback] Backend error:', status.error);
             dispatch({ type: 'SET_ERROR', error: status.error });
             dispatch({ type: 'SET_PLAYING', playing: false });
             // Clear transition flags on error
@@ -1596,17 +1597,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
         // Auto advance queue when track ends (do not depend on prior playing/url flags)
         if (status.ended && !state.isTransitioning && !state.awaitingBackendConfirmation) {
-          console.log('[playback] Track ended, advancing to next');
+          frontendLogger.log('[playback] Track ended, advancing to next');
           next();
         }
 
         // Debug logging when state changes
         if (wasPlaying !== isPlaying) {
-          console.log('[playback] State changed:', { wasPlaying, isPlaying, url: status.url });
+          frontendLogger.log('[playback] State changed:', { wasPlaying, isPlaying, url: status.url });
         }
 
       } catch (error) {
-        console.warn('[playback] Status event error:', error);
+        frontendLogger.warn('[playback] Status event error:', error);
       }
     };
 
@@ -1623,7 +1624,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         // Tauri not available in browser preview
         if (process.env.NODE_ENV !== 'production') {
-          console.debug('[playback] Event API unavailable, status events disabled');
+          frontendLogger.debug('[playback] Event API unavailable, status events disabled');
         }
         return () => {};
       }
@@ -1766,7 +1767,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const eventHandlers = useMemo(() => {
     const handleSetQueue = (ev: Event) => {
       const detail = eventUtils.extractDetail(ev);
-      console.log('[playback] handleSetQueue event:', detail);
+      frontendLogger.log('[playback] handleSetQueue event:', detail);
       if (Array.isArray(detail.queueIds)) {
         setQueue(detail.queueIds, detail.startIndex ?? CONFIG.QUEUE.DEFAULT_INDEX, detail.shouldPlay ?? false);
       }
@@ -1835,7 +1836,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const shouldPlay = detail.shouldPlay || false;
       
       if (newTrackId && newTrackId !== state.trackId) {
-        console.log('[playback] Track change request:', { from: state.trackId, to: newTrackId, shouldPlay });
+        frontendLogger.log('[playback] Track change request:', { from: state.trackId, to: newTrackId, shouldPlay });
         
         // Update track ID and cache immediately for UI responsiveness
         dispatch({ type: 'SET_TRACK_ID', trackId: newTrackId });
@@ -1858,7 +1859,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const shouldPlay = detail.shouldPlay || false;
       
       if (Array.isArray(newQueueIds) && typeof newCurrentIndex === 'number') {
-        console.log('[playback] Queue position change request:', { queueIds: newQueueIds, currentIndex: newCurrentIndex, shouldPlay });
+        frontendLogger.log('[playback] Queue position change request:', { queueIds: newQueueIds, currentIndex: newCurrentIndex, shouldPlay });
         
         // Update queue and position immediately
         dispatch({ type: 'SET_QUEUE', queueIds: newQueueIds, currentIndex: newCurrentIndex });

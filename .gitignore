@@ -23,3 +23,7 @@ package-lock.json
 .github
 .clinerules
 .vscode
+TODO.md
+public/plugins/*
+!public/plugins/index.json
+!public/plugins/example

@@ -111,6 +111,9 @@
 .np-icon:hover { background:var(--glass-bg-hover); border-color:var(--glass-border-hover); }
 .np-icon:active { transform:scale(.92); }
 .np-section { display:flex; flex-direction:column; gap:14px; padding:18px; }
+.np-section.np-album-tracks {
+    flex-grow: 1;
+}
 .np-sec-title { font-size:18px; margin:0; letter-spacing:.5px; }
 .np-album-heading { display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; margin-top:-6px; }
 .np-album-name { font-size:26px; font-weight:600; background:linear-gradient(90deg, var(--accent), var(--accent-soft,#7fd)); -webkit-background-clip:text; background-clip:text; color:transparent; line-height:1.15; }
@@ -278,7 +281,7 @@
 
 /* Audio source chooser (SongInfoTab) */
 .np-audio-sources { 
-    height: 300px;
+    height: max(300px,40vh);
     background: var(--surface-alt2);
     padding: var(--padding-lg); 
     overflow: hidden;
@@ -370,7 +373,7 @@
 }
 
 .sources-list.expanded {
-    max-height: 2000px; /* Large enough value to accommodate any reasonable number of sources */
+    max-height: 6000px; /* Large enough value to accommodate any reasonable number of sources */
     opacity: 1;
 }
 .source-item {

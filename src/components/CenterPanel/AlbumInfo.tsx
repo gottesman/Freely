@@ -1,23 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { SpotifyAlbum, SpotifyArtist, SpotifyTrack } from '../../core/SpotifyClient';
 import { usePlaybackSelector } from '../../core/Playback';
 import InfoHeader from '../Utilities/InfoHeader';
 import TrackList from '../Utilities/TrackList';
-import { 
-  fmtMs, 
+import {
   useHeroImage, 
   extractReleaseYear,
   useStableTabAPI,
   usePlaybackActions,
   navigationEvents
 } from '../Utilities/Helpers';
-
-// Constants for better maintainability
-const API_CONFIG = {
-  TRACK_LIMIT: 50,
-  FETCH_ALL: false,
-} as const;
 
 // Consolidated state interface
 interface AlbumState {
@@ -62,7 +56,7 @@ function useAlbumData(api: ReturnType<typeof useSpotifyAPI>, albumId?: string) {
         loading: { ...prev.loading, [key]: false }
       }));
     } catch (error) {
-      console.warn(`Failed to fetch ${key}:`, error);
+      frontendLogger.warn(`Failed to fetch ${key}:`, error);
       setState(prev => ({
         ...prev,
         loading: { ...prev.loading, [key]: false }

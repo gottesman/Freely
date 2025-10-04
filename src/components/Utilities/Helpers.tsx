@@ -1,4 +1,5 @@
-import { useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { SpotifyAlbum, SpotifyArtist, SpotifyTrack, useSpotifyClient } from '../../core/SpotifyClient';
 import { useDB } from '../../core/Database';
 import GeniusClient from '../../core/Genius';
@@ -178,7 +179,7 @@ export function useStableTabAPI() {
           // Final fallback to direct call
           return await spotifyClient.getTrack(id);
         } catch (error) {
-          console.warn('Failed to fetch track:', error);
+          frontendLogger.warn('Failed to fetch track:', error);
           return undefined;
         }
       },
@@ -187,7 +188,7 @@ export function useStableTabAPI() {
         try {
           return await spotifyClient.getTracks(ids);
         } catch (error) {
-          console.warn('Failed to fetch tracks:', error);
+          frontendLogger.warn('Failed to fetch tracks:', error);
           return [];
         }
       },
@@ -196,7 +197,7 @@ export function useStableTabAPI() {
         try {
           return await spotifyClient.getPlaylist(id);
         } catch (error) {
-          console.warn('Failed to fetch playlist:', error);
+          frontendLogger.warn('Failed to fetch playlist:', error);
           return undefined;
         }
       },
@@ -205,7 +206,7 @@ export function useStableTabAPI() {
         try {
           return await spotifyClient.getAlbum(id);
         } catch (error) {
-          console.warn('Failed to fetch album:', error);
+          frontendLogger.warn('Failed to fetch album:', error);
           return undefined;
         }
       },
@@ -214,7 +215,7 @@ export function useStableTabAPI() {
         try {
           return await spotifyClient.getArtist(id);
         } catch (error) {
-          console.warn('Failed to fetch artist:', error);
+          frontendLogger.warn('Failed to fetch artist:', error);
           return undefined;
         }
       },
@@ -228,7 +229,7 @@ export function useStableTabAPI() {
           });
           return res?.items || [];
         } catch (error) {
-          console.warn('Failed to fetch album tracks:', error);
+          frontendLogger.warn('Failed to fetch album tracks:', error);
           return [];
         }
       },
@@ -237,7 +238,7 @@ export function useStableTabAPI() {
         try {
           return await spotifyClient.getArtistTopTracks(id, options);
         } catch (error) {
-          console.warn('Failed to fetch artist top tracks:', error);
+          frontendLogger.warn('Failed to fetch artist top tracks:', error);
           return [];
         }
       },
@@ -247,7 +248,7 @@ export function useStableTabAPI() {
           const res = await spotifyClient.getArtistAlbums(id, options);
           return res?.items || [];
         } catch (error) {
-          console.warn('Failed to fetch artist albums:', error);
+          frontendLogger.warn('Failed to fetch artist albums:', error);
           return [];
         }
       },
@@ -256,7 +257,7 @@ export function useStableTabAPI() {
         try {
           return await spotifyClient.getRecommendations(options);
         } catch (error) {
-          console.warn('Failed to get recommendations:', error);
+          frontendLogger.warn('Failed to get recommendations:', error);
           return null;
         }
       },
@@ -266,7 +267,7 @@ export function useStableTabAPI() {
           const res = await spotifyClient.searchPlaylists(query);
           return res?.items || [];
         } catch (error) {
-          console.warn('Failed to search playlists:', error);
+          frontendLogger.warn('Failed to search playlists:', error);
           return [];
         }
       },
@@ -276,7 +277,7 @@ export function useStableTabAPI() {
         try {
           return await geniusClient.search(query);
         } catch (error) {
-          console.warn('Failed to search Genius:', error);
+          frontendLogger.warn('Failed to search Genius:', error);
           return null;
         }
       },
@@ -285,7 +286,7 @@ export function useStableTabAPI() {
         try {
           return await geniusClient.getSong(id);
         } catch (error) {
-          console.warn('Failed to get Genius song:', error);
+          frontendLogger.warn('Failed to get Genius song:', error);
           return null;
         }
       },
@@ -294,7 +295,7 @@ export function useStableTabAPI() {
         try {
           return await geniusClient.getArtist(id);
         } catch (error) {
-          console.warn('Failed to get Genius artist:', error);
+          frontendLogger.warn('Failed to get Genius artist:', error);
           return null;
         }
       },

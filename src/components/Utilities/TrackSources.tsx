@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import type { SpotifyAlbum, SpotifyArtist, SpotifyTrack } from '../../core/SpotifyClient';
 import { runTauriCommand } from '../../core/TauriCommands';
@@ -6,6 +7,9 @@ import * as audioCache from '../../core/audioCache';
 import { useDB } from '../../core/Database';
 import * as tc from '../../core/TorrentClient';
 import { fmtTotalMs, parseByteSizeString, formatBytes } from './Helpers';
+
+// Dev logging guard
+const __DEV__ = process.env.NODE_ENV !== 'production';
 
 // ===== CONSTANTS =====
 const DEFAULT_TIMEOUT = 10000;
@@ -47,6 +51,12 @@ const ThemedSvgIcon: React.FC<{
     />
   );
 };
+
+// Common inline styles hoisted to constants to avoid per-render allocations
+const H5_HEADER_STYLE: React.CSSProperties = { margin: '0 5px', display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px' };
+const FILES_BAR_STYLE: React.CSSProperties = { fontSize: 12, opacity: .8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
+const FILES_UL_STYLE: React.CSSProperties = { margin: 6, paddingLeft: 0 };
+const RADIO_ICON_STYLE: React.CSSProperties = { fontSize: 14, marginRight: 4 };
 
 // ===== UTILITY FUNCTIONS =====
 const generateCacheKey = (title: string, artist: string, year?: string): string =>
@@ -115,6 +125,9 @@ class CacheManager {
 }
 
 const cacheManager = CacheManager.getInstance();
+
+// Cache formatted size per source object to avoid repeated parse/format work
+const sizeFormatCache = new WeakMap<object, string>();
 
 // ===== FILE MATCHING UTILITIES =====
 const findMatchingFileIndices = (files: any[], trackName: string): { all: number[], audio: number[], first?: number } => {
@@ -321,10 +334,10 @@ export default function TrackSources({ track, album, primaryArtist }: {
           detail: { trackId: track.id, source: { type: 'local', url: filePath, file_path: filePath } }
         }));
       } catch (e) {
-        console.warn('Failed to upsert local source in DB:', e);
+        frontendLogger.warn('Failed to upsert local source in DB:', e);
       }
     } catch (e) {
-      console.error('Failed to select local file:', e);
+      frontendLogger.error('Failed to select local file:', e);
     }
   }, [track?.id, getTrack, setTrackSources, selectTrackSource]);
 
@@ -346,12 +359,24 @@ export default function TrackSources({ track, album, primaryArtist }: {
         }));
       }
     } catch (e) {
-      console.warn('Failed to clear local file selection:', e);
+      frontendLogger.warn('Failed to clear local file selection:', e);
     }
   }, [track?.id, getTrack, setTrackSources, selectTrackSource]);
 
   // ===== INFO PROCESSING HELPERS =====
   const processInfoTemplate = useCallback((template: string, source: any) => {
+    // Helper: format size consistently using formatBytes when possible
+    const formatSourceSize = () => {
+      if (source && typeof source === 'object') {
+        const cached = sizeFormatCache.get(source);
+        if (cached !== undefined) return cached;
+      }
+      const raw = source?.size;
+      const parsed = typeof raw === 'number' ? raw : parseByteSizeString(raw);
+      const out = (typeof parsed === 'number' && !isNaN(parsed)) ? formatBytes(parsed) : (raw || '');
+      if (source && typeof source === 'object') sizeFormatCache.set(source, out);
+      return out;
+    };
     // Handle special t(key,placeholder) pattern
     if (template.startsWith('t(') && template.includes(',{') && template.endsWith(')')) {
       const match = template.match(/^t\(([^,]+),\{([^}]+)\}\)$/);
@@ -381,7 +406,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
             value = source.source || '';
             break;
           case 'size':
-            value = source.size || '';
+            value = formatSourceSize();
             break;
         }
 
@@ -396,27 +421,21 @@ export default function TrackSources({ track, album, primaryArtist }: {
     }
 
     // Handle regular template substitution
+    const formattedSize = formatSourceSize();
     return template
       .replace('{time}', source.duration ? fmtTotalMs(Number(source.duration) * 1000) : '')
       .replace('{uploader}', source.uploader || '')
       .replace('{id}', source.id || '')
       .replace('{source}', source.source || '')
-      .replace('{size}', source.size || '')
+      .replace('{size}', formattedSize)
       .replace('{seeders}', (typeof source.seeders === 'number' || typeof source.seeds === 'number') ?
         Number(source.seeders ?? source.seeds ?? 0).toLocaleString() : '');
   }, [t]);
 
   // ===== EFFECTS =====
-  // Cleanup and ref updates
   useEffect(() => {
     sourcesRef.current = state.sources;
   }, [state.sources]);
-
-  useEffect(() => {
-    return () => {
-      // no-op cleanup (removed unused WebTorrent client and abort controller)
-    };
-  }, []);
 
   // Helper to find a sourceKey from event payload (best-effort)
   const findSourceKeyForEvent = useCallback((payload: any) => {
@@ -454,7 +473,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
     }
     // No exact match found; debug for developer
     try {
-      console.debug('[TrackSources] Unmatched cache event payload (could not map to source):', payload, sourcesRef.current?.map((s, i) => ({ key: generateSourceKey(s, i), id: s.id, infoHash: s.infoHash, playUrl: s.playUrl, streamUrl: s.streamUrl })));
+      frontendLogger.debug('[TrackSources] Unmatched cache event payload (could not map to source):', payload, sourcesRef.current?.map((s, i) => ({ key: generateSourceKey(s, i), id: s.id, infoHash: s.infoHash, playUrl: s.playUrl, streamUrl: s.streamUrl })));
     } catch { /* ignore */ }
     return undefined;
   }, []);
@@ -556,7 +575,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
         unlistenFns.push(un4);
       } catch (e) {
         // Tauri event API not available in this environment (e.g., web preview)
-        console.debug('[TrackSources] Tauri event API not available', e);
+        frontendLogger.debug('[TrackSources] Tauri event API not available', e);
       }
     })();
 
@@ -604,20 +623,34 @@ export default function TrackSources({ track, album, primaryArtist }: {
           let promise = searchInflight.get(cacheKey);
           if (!promise) {
             promise = (async () => {
-              const torrentPayload = { title: title, artist, type: 'torrents' };
               const youtubeTitle = track?.name || title;
               const youtubePayload = { title: youtubeTitle, artist, type: 'youtube' };
 
+              // Use new Tauri scrapers for torrent search across all providers
               const [torrentResp, youtubeResp] = await Promise.allSettled([
-                runTauriCommand('source_search', { payload: torrentPayload }),
+                runTauriCommand('torrent_search', { payload: { query } }),
                 runTauriCommand('source_search', { payload: youtubePayload })
               ]);
 
-              const torrentResults = torrentResp.status === 'fulfilled'
-                ? Array.isArray(torrentResp.value)
-                  ? torrentResp.value
-                  : (torrentResp.value?.results ?? torrentResp.value?.items ?? [])
+              const rawTorrent = torrentResp.status === 'fulfilled'
+                ? (Array.isArray(torrentResp.value) ? torrentResp.value : (torrentResp.value?.results ?? torrentResp.value?.items ?? []))
                 : [];
+
+              // Normalize torrent results so downstream logic works with all providers
+              const torrentResults = (rawTorrent as any[]).map((r: any) => {
+                const out: any = { ...r };
+                out.type = 'torrent';
+                // map provider -> source (for UI info labels)
+                if (r.provider && !r.source) out.source = r.provider;
+                // unify magnet field
+                if (!r.magnetURI && r.magnet) out.magnetURI = r.magnet;
+                // best-effort infoHash extraction
+                if (!out.infoHash && typeof out.magnetURI === 'string') {
+                  const m = out.magnetURI.match(/xt=urn:btih:([a-fA-F0-9]{40})/);
+                  if (m?.[1]) out.infoHash = m[1].toLowerCase();
+                }
+                return out;
+              });
 
               const youtubeResults = youtubeResp.status === 'fulfilled'
                 ? Array.isArray(youtubeResp.value)
@@ -632,6 +665,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                 errors.push(`youtube search: ${youtubeResp.reason}`);
               }
 
+              // Prefer immediate playable sources first (YouTube), then torrents
               const combined = [...youtubeResults, ...torrentResults];
               searchCache.set(cacheKey, combined);
               searchInflight.delete(cacheKey);
@@ -668,7 +702,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                   const isCached = await checkSourceCached(source, sourceKey);
                   cacheStates[sourceKey] = isCached ? 'completed' : 'idle';
                 } catch (e) {
-                  console.error(`Failed to check cache for source ${sourceKey}:`, e);
+                  frontendLogger.error(`Failed to check cache for source ${sourceKey}:`, e);
                   cacheStates[sourceKey] = 'idle';
                 }
               }
@@ -714,7 +748,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
           }));
         }
       } catch (err) {
-        console.error('TrackSources: load error', err);
+        frontendLogger.error('TrackSources: load error', err);
         if (!cancelled) {
           setState(prev => ({
             ...prev,
@@ -763,21 +797,35 @@ export default function TrackSources({ track, album, primaryArtist }: {
             // Handle YouTube FIRST so playUrl/streamUrl becomes available sooner
             if (source.type === 'youtube' && source.id) {
               try {
-                const info = await runTauriCommand<any>('youtube_get_info', {
+                const response = await runTauriCommand<any>('youtube_get_info', {
                   payload: { id: source.id }
                 });
+
+                // Backend returns { status: "ok", data: info }
+                const info = response?.data || response;
 
                 // Check for unavailable video error
                 if (info?.success === false && info?.reason === 'unavailable') {
                   throw new Error('Video is unavailable');
                 }
 
-                const streamUrl = info?.streamUrl || null;
+                // Get stream URL - first try to get it directly from the info, 
+                // if not available, call the stream URL command
+                let streamUrl = info?.url || null;
+                if (!streamUrl) {
+                  try {
+                    const streamResponse = await runTauriCommand<any>('youtube_get_stream_url', { id: source.id });
+                    streamUrl = streamResponse?.data?.url || streamResponse?.url || null;
+                  } catch (streamError) {
+                    frontendLogger.warn(`Failed to get YouTube stream URL for ${source.id}:`, streamError);
+                  }
+                }
+
                 if (streamUrl) {
                   source.streamUrl = streamUrl;
                   source.playUrl = streamUrl;
                 }
-                const estBytes = info?.format?.filesize || info?.format?.filesize_approx || 0;
+                const estBytes = info?.filesize || info?.filesize_approx || 0;
                 const syntheticName = source.title || source.name || `youtube:${source.id}`;
                 const synthetic = [{ name: syntheticName, length: estBytes }];
                 fileListCache.set(sourceKey, synthetic);
@@ -792,7 +840,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
                 // Handle unavailable video specifically
                 if (errorMsg.includes('Video is unavailable') || errorMsg.includes('unavailable')) {
-                  console.warn(`[TrackSources] YouTube video ${source.id} is unavailable, skipping`);
+                  frontendLogger.warn(`[TrackSources] YouTube video ${source.id} is unavailable, skipping`);
                   // Don't cache unavailable videos - let them fail gracefully
                   throw new Error('Video is unavailable');
                 }
@@ -807,7 +855,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
             const isInfoHash = /^[a-f0-9]{40}$/i.test(maybeInfoHash);
 
             if (isMagnet || isInfoHash) {
-              const files = await tc.getTorrentFileList(id, { timeoutMs: DEFAULT_TIMEOUT });
+              const files = await tc.getTorrentFileList(id, { timeout_ms: DEFAULT_TIMEOUT });
               const seen = new Set();
               const uniqueFiles = (files || []).filter((f: any) => {
                 const name = String(f.name || '').trim();
@@ -855,7 +903,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       let msg = e?.message ?? String(e);
 
       // Log the full error message first for debugging
-      console.error('TrackSources: full error details', {
+      frontendLogger.error('TrackSources: full error details', {
         originalError: e,
         fullMessage: msg,
         messageLength: msg.length,
@@ -865,11 +913,11 @@ export default function TrackSources({ track, album, primaryArtist }: {
       // Clean up malformed error messages
       if (msg.startsWith('ERR: ') && msg.length > 50 && !msg.includes(' ')) {
         // This looks like a malformed concatenated error - provide a generic message
-        console.warn('TrackSources: sanitizing long error message:', msg);
+        frontendLogger.warn('TrackSources: sanitizing long error message:', msg);
         msg = 'Failed to load torrent files';
       }
 
-      console.error('TrackSources: file list error', msg);
+      frontendLogger.error('TrackSources: file list error', msg);
 
       // Clean up failed request from inflight map
       const id = source.magnetURI ?? source.infoHash ?? source.id ?? source.url ?? source.path ?? '';
@@ -923,7 +971,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
             // Skip loading if source is already cached
             const isCached = state.downloadStates[key] === 'completed';
             if (isCached) {
-              console.log(`[TrackSources] Skipping file loading for cached source ${key}`);
+              if (__DEV__) frontendLogger.log(`[TrackSources] Skipping file loading for cached source ${key}`);
               return Promise.resolve();
             }
 
@@ -939,7 +987,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       fetchedQueriesRef.current[lastQuery] = true;
     };
 
-    console.log(`[TrackSources] Auto-fetching ${candidates.length} priority sources`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Auto-fetching ${candidates.length} priority sources`);
     batchProcess();
   }, [state.sources, state.lastQuery, state.fileLists, state.loadingKeys, handleSourceData]);
 
@@ -952,7 +1000,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       const sourceHash = source.id || source.infoHash || source.magnetURI || source.url || '';
 
       if (!sourceHash) {
-        console.log(`[TrackSources] No source hash for ${sourceKey}`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] No source hash for ${sourceKey}`);
         return false;
       }
 
@@ -986,11 +1034,11 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
             // If file list is not loaded yet, load it first
             if (files.length === 0) {
-              console.log(`[TrackSources] File list not loaded for ${sourceKey}, loading before cache check`);
+              if (__DEV__) frontendLogger.log(`[TrackSources] File list not loaded for ${sourceKey}, loading before cache check`);
               try {
                 files = await handleSourceData(source, generateSourceKey(source, state.sources.indexOf(source)));
               } catch (e) {
-                console.warn(`[TrackSources] Failed to load file list for cache check:`, e);
+                frontendLogger.warn(`[TrackSources] Failed to load file list for cache check:`, e);
                 files = [];
               }
             }
@@ -999,12 +1047,12 @@ export default function TrackSources({ track, album, primaryArtist }: {
               const targetFileIndex = files.findIndex((file: any) => file.name && AUDIO_EXTENSIONS.test(file.name));
               if (targetFileIndex !== -1) {
                 fileIndex = targetFileIndex;
-                console.log(`[TrackSources] Cache check using file_index: ${fileIndex} for ${sourceKey}`);
+                if (__DEV__) frontendLogger.log(`[TrackSources] Cache check using file_index: ${fileIndex} for ${sourceKey}`);
               }
             }
           }
 
-          console.log(`[TrackSources] Checking cache with params:`, {
+          if (__DEV__) frontendLogger.log(`[TrackSources] Checking cache with params:`, {
             trackId: track.id,
             sourceType,
             sourceHash: sourceHash.substring(0, 16) + '...',
@@ -1013,14 +1061,11 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
           const result = await runTauriCommand('cache_get_file', {
             trackId: track.id,
-            track_id: track.id,
             sourceType: sourceType,
-            source_type: sourceType,
             sourceHash: sourceHash,
-            source_hash: sourceHash,
-            ...(fileIndex !== undefined && { fileIndex, file_index: fileIndex })
+            ...(fileIndex !== undefined && { fileIndex: fileIndex })
           });
-          console.log(`[TrackSources] Cache check result for ${sourceKey}:`, result);
+          if (__DEV__) frontendLogger.log(`[TrackSources] Cache check result for ${sourceKey}:`, result);
           const isCached = result?.exists === true;
           cachedFileCache.set(cacheKey, isCached);
           // Expire this cache entry after a short period to keep freshness
@@ -1034,7 +1079,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       cachedFileInflight.set(cacheKey, promise);
       return await promise;
     } catch (e) {
-      console.error('Failed to check cache status:', e);
+      frontendLogger.error('Failed to check cache status:', e);
       return false;
     }
   }, [track?.id]);
@@ -1043,7 +1088,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
   const downloadSource = useCallback(async (source: any, sourceKey: string) => {
     if (!track?.id) return;
 
-    console.log(`[TrackSources] Starting download for ${sourceKey}`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Starting download for ${sourceKey}`);
 
     setState(prev => ({
       ...prev,
@@ -1094,9 +1139,9 @@ export default function TrackSources({ track, album, primaryArtist }: {
                 try {
                   const cacheResult = await runTauriCommand('cache_get_file', {
                     trackId: track.id,
-                    sourceType,
-                    sourceHash,
-                    file_index: fileIndex
+                    sourceType: sourceType,
+                    sourceHash: sourceHash,
+                    fileIndex: fileIndex
                   });
                   if (cacheResult?.exists) {
                     setState(prev => ({ ...prev, downloadStates: { ...prev.downloadStates, [sourceKey]: 'completed' } }));
@@ -1121,13 +1166,9 @@ export default function TrackSources({ track, album, primaryArtist }: {
               try {
                 status = await runTauriCommand('cache_download_status', {
                   trackId: track.id,
-                  track_id: track.id,
-                  sourceType,
-                  source_type: sourceType,
-                  sourceHash,
-                  source_hash: sourceHash,
-                  fileIndex,
-                  file_index: fileIndex
+                  sourceType: sourceType,
+                  sourceHash: sourceHash,
+                  fileIndex: fileIndex
                 });
               } catch { /* optional */ }
 
@@ -1147,13 +1188,9 @@ export default function TrackSources({ track, album, primaryArtist }: {
                 if (sourceType === 'torrent' && fileIndex !== undefined) {
                   const cacheResult = await runTauriCommand('cache_get_file', {
                     trackId: track.id,
-                    track_id: track.id,
-                    sourceType,
-                    source_type: sourceType,
-                    sourceHash,
-                    source_hash: sourceHash,
-                    fileIndex,
-                    file_index: fileIndex
+                    sourceType: sourceType,
+                    sourceHash: sourceHash,
+                    fileIndex: fileIndex
                   });
                   isNowCached = cacheResult?.exists === true;
                 } else {
@@ -1176,9 +1213,9 @@ export default function TrackSources({ track, album, primaryArtist }: {
       })();
 
       downloadMap.set(sourceKey, p);
-      p.catch(e => console.error(`[TrackSources] download promise error for ${sourceKey}:`, e));
+      p.catch(e => frontendLogger.error(`[TrackSources] download promise error for ${sourceKey}:`, e));
     } catch (e) {
-      console.error(`[TrackSources] Download failed for ${sourceKey}:`, e);
+      frontendLogger.error(`[TrackSources] Download failed for ${sourceKey}:`, e);
       setState(prev => ({ ...prev, downloadStates: { ...prev.downloadStates, [sourceKey]: 'error' } }));
     }
   }, [track?.id, checkSourceCached, handleSourceData, currentTrackName, state.selectedFileIndices]);
@@ -1197,13 +1234,13 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
         // Handle unavailable video specifically
         if (errorMsg.includes('Video is unavailable') || errorMsg.includes('unavailable')) {
-          console.warn(`[TrackSources] Cannot select unavailable YouTube video ${source.id}`);
+          frontendLogger.warn(`[TrackSources] Cannot select unavailable YouTube video ${source.id}`);
           alert(`This YouTube video is unavailable and cannot be played. It may be private, deleted, or region-restricted.`);
           return;
         }
 
         // For other errors, still allow selection but show the error
-        console.error('Failed to load source data:', loadError);
+        frontendLogger.error('Failed to load source data:', loadError);
       }
     }
 
@@ -1224,18 +1261,18 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
             // If file list is not loaded, load it now
             if (!files || !Array.isArray(files) || files.length === 0) {
-              console.log(`[TrackSources] File list not loaded for ${sourceKey} during source selection, loading now...`);
+              if (__DEV__) frontendLogger.log(`[TrackSources] File list not loaded for ${sourceKey} during source selection, loading now...`);
               try {
                 files = await handleSourceData(source, sourceKey);
-                console.log(`[TrackSources] Loaded ${files?.length || 0} files for ${sourceKey} during source selection`);
+                if (__DEV__) frontendLogger.log(`[TrackSources] Loaded ${files?.length || 0} files for ${sourceKey} during source selection`);
               } catch (e) {
-                console.warn(`[TrackSources] Failed to load file list for ${sourceKey} during source selection:`, e);
+                frontendLogger.warn(`[TrackSources] Failed to load file list for ${sourceKey} during source selection:`, e);
               }
             }
 
             if (files && Array.isArray(files)) {
               fileIndex = getSelectedFileIndex(sourceKey, files, currentTrackName, state.selectedFileIndices);
-              console.log(`[TrackSources] Torrent ${sourceKey}: found matching file index ${fileIndex} for track "${currentTrackName}" during source selection`);
+              if (__DEV__) frontendLogger.log(`[TrackSources] Torrent ${sourceKey}: found matching file index ${fileIndex} for track "${currentTrackName}" during source selection`);
             }
           }
 
@@ -1295,19 +1332,19 @@ export default function TrackSources({ track, album, primaryArtist }: {
 
   const handleDownloadSource = useCallback(async (source: any, sourceKey: string) => {
     const currentState = state.downloadStates[sourceKey] || 'idle';
-    console.log(`[TrackSources] Download button clicked for ${sourceKey}, current state: ${currentState}`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Download button clicked for ${sourceKey}, current state: ${currentState}`);
 
     if (currentState === 'downloading') {
-      console.log(`[TrackSources] Already downloading ${sourceKey}, ignoring`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Already downloading ${sourceKey}, ignoring`);
       return; // Already downloading
     }
 
     // Check if already cached in real-time
-    console.log(`[TrackSources] Checking if ${sourceKey} is already cached`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Checking if ${sourceKey} is already cached`);
     const isAlreadyCached = await checkSourceCached(source, sourceKey);
-    console.log(`[TrackSources] Cache check result for ${sourceKey}: ${isAlreadyCached}`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Cache check result for ${sourceKey}: ${isAlreadyCached}`);
     if (isAlreadyCached) {
-      console.log(`[TrackSources] ${sourceKey} is already cached, updating state`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] ${sourceKey} is already cached, updating state`);
       // Update state to reflect cached status
       setState(prev => ({
         ...prev,
@@ -1316,7 +1353,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       return;
     }
 
-    console.log(`[TrackSources] ${sourceKey} not cached, starting download`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] ${sourceKey} not cached, starting download`);
     // Not cached, trigger download
     await downloadSource(source, sourceKey);
   }, [state.downloadStates, checkSourceCached, downloadSource]);
@@ -1324,11 +1361,11 @@ export default function TrackSources({ track, album, primaryArtist }: {
   // Check cache status for sources
   useEffect(() => {
     if (!state.sources || !track?.id) {
-      console.log('[TrackSources] Skipping cache check - no sources or track ID');
+  if (__DEV__) frontendLogger.log('[TrackSources] Skipping cache check - no sources or track ID');
       return;
     }
 
-    console.log(`[TrackSources] Checking cache status for ${state.sources.length} sources`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Checking cache status for ${state.sources.length} sources`);
 
     const checkCacheStatus = async () => {
       const cacheChecks = state.sources.map(async (source: any, index: number) => {
@@ -1344,9 +1381,9 @@ export default function TrackSources({ track, album, primaryArtist }: {
         if (result.status === 'fulfilled') {
           const { sourceKey, isCached } = result.value;
           newDownloadStates[sourceKey] = isCached ? 'completed' : 'idle';
-          console.log(`[TrackSources] Cache status for ${sourceKey}: ${isCached ? 'cached' : 'not cached'}`);
+          if (__DEV__) frontendLogger.log(`[TrackSources] Cache status for ${sourceKey}: ${isCached ? 'cached' : 'not cached'}`);
         } else {
-          console.error(`[TrackSources] Cache check failed for source ${index}:`, result.reason);
+          frontendLogger.error(`[TrackSources] Cache check failed for source ${index}:`, result.reason);
         }
       });
 
@@ -1355,7 +1392,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
         downloadStates: { ...prev.downloadStates, ...newDownloadStates }
       }));
 
-      console.log('[TrackSources] Cache status check completed');
+  if (__DEV__) frontendLogger.log('[TrackSources] Cache status check completed');
     };
 
     checkCacheStatus();
@@ -1374,7 +1411,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
       // Skip loading if source is already cached
       const isCached = state.downloadStates[sourceKey] === 'completed';
       if (isCached) {
-        console.log(`[TrackSources] Skipping file loading for cached source ${sourceKey}`);
+  if (__DEV__) frontendLogger.log(`[TrackSources] Skipping file loading for cached source ${sourceKey}`);
         setState(prev => ({
           ...prev,
           visibleOutputs: { ...prev.visibleOutputs, [sourceKey]: true },
@@ -1443,7 +1480,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
         }}
           aria-label={t('np.collapseExpand', `Collapse/Expand ${title} sources`)}
           role="button">
-          <h5 style={{ margin: '0 5px', display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px' }}>
+          <h5 style={H5_HEADER_STYLE}>
             {icon && (
               <ThemedSvgIcon
                 src={icon}
@@ -1588,7 +1625,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                 <div className={`source-output ${isVisible && !isLoading && !hasError && type === 'torrent' ? 'show' : ''}`}>
                   {isVisible && files && (
                     <div className="source-files">
-                      <div style={{ fontSize: 12, opacity: .8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={FILES_BAR_STYLE}>
                         {t('np.sourceFiles', 'Files in source')}
                         {(() => {
                           const allMatchingIndices = findAllMatchingFileIndices(files, currentTrackName);
@@ -1605,7 +1642,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                           return null;
                         })()}
                       </div>
-                      <ul style={{ margin: 6, paddingLeft: 0 }}>
+                      <ul style={FILES_UL_STYLE}>
                         {(() => {
                           // Filter to show only audio files when available, otherwise show all files
                           const audioFiles = files.filter(f => AUDIO_EXTENSIONS.test(f.name));
@@ -1641,7 +1678,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
                                 title={isClickable ? 'Click to select this file for playback/download' : undefined}
                               >
                                 {canSelectFiles && isCurrent && (
-                                  <span className="material-symbols-rounded" style={{ fontSize: 14, marginRight: 4 }}>
+                                  <span className="material-symbols-rounded" style={RADIO_ICON_STYLE}>
                                     {isSelected ? 'radio_button_checked' : 'radio_button_unchecked'}
                                   </span>
                                 )}
@@ -1702,7 +1739,7 @@ export default function TrackSources({ track, album, primaryArtist }: {
         {/* Local file audio source */}
         <div className="source-section">
           <div className="source-section-header">
-            <h5 style={{ margin: '0 5px', display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px' }}>
+            <h5 style={H5_HEADER_STYLE}>
               {SOURCE_ICONS?.local && (
                 <ThemedSvgIcon
                   src={SOURCE_ICONS.local}

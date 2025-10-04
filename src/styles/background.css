@@ -1,4 +1,4 @@
-/* Animated Background */
+/* Background */
 .bg {
 	/* --bg-image: url('https://img.freepik.com/free-vector/abstract-colorful-flow-shapes-background_23-2148233991.jpg'); */ 
 	--bg-color-default: radial-gradient(circle at 70% 20%, rgba(6,182,212,0.28) 0%, rgba(6,182,212,0.12) 20%, transparent 60%);
@@ -14,13 +14,12 @@
 .bg::after {
 	content: "";
 	position: absolute;
-	width: var(--bg-size, 200%);
-	height: var(--bg-size, 200%);
-	border-radius: var(--bg-radius, 100em);
+	width: var(--bg-size, 100%);
+	height: var(--bg-size, 100%);
+	border-radius: var(--bg-radius, 0);
 	transform-origin: 50% 50%;
 
 	/* Allow runtime control via CSS variables with sensible defaults */
-	animation: var(--bg-animation, rotate 40s linear infinite);
 	filter: var(--bg-filter, blur(200px));
 	background-repeat: no-repeat;
 	background-size: cover;
@@ -39,12 +38,5 @@
 	left: 0;
 	bottom: 0;
 	z-index: 1;
-	animation-direction: reverse;
-	animation-delay: 10s;
 	background-image: linear-gradient(var(--bg-overlay, rgba(0,0,0,0))), var(--bg-image), var(--bg-black-default);
-}
-
-@keyframes rotate {
-	from { transform: rotate(0deg); }
-	to { transform: rotate(360deg); }
 }

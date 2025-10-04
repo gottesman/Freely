@@ -65,11 +65,12 @@ function createError(res: any): Error {
  */
 export async function getTorrentFileList(
   id: string,
-  opts?: { timeoutMs?: number }
+  opts?: { timeout_ms?: number }
 ): Promise<FileInfo[]> {
   if (!id) throw new Error('No torrent id provided');
 
-  const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Prefer snake_case to match backend only
+  const timeoutMs = (opts?.timeout_ms) ?? DEFAULT_TIMEOUT_MS;
 
   // Return existing inflight request if available (coalescing)
   if (inflight.has(id)) {
@@ -81,19 +82,26 @@ export async function getTorrentFileList(
       // Call optimized Tauri command
       const res = await runTauriCommand<any>('torrent_get_files', {
         id,
-        timeoutMs
+        timeout_ms: timeoutMs
       });
 
       // Handle structured responses from the server
       if (res && typeof res === 'object') {
         // Check for error responses first
-        if (res.error || res.err || res.message) {
+        if ((res as any).error || (res as any).err || (res as any).message) {
           throw createError(res);
         }
 
-        // Extract files array from successful response
-        if (res.success && Array.isArray(res.files)) {
-          return res.files;
+        // New Tauri shape: { status: 'ok', data: FileInfo[] }
+        if ((res as any).status === 'ok') {
+          const data = (res as any).data;
+          if (Array.isArray(data)) return data;
+          if (data && Array.isArray((data as any).files)) return (data as any).files;
+        }
+
+        // Alternate success shape: { success: true, files: [...] }
+        if ((res as any).success && Array.isArray((res as any).files)) {
+          return (res as any).files;
         }
 
         // Handle direct array response (legacy)

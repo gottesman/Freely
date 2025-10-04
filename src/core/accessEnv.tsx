@@ -4,7 +4,7 @@ const DEFAULTS: Record<string, string> = {
     GENIUS_ENDPOINT: "https://lucky-block-579c.gabrielgonzalez-gsun.workers.dev/genius",
 
     // Optional: custom UA string
-    APP_USER_AGENT: "FreelyPlayer/1.3.0-test",
+    APP_USER_AGENT: "FreelyPlayer/1.4.0-alpha",
 
     // Spotify API (Client Credentials for metadata lookups)
     SPOTIFY_DEFAULT_MARKET: "US",

@@ -1,3 +1,6 @@
+use crate::audio_settings::{get_audio_settings, update_audio_settings, AudioSettings};
+// Logging macros (exported globally) explicitly brought into scope for clarity
+// logging macros are available via #[macro_export] from logging module
 use crate::bass::{
     bass_err, bass_free, bass_init, bass_set_config, bass_set_config_ptr, channel_bytes2seconds,
     channel_get_attribute, channel_get_info, channel_get_length, channel_get_position,
@@ -5,15 +8,17 @@ use crate::bass::{
     channel_set_attribute, channel_set_position, channel_stop, ensure_bass_loaded, error_get_code,
     get_device, get_device_info, get_info, probe_audio_format_from_channel, probe_duration_bass,
     stream_create, stream_free, stream_get_file_position, BassAudioFormatInfo, BassChannelInfo,
-    StreamSource, BASS_CONFIG_BUFFER, BASS_CTYPE_STREAM_AIFF, BASS_CTYPE_STREAM_CA,
+    BassInfo, StreamSource, BASS_CONFIG_BUFFER, BASS_CTYPE_STREAM_AIFF, BASS_CTYPE_STREAM_CA,
     BASS_CTYPE_STREAM_DSD, BASS_CTYPE_STREAM_DSD_RAW, BASS_CTYPE_STREAM_MF, BASS_CTYPE_STREAM_MP3,
     BASS_CTYPE_STREAM_OGG, BASS_CTYPE_STREAM_WAV, BASS_CTYPE_STREAM_WAV_FLOAT,
-    BASS_CTYPE_STREAM_WAV_PCM, BASS_TAG_APE, BASS_TAG_ID3V2, BASS_TAG_MP4, BASS_TAG_OGG,
-    BASS_TAG_WMA,
+    BASS_CTYPE_STREAM_WAV_PCM, BASS_CTYPE_STREAM_FLAC, BASS_CTYPE_STREAM_FLAC_OGG,
+    BASS_CTYPE_STREAM_AAC, BASS_CTYPE_STREAM_MP4, BASS_CTYPE_STREAM_OPUS,
+    BASS_CTYPE_STREAM_WEBM, BASS_CTYPE_STREAM_APE, BASS_CTYPE_STREAM_ALAC,
+    BASS_TAG_APE, BASS_TAG_ID3V2, BASS_TAG_MP4, BASS_TAG_OGG, BASS_TAG_WMA, BASS_TAG_HTTP,
 };
 use crate::bass::{
     BassChannelPlay, BassChannelSeconds2Bytes, BassChannelSetAttribute, BassChannelSetPosition,
-    BassChannelStop, BassDeviceInfo, BassInfo, BassStreamCreateFile, BassStreamFree, DownloadProc,
+    BassChannelStop, BassDeviceInfo, BassStreamCreateFile, BassStreamFree, DownloadProc,
     BASS_ACTIVE_PAUSED, BASS_ACTIVE_PLAYING, BASS_ACTIVE_STALLED, BASS_ACTIVE_STOPPED,
     BASS_ATTRIB_FREQ, BASS_ATTRIB_VOL, BASS_CONFIG_NET_AGENT, BASS_CONFIG_NET_BUFFER,
     BASS_CONFIG_NET_TIMEOUT, BASS_DEVICE_DEFAULT, BASS_DEVICE_DEFAULT_FLAG, BASS_DEVICE_ENABLED,
@@ -47,43 +52,211 @@ use std::{
 };
 use tauri::Emitter;
 
-// Centralized runtime configuration for BASS-related timeouts and buffers
-#[derive(Clone)]
-struct PlaybackRuntimeConfig {
-    // BASS_CONFIG_NET_TIMEOUT in milliseconds
-    net_timeout_ms: u32,
-    // BASS_CONFIG_NET_BUFFER in milliseconds
-    net_buffer_ms: u32,
-    // BASS_CONFIG_BUFFER in milliseconds
-    buffer_size_ms: u32,
-    // Extra wait after creating a streaming handle to allow initial buffering (ms)
-    additional_buffer_wait_ms: u64,
+/// Structure to hold playback state for restoration after audio reinitialization
+#[derive(Debug, Clone)]
+struct PlaybackStateSnapshot {
+    url: Option<String>,
+    was_playing: bool,
+    position: f64,
+    track_id: Option<String>,
+    source_type: Option<String>,
+    source_hash: Option<String>,
 }
 
-impl Default for PlaybackRuntimeConfig {
-    fn default() -> Self {
+impl PlaybackStateSnapshot {
+    /// Create a snapshot of current playback state
+    fn capture(state: &PlaybackState, lib: Option<&Library>) -> Self {
+        let position = if let (Some(handle), Some(lib)) = (state.stream, lib) {
+            let pos_bytes = channel_get_position(lib, handle, BASS_POS_BYTE);
+            if pos_bytes != 0xFFFFFFFF {
+                let secs = channel_bytes2seconds(lib, handle, pos_bytes);
+                if secs.is_finite() && secs >= 0.0 {
+                    secs
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
         Self {
-            net_timeout_ms: 15000,
-            net_buffer_ms: 15000,
-            buffer_size_ms: 1024,
-            additional_buffer_wait_ms: 200,
+            url: state.url.clone(),
+            was_playing: state.playing,
+            position,
+            track_id: state.current_track_id.clone(),
+            source_type: state.current_source_type.clone(),
+            source_hash: state.current_source_hash.clone(),
         }
+    }
+
+    /// Check if there's a meaningful playback state to restore
+    fn has_playback(&self) -> bool {
+        self.url.is_some() && (self.was_playing || self.position > 0.0)
     }
 }
 
-static RUNTIME_CFG: Lazy<Mutex<PlaybackRuntimeConfig>> =
-    Lazy::new(|| Mutex::new(PlaybackRuntimeConfig::default()));
-
-fn get_runtime_cfg_snapshot() -> PlaybackRuntimeConfig {
-    RUNTIME_CFG.lock().unwrap().clone()
+/// Centralized BASS initialization function
+/// This replaces all the duplicated initialization logic throughout the codebase
+pub fn ensure_bass_initialized(state: &mut PlaybackState, force_reinit: bool) -> Result<(), String> {
+    let settings = get_audio_settings();
+    
+    // Load BASS library if not already loaded
+    if state.bass_lib.is_none() {
+        match ensure_bass_loaded() {
+            Ok(lib) => state.bass_lib = Some(lib),
+            Err(e) => return Err(format!("Failed to load BASS library: {}", e)),
+        }
+    }
+    
+    let lib = state.bass_lib.as_ref().unwrap();
+    
+    // Check if we need to reinitialize
+    let needs_init = !state.bass_initialized || force_reinit;
+    
+    if needs_init {
+        // Free existing BASS instance if reinitializing
+        if force_reinit && state.bass_initialized {
+            log_info!("[bass] Force reinitializing BASS...");
+            
+            // Stop and free current stream if any
+            if let Some(handle) = state.stream.take() {
+                channel_stop(lib, handle);
+                stream_free(lib, handle);
+                log_debug!("[bass] Stopped and freed current stream for reinit");
+            }
+            
+            bass_free(lib);
+            state.bass_initialized = false;
+        }
+        
+    log_info!("[bass] Initializing BASS audio system... (device={}, sample_rate={}Hz)", settings.device_id, settings.sample_rate);
+        
+        // Apply configuration before initialization
+        settings.apply_to_bass(lib);
+        
+        // Initialize BASS
+        let ok = bass_init(lib, settings.device_id, settings.sample_rate, 0);
+        if ok == 0 {
+            let error_code = error_get_code(lib);
+            
+            // Handle specific error cases
+            match error_code {
+                14 => {
+                    // BASS_ERROR_ALREADY - already initialized
+                    log_debug!("[bass] BASS already initialized (this is fine)");
+                    state.bass_initialized = true;
+                }
+                48 => {
+                    // BASS_ERROR_WASAPI - audio device issues
+                    let error_msg = if settings.has_user_override {
+                        format!("Audio device initialization failed for device {} at {}Hz (WASAPI error). Please check your audio device settings.", 
+                                settings.device_id, settings.sample_rate)
+                    } else {
+                        "Audio device initialization failed. Please check your audio device settings.".to_string()
+                    };
+                    return Err(error_msg);
+                }
+                _ => {
+                    let error = bass_err(lib);
+                    return Err(format!("BASS initialization failed: {}", error));
+                }
+            }
+        } else {
+            log_info!("[bass] BASS initialized successfully");
+            state.bass_initialized = true;
+        }
+        
+        // Verify sample rate if user has overridden settings
+        if settings.has_user_override {
+            let mut info = BassInfo {
+                flags: 0, hwsize: 0, hwfree: 0, freesam: 0, free3d: 0,
+                minrate: 0, maxrate: 0, eax: 0, minbuf: 0, dsver: 0,
+                latency: 0, initflags: 0, speakers: 0, freq: 0,
+            };
+            
+            if get_info(lib, &mut info) != 0 {
+                if info.freq as u32 != settings.sample_rate {
+                    let msg = format!(
+                        "Audio device forced {}Hz instead of requested {}Hz. This may indicate incompatible device settings.",
+                        info.freq, settings.sample_rate
+                    );
+                    log_warn!("[bass] {}", msg);
+                    // Don't fail here, just warn - the device might still work
+                }
+            }
+        }
+        
+        // Load codec plugins
+        if let Err(e) = crate::bass::load_bass_plugins(lib) {
+            log_warn!("[bass] Failed to load some plugins: {}", e);
+        }
+        
+    log_info!("[bass] BASS initialization complete");
+    }
+    
+    Ok(())
 }
 
-fn apply_bass_runtime_config(lib: &Library) {
-    let cfg = get_runtime_cfg_snapshot();
-    // Apply buffer sizes and timeouts to BASS
-    bass_set_config(lib, BASS_CONFIG_BUFFER, cfg.buffer_size_ms);
-    bass_set_config(lib, BASS_CONFIG_NET_TIMEOUT, cfg.net_timeout_ms);
-    bass_set_config(lib, BASS_CONFIG_NET_BUFFER, cfg.net_buffer_ms);
+/// Restore playback state after audio reinitialization
+async fn restore_playback_state(snapshot: PlaybackStateSnapshot) -> Result<(), String> {
+    if !snapshot.has_playback() {
+    log_debug!("[bass] No meaningful playback state to restore");
+        return Ok(());
+    }
+
+    log_info!("[bass] Restoring playback state: url={:?}, was_playing={}, position={:.2}s", snapshot.url, snapshot.was_playing, snapshot.position);
+
+    if let Some(url) = snapshot.url {
+        // Restore playback using the appropriate method
+        if let (Some(track_id), Some(source_type), Some(source_hash)) = 
+           (snapshot.track_id, snapshot.source_type, snapshot.source_hash) {
+            // Use playback_start_with_source if we have source information
+            let spec = PlaybackSourceSpec {
+                track_id,
+                source_type,
+                source_value: url.clone(),
+                prefer_cache: Some(true),
+                source_meta: None,
+                client_request_id: Some("audio_settings_restore".to_string()),
+            };
+            
+            // We need the app handle for playback_start_with_source_internal
+            // For now, fall back to simple playback_start since we don't have app handle access here
+            if let Err(e) = playback_start_internal(url).await {
+                log_error!("[bass] Failed to restore playback: {}", e);
+                return Err(format!("Failed to restore playback: {}", e));
+            }
+        } else {
+            // Use simple playback start
+            if let Err(e) = playback_start_internal(url).await {
+                log_error!("[bass] Failed to restore playback: {}", e);
+                return Err(format!("Failed to restore playback: {}", e));
+            }
+        }
+
+        // Seek to the previous position if needed
+        if snapshot.position > 0.0 {
+            if let Err(e) = playback_seek_internal(snapshot.position).await {
+                log_warn!("[bass] Failed to seek to position {:.2}s: {}", snapshot.position, e);
+                // Don't treat seek failure as fatal - playback is restored
+            }
+        }
+
+        // If it was paused, pause it again
+        if !snapshot.was_playing {
+            if let Err(e) = playback_pause_internal().await {
+                log_warn!("[bass] Failed to restore paused state: {}", e);
+                // Don't treat pause failure as fatal
+            }
+        }
+
+    log_info!("[bass] Successfully restored playback state");
+    }
+
+    Ok(())
 }
 
 // Use shared helper from bass.rs for format probing
@@ -124,6 +297,13 @@ fn detect_codec_from_channel_info(lib: &Library, handle: u32) -> Option<String> 
         }
         BASS_CTYPE_STREAM_AIFF => Some("aiff".to_string()),
         BASS_CTYPE_STREAM_DSD | BASS_CTYPE_STREAM_DSD_RAW => Some("dsd".to_string()),
+        BASS_CTYPE_STREAM_FLAC | BASS_CTYPE_STREAM_FLAC_OGG => Some("flac".to_string()),
+        BASS_CTYPE_STREAM_AAC => Some("aac".to_string()),
+        BASS_CTYPE_STREAM_MP4 => Some("mp4".to_string()),
+        BASS_CTYPE_STREAM_ALAC => Some("alac".to_string()),
+        BASS_CTYPE_STREAM_OPUS => Some("opus".to_string()),
+        BASS_CTYPE_STREAM_WEBM => Some("webm".to_string()),
+        BASS_CTYPE_STREAM_APE => Some("ape".to_string()),
         BASS_CTYPE_STREAM_CA => {
             // CoreAudio - could be various formats, try to get more info from tags
             if let Some(codec) = get_codec_from_tags(lib, handle) {
@@ -141,7 +321,8 @@ fn detect_codec_from_channel_info(lib: &Library, handle: u32) -> Option<String> 
             }
         }
         _ => {
-            // Try to get codec info from tags as fallback
+            // For unknown ctypes, print the value for debugging and try tags
+            log_debug!("[bass] Unknown ctype for codec detection: 0x{:x}", info.ctype);
             get_codec_from_tags(lib, handle)
         }
     }
@@ -218,7 +399,7 @@ unsafe extern "C" fn download_proc(buffer: *const c_void, length: c_uint, user: 
 
     // Check for download completion (BASS calls with buffer=NULL, length=0 when done)
     if buffer.is_null() && length == 0 {
-        println!("[bass] Download completed for track: {}", state.track_id);
+    log_info!("[bass] Download completed for track: {}", state.track_id);
 
         // Mark download as complete
         state.download_complete = true;
@@ -279,10 +460,6 @@ pub struct PlaybackState {
     last_error: Option<String>,
     pub bass_lib: Option<Library>,
     bass_initialized: bool,
-    // Volume control
-    volume: f32,
-    muted: bool,
-    volume_before_mute: f32,
     // Cache-related fields
     current_track_id: Option<String>,
     current_source_type: Option<String>,
@@ -310,10 +487,6 @@ impl PlaybackState {
             last_error: None,
             bass_lib: None,
             bass_initialized: false,
-            // Volume control - default to 50% volume
-            volume: 0.5,
-            muted: false,
-            volume_before_mute: 0.5,
             // Cache-related fields
             current_track_id: None,
             current_source_type: None,
@@ -346,7 +519,7 @@ fn create_bass_stream(
         let file_path = url.strip_prefix("file://").unwrap_or(url);
         let c_file_path =
             CString::new(file_path).map_err(|_| "Invalid file path: contains null bytes")?;
-        println!("[bass] Creating stream from local file: {}", file_path);
+    log_debug!("[bass] Creating stream from local file: {}", file_path);
 
         stream_create(
             lib,
@@ -382,7 +555,7 @@ fn create_bass_stream(
                     .append(true)
                     .open(&cache_path)
                     .map_err(|e| format!("Failed to open cache file for append: {}", e))?;
-                println!(
+                log_debug!(
                     "[bass] Resuming cache file: {} (existing {} bytes)",
                     cache_path.display(),
                     len
@@ -398,7 +571,7 @@ fn create_bass_stream(
                 (f, 0)
             };
 
-            println!("[bass] Creating cache file: {}", cache_path.display());
+            log_debug!("[bass] Creating cache file: {}", cache_path.display());
 
             // Create download state
             let mut download_state = Box::new(DownloadFileState {
@@ -434,14 +607,11 @@ fn create_bass_stream(
 
             if handle == 0 {
                 let error = bass_err(lib);
-                println!("[bass] Stream creation with callback failed: {}", error);
+                log_error!("[bass] Stream creation with callback failed: {}", error);
                 return Err(format!("Stream creation failed: {}", error));
             }
 
-            println!(
-                "[bass] Stream created with download callback, handle: {}",
-                handle
-            );
+            log_debug!("[bass] Stream created with download callback, handle: {}", handle);
             return Ok((handle, Some(download_state)));
         } else {
             // Create stream without download callback (streaming only)
@@ -460,11 +630,10 @@ fn create_bass_stream(
 
     if handle == 0 {
         let error = bass_err(lib);
-        println!("[bass] Stream creation failed: {}", error);
+        log_error!("[bass] Stream creation failed: {}", error);
         return Err(format!("Stream creation failed: {}", error));
     }
-
-    println!("[bass] Stream created successfully, handle: {}", handle);
+    log_debug!("[bass] Stream created successfully, handle: {}", handle);
     Ok((handle, None))
 }
 
@@ -488,21 +657,16 @@ async fn finalize_cache_file(
             // If total size is known and file is incomplete, do not finalize yet
             if let Some(total) = total_bytes {
                 if file_size < total {
-                    println!(
-                        "[bass] Download incomplete ({} of {} bytes), keeping .part: {}",
-                        file_size,
-                        total,
-                        cache_path.display()
-                    );
+                    log_debug!("[bass] Download incomplete ({} of {} bytes), keeping .part: {}", file_size, total, cache_path.display());
                     return;
                 }
             } else {
                 // Unknown total size; check if BASS indicated download completion
                 if download_complete {
-                    println!("[bass] Download marked complete by BASS despite unknown total size, finalizing: {}", cache_path.display());
+                    log_info!("[bass] Download marked complete by BASS despite unknown total size, finalizing: {}", cache_path.display());
                 } else {
                     // Unknown total size and not marked complete - defer finalization
-                    println!("[bass] Total size unknown and download not complete, deferring finalization for: {}", cache_path.display());
+                    log_debug!("[bass] Total size unknown and download not complete, deferring finalization for: {}", cache_path.display());
                     return;
                 }
             }
@@ -516,10 +680,10 @@ async fn finalize_cache_file(
 
                 // Move the temporary .part file to the final (extension-less) location
                 if let Err(e) = std::fs::rename(&cache_path, &final_cache_path) {
-                    println!("[bass] Failed to move cache file to final location: {}", e);
+                    log_warn!("[bass] Failed to move cache file to final location: {}", e);
                     // If rename fails, try copy and delete
                     if let Err(e2) = std::fs::copy(&cache_path, &final_cache_path) {
-                        println!("[bass] Failed to copy cache file: {}", e2);
+                        log_warn!("[bass] Failed to copy cache file: {}", e2);
                         return;
                     }
                     let _ = std::fs::remove_file(&cache_path);
@@ -542,29 +706,19 @@ async fn finalize_cache_file(
                     sample_rate,
                     bits_per_sample,
                 ) {
-                    println!("[bass] Failed to add file to cache index: {}", e);
+                    log_warn!("[bass] Failed to add file to cache index: {}", e);
                 } else {
-                    println!(
-                        "[bass] Successfully cached audio file: {} ({}:{}), size: {} bytes",
-                        track_id, source_type, source_hash, file_size
-                    );
+                    log_info!("[bass] Successfully cached audio file: {} ({}:{}) size: {} bytes", track_id, source_type, source_hash, file_size);
                 }
             } else {
-                println!("[bass] Could not get cache directory");
+                log_error!("[bass] Could not get cache directory");
             }
         } else {
-            println!(
-                "[bass] Cache file too small ({} bytes), not caching: {}",
-                file_size,
-                cache_path.display()
-            );
+            log_debug!("[bass] Cache file too small ({} bytes), not caching: {}", file_size, cache_path.display());
             let _ = std::fs::remove_file(&cache_path);
         }
     } else {
-        println!(
-            "[bass] Cache file does not exist or cannot be accessed: {}",
-            cache_path.display()
-        );
+        log_debug!("[bass] Cache file does not exist or cannot be accessed: {}", cache_path.display());
     }
 }
 
@@ -574,7 +728,7 @@ async fn finalize_cache_file(
 unsafe impl Send for PlaybackState {}
 
 pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, String> {
-    println!("[bass] playback_start called");
+    log_debug!("[bass] playback_start called");
 
     // Check if this is a YouTube URL that might have a cached version
     let actual_url = if url.contains("googlevideo.com") {
@@ -588,154 +742,104 @@ pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, S
 
     let mut st = STATE.lock().unwrap();
 
-    // Ensure BASS library is loaded
-    if st.bass_lib.is_none() {
-        match ensure_bass_loaded() {
-            Ok(lib) => st.bass_lib = Some(lib),
-            Err(e) => return Err(e),
-        }
-    }
-
-    // Clone the library reference to avoid borrow checker issues
+    // Use centralized initialization
+    ensure_bass_initialized(&mut st, false)?;
+    
+    // Get lib reference before releasing the lock
     let lib_ptr = st.bass_lib.as_ref().unwrap() as *const Library;
+    drop(st); // Release lock before using lib
     let lib = unsafe { &*lib_ptr };
 
-    // Initialize BASS (only once)
-    if !st.bass_initialized {
-        println!("[bass] Initializing BASS audio system...");
-        let ok = bass_init(lib, BASS_DEVICE_DEFAULT, 44100, 0);
-        if ok == 0 {
-            let error_code = error_get_code(lib);
-
-            // Error 14 (BASS_ERROR_ALREADY) means BASS is already initialized, which is fine
-            // Error 48 (BASS_ERROR_WASAPI) might indicate audio device issues
-            if error_code == 14 {
-                println!("[bass] BASS already initialized (this is fine)");
-                st.bass_initialized = true;
-            } else if error_code == 48 {
-                println!("[bass] WASAPI error detected, attempting fallback initialization...");
-                // Try different sample rate
-                // Try different sample rate
-                let fallback_ok = bass_init(lib, BASS_DEVICE_DEFAULT, 48000, 0);
-                if fallback_ok == 0 {
-                    let fallback_error = bass_err(lib);
-                    println!(
-                        "[bass] Fallback initialization also failed: {}",
-                        fallback_error
-                    );
-                    st.last_error = Some(format!(
-                        "Audio device initialization failed: {}",
-                        fallback_error
-                    ));
-                    return Err(format!(
-                        "Audio device initialization failed: {}",
-                        fallback_error
-                    ));
-                } else {
-                    println!("[bass] Fallback initialization successful at 48kHz");
-                    st.bass_initialized = true;
-                }
-            } else {
-                let error = bass_err(lib);
-                println!("[bass] BASS initialization failed: {}", error);
-                st.last_error = Some(error.clone());
-                return Err(error);
-            }
-        } else {
-            println!("[bass] BASS initialized successfully");
-            st.bass_initialized = true;
-        }
-
-        // Apply current runtime configuration (timeouts/buffers)
-        apply_bass_runtime_config(lib);
-
-        // Load codec plugins once BASS is initialized
-        if let Err(e) = crate::bass::load_bass_plugins(lib) {
-            println!("[bass] Warning: Failed to load some plugins: {}", e);
-        }
-
-        println!("[bass] BASS initialization complete");
-    } else {
-        println!("[bass] BASS already initialized, skipping initialization");
-    }
-
-    // Set HTTP User-Agent for YouTube compatibility
-    let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\0";
-    bass_set_config_ptr(lib, BASS_CONFIG_NET_AGENT, user_agent.as_ptr());
-
     // Stop and free any existing stream
-    if let Some(h) = st.stream.take() {
-        channel_stop(lib, h);
-        stream_free(lib, h);
+    {
+        let mut st = STATE.lock().unwrap();
+        if let Some(h) = st.stream.take() {
+            channel_stop(lib, h);
+            stream_free(lib, h);
+        }
     }
 
     // Create new stream using unified function (no caching for simple playback_start)
-    println!("[bass] Creating stream for: {}", actual_url);
-    let (handle, _download_state) = create_bass_stream(lib, &actual_url, false, None, None)?;
+    log_info!("[bass] Creating stream for: {}", actual_url);
+    let (handle, _download_state) = match create_bass_stream(lib, &actual_url, false, None, None) {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
 
     // Detect codec/format and audio properties from the stream
     let format_info = get_audio_format_info(lib, handle);
-    st.codec = format_info.codec.clone();
-    st.sample_rate = format_info.sample_rate;
-    st.bits_per_sample = format_info.bits_per_sample;
+    
+    // Update state with format info
+    {
+        let mut st = STATE.lock().unwrap();
+        st.codec = format_info.codec.clone();
+        st.sample_rate = format_info.sample_rate;
+        st.bits_per_sample = format_info.bits_per_sample;
+    }
 
-    if let Some(ref codec) = st.codec {
-        println!("[bass] Detected codec: {}", codec);
+    if let Some(ref codec) = format_info.codec {
+    log_info!("[bass] Detected codec: {}", codec);
     }
-    if let Some(sample_rate) = st.sample_rate {
-        println!("[bass] Sample rate: {} Hz", sample_rate);
+    if let Some(sample_rate) = format_info.sample_rate {
+    log_debug!("[bass] Sample rate: {} Hz", sample_rate);
     }
-    if let Some(bits) = st.bits_per_sample {
-        println!("[bass] Bits per sample: {}", bits);
+    if let Some(bits) = format_info.bits_per_sample {
+    log_debug!("[bass] Bits per sample: {}", bits);
     }
 
     // Apply current volume to the new stream
-    let current_volume = if st.muted { 0.0 } else { st.volume };
+    let settings = get_audio_settings();
+    let current_volume = if settings.muted { 0.0 } else { settings.volume };
     let result = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, current_volume);
     if result == 0 {
-        println!(
-            "[bass] Warning: Failed to set initial volume to {:.2}",
-            current_volume
-        );
+    log_warn!("[bass] Failed to set initial volume to {:.2}", current_volume);
     } else {
-        println!("[bass] Initial volume set to {:.2}", current_volume);
+    log_info!("[bass] Initial volume set to {:.2}", current_volume);
     }
 
     // Apply seek offset if needed
-    if st.seek_offset > 0.0 {
-        let bytes = channel_seconds2bytes(lib, handle, st.seek_offset);
-        if channel_set_position(lib, handle, bytes, BASS_POS_BYTE) == 0 {
-            st.last_error = Some(bass_err(lib));
+    {
+        let mut st = STATE.lock().unwrap();
+        if st.seek_offset > 0.0 {
+            let bytes = channel_seconds2bytes(lib, handle, st.seek_offset);
+            if channel_set_position(lib, handle, bytes, BASS_POS_BYTE) == 0 {
+                st.last_error = Some(bass_err(lib));
+            }
         }
     }
 
     // Start playback
-    println!("[bass] Starting playback...");
+    log_info!("[bass] Starting playback...");
     if channel_play(lib, handle, 0) == 0 {
         let error = bass_err(lib);
-        println!("[bass] Playback start failed: {}", error);
-        st.last_error = Some(error.clone());
+    log_error!("[bass] Playback start failed: {}", error);
+        {
+            let mut st = STATE.lock().unwrap();
+            st.last_error = Some(error.clone());
+        }
         stream_free(lib, handle);
         return Err(error);
     }
 
     // Update state
-    st.duration = probe_duration_bass(lib, handle);
-    st.stream = Some(handle);
-    st.url = Some(actual_url);
-    st.playing = true;
-    st.started_at = Some(Instant::now());
-    st.paused_at = None;
-    st.accumulated_paused = Duration::ZERO;
-    st.ended = false;
-    st.last_error = None;
-    // Reset cache-related state for new playback
-    st.current_track_id = None;
-    st.current_source_type = None;
-    st.current_source_hash = None;
+    {
+        let mut st = STATE.lock().unwrap();
+        st.duration = probe_duration_bass(lib, handle);
+        st.stream = Some(handle);
+        st.url = Some(actual_url);
+        st.playing = true;
+        st.started_at = Some(Instant::now());
+        st.paused_at = None;
+        st.accumulated_paused = Duration::ZERO;
+        st.ended = false;
+        st.last_error = None;
+        // Reset cache-related state for new playback
+        st.current_track_id = None;
+        st.current_source_type = None;
+        st.current_source_hash = None;
+    }
 
     // Emit status update
-    drop(st); // Release the lock before emitting
     emit_playback_status();
 
     // Start position update timer
@@ -743,7 +847,6 @@ pub async fn playback_start_internal(url: String) -> Result<serde_json::Value, S
 
     // Re-acquire the lock to access duration
     let st = STATE.lock().unwrap();
-    //println!("[bass] Playback state updated, duration: {:?}", st.duration);
     Ok(serde_json::json!({"success": true, "data": {"duration": st.duration}}))
 }
 
@@ -836,12 +939,13 @@ async fn gapless_handoff_to(cached_path: String) {
     // Snapshot library pointer, old handle, and volume/mute state
     let (lib_ptr_opt, old_handle_opt, target_volume, is_muted) = {
         let state_guard = STATE.lock().unwrap();
+        let settings = get_audio_settings();
         let lib_ptr = state_guard.bass_lib.as_ref().map(|l| l as *const Library);
         (
             lib_ptr,
             state_guard.stream,
-            state_guard.volume,
-            state_guard.muted,
+            settings.volume,
+            settings.muted,
         )
     };
 
@@ -862,7 +966,7 @@ async fn gapless_handoff_to(cached_path: String) {
     let c_path = match CString::new(cached_path.clone()) {
         Ok(c) => c,
         Err(e) => {
-            println!("[bass] Invalid cached path CString: {}", e);
+            log_warn!("[bass] Invalid cached path CString: {}", e);
             if let Ok(_) = playback_start_internal(cached_url.clone()).await {
                 let _ = playback_seek_internal(current_position).await;
             }
@@ -879,7 +983,7 @@ async fn gapless_handoff_to(cached_path: String) {
         std::ptr::null_mut(),
     );
     if new_handle == 0 {
-        println!("[bass] Failed to create new stream for cached file, falling back");
+    log_warn!("[bass] Failed to create new stream for cached file, falling back");
         if let Ok(_) = playback_start_internal(cached_url.clone()).await {
             let _ = playback_seek_internal(current_position).await;
         }
@@ -932,8 +1036,8 @@ async fn gapless_handoff_to(cached_path: String) {
     // Start position update timer
     start_position_update_timer();
 
-    println!(
-        "[bass] Gapless handoff complete, now playing cached file: {}",
+    log_info!(
+        "[bass] Gapless handoff complete; playing cached file: {}",
         cached_url
     );
 }
@@ -953,8 +1057,8 @@ pub async fn playback_start_with_source_internal(
     app: tauri::AppHandle,
     spec: PlaybackSourceSpec,
 ) -> Result<serde_json::Value, String> {
-    println!(
-        "[bass] playback_start_with_source called for track: {}, type: {}, prefer_cache: {:?}",
+    log_debug!(
+        "[bass] playback_start_with_source track={} type={} prefer_cache={:?}",
         spec.track_id, spec.source_type, spec.prefer_cache
     );
 
@@ -1002,8 +1106,8 @@ pub async fn playback_start_with_source_internal(
         }
     };
 
-    println!(
-        "[bass] Generated source hash: {} for type: {}",
+    log_debug!(
+        "[bass] Generated source hash: {} type={}",
         source_hash, spec.source_type
     );
 
@@ -1065,7 +1169,7 @@ pub async fn playback_start_with_source_internal(
             } else {
                 "not cached"
             };
-            println!("[bass] Duplicate playback_start_with_source for {} ({}, {}), returning quick ack (last: {}ms ago)", key, reason, file_status, time_diff);
+            log_debug!("[bass] Duplicate playback_start_with_source for {} ({}, {}), returning quick ack (last: {}ms ago)", key, reason, file_status, time_diff);
             let _ = app.emit(
                 "playback:start:ack",
                 serde_json::json!({
@@ -1096,28 +1200,25 @@ pub async fn playback_start_with_source_internal(
     }
 
     // Extract file index from source metadata for torrents (needed for cache lookup)
-    println!(
-        "[bass] playback_start_with_source called with source_meta: {:?}",
-        spec.source_meta
-    );
+    log_debug!("[bass] playback_start_with_source called with source_meta: {:?}", spec.source_meta);
     let file_index = if let Some(meta) = &spec.source_meta {
-        println!("[bass] Extracting file_index from source_meta: {:?}", meta);
+    log_debug!("[bass] Extracting file_index from source_meta: {:?}", meta);
         if let Some(file_idx) = meta.get("fileIndex") {
             let idx = file_idx.as_u64().map(|v| v as usize);
-            println!("[bass] Extracted file_index: {:?}", idx);
+            log_debug!("[bass] Extracted file_index: {:?}", idx);
             idx
         } else {
-            println!("[bass] No fileIndex found in source_meta");
+            log_debug!("[bass] No fileIndex found in source_meta");
             None
         }
     } else {
-        println!("[bass] No source_meta found");
+    log_debug!("[bass] No source_meta found");
         None
     };
-    println!("[bass] Final file_index being used: {:?}", file_index);
+    log_debug!("[bass] Final file_index being used: {:?}", file_index);
 
     if spec.prefer_cache.unwrap_or(true) {
-        println!("[bass] Checking cache before URL resolution...");
+    log_debug!("[bass] Checking cache before URL resolution...");
 
         // Check for cached files directly (with file index support for torrents)
         if let Some(cached_path) = get_cached_file_path_with_index(
@@ -1126,89 +1227,94 @@ pub async fn playback_start_with_source_internal(
             &source_hash,
             file_index,
         ) {
-            println!(
+            log_info!(
                 "[bass] Cache hit! Playing from cached file directly: {}",
                 cached_path.display()
             );
             return playback_start_internal(format!("file://{}", cached_path.display())).await;
         }
 
-        println!("[bass] Cache miss, proceeding with URL resolution...");
+    log_debug!("[bass] Cache miss, proceeding with URL resolution...");
     }
 
     // Only resolve URL if we don't have a cached file
-    println!(
-        "[bass] Resolving source URL with format information...{:?}",
+    log_debug!(
+        "[bass] Resolving source URL with format information... file_index={:?}",
         file_index
     );
     let resolved_source =
         resolve_audio_source_with_format(&spec.source_type, &spec.source_value, file_index).await?;
-    println!(
-        "[bass] Resolved source URL: {}, format: {:?}",
+    log_info!(
+        "[bass] Resolved source URL: {} format: {:?}",
         resolved_source.url, resolved_source.format
     );
 
-    // Use the new BASS download callback approach for both streaming and caching
-    if spec.prefer_cache.unwrap_or(true) {
-        println!("[bass] Starting playback with BASS download callback for caching");
-
-        // Ensure BASS library is loaded
-        let lib_ref = {
-            let mut state = STATE.lock().unwrap();
-            if state.bass_lib.is_none() {
-                match ensure_bass_loaded() {
-                    Ok(lib) => state.bass_lib = Some(lib),
-                    Err(e) => return Err(format!("Failed to load BASS library: {}", e)),
+    // If this is a torrent source, enforce verified-bytes gating before starting stream
+    if spec.source_type == "torrent" {
+        // We require at least a minimal buffer OR full file before playback.
+        // Threshold: 256 KiB or total, whichever is smaller.
+        let min_buffer: u64 = 256 * 1024;
+        let mut attempts = 0u32;
+        let max_wait_ms = 15_000; // hard cap 15s to avoid infinite wait
+        let poll_interval_ms = 500;
+        let mut waited_ms = 0u64;
+    log_info!("[bass] Applying torrent verified-bytes gating (min buffer {} bytes)", min_buffer);
+        if let Some(fi) = file_index {
+            // Attempt to poll backend torrent progress command via tauri invoke-like internal helper is not present here.
+            // We will directly call into engine through crate::torrents if available.
+            {
+                use crate::torrents::{get_engine, TorrentEngine};
+                let engine = get_engine();
+                loop {
+                    match engine.progress(&spec.source_value, fi as u32) {
+                        Ok(p) => {
+                            let verified = p.verified_bytes;
+                            let needed = std::cmp::min(min_buffer, p.total);
+                            log_debug!("[bass] Torrent gating progress: verified={} total={} need={} downSpeed={}B/s", verified, p.total, needed, p.down_speed);
+                            if verified >= needed || verified == p.total { break; }
+                        }
+                        Err(e) => {
+                            log_warn!("[bass] Torrent gating progress error: {}", e);
+                            // On error, break early rather than block playback forever
+                            break;
+                        }
+                    }
+                    if waited_ms >= max_wait_ms as u64 { log_warn!("[bass] Gating timeout reached, continuing anyway"); break; }
+                    attempts += 1;
+                    waited_ms += poll_interval_ms as u64;
+                    tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)).await;
                 }
             }
-            // We need to clone the pointer for use outside the lock
+        } else {
+            log_warn!("[bass] No file_index provided for torrent source; cannot gate by verified bytes");
+        }
+    }
+
+    // Use the new BASS download callback approach for both streaming and caching
+    if spec.prefer_cache.unwrap_or(true) {
+    log_info!("[bass] Starting playback with BASS download callback for caching");
+
+        // Use centralized initialization
+        {
+            let mut state = STATE.lock().unwrap();
+            ensure_bass_initialized(&mut state, false)?;
+        }
+        
+        let lib_ref = {
+            let state = STATE.lock().unwrap();
             state.bass_lib.as_ref().unwrap() as *const Library
         };
         let lib = unsafe { &*lib_ref };
-
-        // Initialize BASS if needed
-        {
-            let mut state = STATE.lock().unwrap();
-            if !state.bass_initialized {
-                println!("[bass] Initializing BASS audio system...");
-                let ok = bass_init(lib, BASS_DEVICE_DEFAULT, 44100, 0);
-                if ok == 0 {
-                    let error_code = error_get_code(lib);
-
-                    if error_code == 14 {
-                        println!("[bass] BASS already initialized");
-                    } else {
-                        return Err(format!(
-                            "BASS initialization failed with error code: {}",
-                            error_code
-                        ));
-                    }
-                } else {
-                    println!("[bass] BASS initialized successfully");
-                }
-
-                state.bass_initialized = true;
-
-                // Apply current runtime configuration (timeouts/buffers)
-                apply_bass_runtime_config(lib);
-
-                // Load codec plugins after successful init
-                if let Err(e) = crate::bass::load_bass_plugins(lib) {
-                    println!("[bass] Warning: Failed to load some plugins: {}", e);
-                }
-
-                // Set HTTP User-Agent for YouTube compatibility
-                let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\0";
-                bass_set_config_ptr(lib, BASS_CONFIG_NET_AGENT, user_agent.as_ptr());
-            }
-        }
 
         // Determine if caching should be enabled for this source
         // For local files (file://), we do not enable caching/download callback.
         let allow_caching = !resolved_source.url.starts_with("file://");
 
         // Create stream with optional download callback for caching
+
         let (handle, mut download_state_opt) = {
+            // Capture override flag with a short-lived lock
+            let strict_override = get_audio_settings().has_user_override;
             let cache_info = if allow_caching {
                 Some((
                     spec.track_id.as_str(),
@@ -1218,12 +1324,60 @@ pub async fn playback_start_with_source_internal(
             } else {
                 None
             };
-            println!(
-                "[bass] Calling create_bass_stream with file_index: {:?} (caching: {})",
+            log_debug!(
+                "[bass] Calling create_bass_stream file_index={:?} caching={} url={}",
                 file_index,
-                allow_caching
+                allow_caching,
+                resolved_source.url
             );
-            create_bass_stream(lib, &resolved_source.url, allow_caching, cache_info, file_index)?
+            match create_bass_stream(lib, &resolved_source.url, allow_caching, cache_info, file_index) {
+                Ok(v) => v,
+                Err(e) => {
+                    // If stream creation fails and we were caching, cancel the associated download
+                    if allow_caching && cache_info.is_some() {
+                        let (track_id, source_type, source_hash) = cache_info.unwrap();
+                        let cache_key = crate::cache::create_cache_filename_with_index(
+                            track_id,
+                            source_type,
+                            source_hash,
+                            file_index,
+                        );
+                        log_error!("[bass] Stream creation failed, cancelling cache download: {}", cache_key);
+                        crate::downloads::request_cancel(&cache_key);
+                        
+                        // Also clean up inflight tracking
+                        {
+                            let mut inflight = crate::cache::INFLIGHT_DOWNLOADS.lock().unwrap();
+                            inflight.remove(&cache_key);
+                            let mut meta = crate::cache::INFLIGHT_META.lock().unwrap();
+                            meta.remove(&cache_key);
+                        }
+                        
+                        // Emit cache error to notify frontend
+                        let _ = app.emit(
+                            "cache:download:error",
+                            serde_json::json!({
+                                "trackId": track_id,
+                                "sourceType": source_type,
+                                "sourceHash": source_hash,
+                                "message": format!("Stream creation failed: {}", e)
+                            }),
+                        );
+                    }
+                    
+                    // If the error points to WASAPI not available, attempt a controlled reinit and a single retry
+                    let is_wasapi = e.contains("WASAPI");
+                    if is_wasapi {
+                        if strict_override {
+                            log_error!("[bass] WASAPI failure with user override during cached start; no fallback.");
+                            return Err(e);
+                        } else {
+                            log_error!("[bass] WASAPI failure without override; skipping fallback for determinism.");
+                            return Err(e);
+                        }
+                    } else { return Err(e); }
+                }
+            }
         };
         // If we know the total file size from resolution, store it in the download state now
         if let (true, Some(total)) = (
@@ -1237,32 +1391,30 @@ pub async fn playback_start_with_source_internal(
 
         // Wait a brief moment for additional buffering after stream creation
         // This gives us more control over buffering without the blocking behavior during creation
-        let add_wait = get_runtime_cfg_snapshot().additional_buffer_wait_ms;
+        let add_wait = get_audio_settings().additional_buffer_wait_ms;
         tokio::time::sleep(std::time::Duration::from_millis(add_wait)).await;
-        println!("[bass] Additional buffering wait completed");
+    log_debug!("[bass] Additional buffering wait completed");
 
         // Apply volume and start playback
         {
             let mut state = STATE.lock().unwrap();
+            let settings = get_audio_settings();
 
             // Apply current volume to the new stream
-            let current_volume = if state.muted { 0.0 } else { state.volume };
+            let current_volume = if settings.muted { 0.0 } else { settings.volume };
             let result = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, current_volume);
             if result == 0 {
-                println!(
-                    "[bass] Warning: Failed to set initial volume to {:.2}",
-                    current_volume
-                );
+                log_warn!("[bass] Failed to set initial volume to {:.2}", current_volume);
             } else {
-                println!("[bass] Initial volume set to {:.2}", current_volume);
+                log_info!("[bass] Initial volume set to {:.2}", current_volume);
             }
 
             // Start playback
 
-            println!("[bass] Starting playback with download callback...");
+            log_info!("[bass] Starting playback with download callback...");
             if channel_play(lib, handle, 0) == 0 {
                 let error = bass_err(lib);
-                println!("[bass] Playback start failed: {}", error);
+                log_error!("[bass] Playback start failed: {}", error);
 
                 // Clean up on failure
                 stream_free(lib, handle);
@@ -1289,16 +1441,16 @@ pub async fn playback_start_with_source_internal(
             state.bits_per_sample = format_info.bits_per_sample;
 
             if let Some(ref codec) = state.codec {
-                println!("[bass] Detected codec: {}", codec);
+                log_info!("[bass] Detected codec: {}", codec);
             }
             if let Some(sample_rate) = state.sample_rate {
-                println!("[bass] Sample rate: {} Hz", sample_rate);
+                log_debug!("[bass] Sample rate: {} Hz", sample_rate);
             }
             if let Some(bits) = state.bits_per_sample {
-                println!("[bass] Bits per sample: {}", bits);
+                log_debug!("[bass] Bits per sample: {}", bits);
             }
 
-            println!("[bass] Audio properties detected, continuing to state setup...");
+            log_debug!("[bass] Audio properties detected, continuing to state setup...");
 
             // Update state
             state.duration = probe_duration_bass(lib, handle);
@@ -1323,7 +1475,7 @@ pub async fn playback_start_with_source_internal(
         // Start position update timer
         start_position_update_timer();
 
-        println!(
+        log_info!(
             "[bass] Emitting playback:start:complete event for track: {}",
             spec.track_id
         );
@@ -1340,28 +1492,28 @@ pub async fn playback_start_with_source_internal(
             }),
         );
 
-        println!("[bass] Successfully emitted completion event and returning success");
+    log_info!("[bass] Successfully emitted completion event and returning success");
 
         return Ok(serde_json::json!({"success": true, "data": {"caching": true}}));
     } else {
         // Not preferring cache: start streaming immediately without callback
-        println!("[bass] Starting streaming playback without caching");
+    log_info!("[bass] Starting streaming playback without caching");
         return playback_start_internal(resolved_source.url.clone()).await;
     }
 }
 
 pub async fn playback_pause_internal() -> Result<serde_json::Value, String> {
-    println!("[bass] playback_pause called");
+    log_debug!("[bass] playback_pause called");
     let mut st = STATE.lock().unwrap();
     if let Some(h) = st.stream {
         if let Some(lib) = st.bass_lib.as_ref() {
-            println!("[bass] Pausing stream with handle: {}", h);
+            log_debug!("[bass] Pausing stream with handle: {}", h);
 
             // Check download progress before pausing
             {
                 let downloaded = stream_get_file_position(lib, h, BASS_FILEPOS_DOWNLOAD);
                 let connected = stream_get_file_position(lib, h, BASS_FILEPOS_CONNECTED);
-                println!(
+                log_debug!(
                     "[bass] Before pause - downloaded: {} bytes, connected: {}",
                     downloaded,
                     connected != 0
@@ -1370,17 +1522,17 @@ pub async fn playback_pause_internal() -> Result<serde_json::Value, String> {
 
             if channel_pause(lib, h) == 0 {
                 let error = bass_err(lib);
-                println!("[bass] Pause failed: {}", error);
+                log_error!("[bass] Pause failed: {}", error);
                 st.last_error = Some(error.clone());
                 return Err(error);
             }
-            println!("[bass] Stream paused successfully - download should continue in background");
+            log_info!("[bass] Stream paused successfully - download should continue in background");
 
             // Check download progress after pausing
             {
                 let downloaded = stream_get_file_position(lib, h, BASS_FILEPOS_DOWNLOAD);
                 let connected = stream_get_file_position(lib, h, BASS_FILEPOS_CONNECTED);
-                println!(
+                log_debug!(
                     "[bass] After pause - downloaded: {} bytes, connected: {}",
                     downloaded,
                     connected != 0
@@ -1391,7 +1543,7 @@ pub async fn playback_pause_internal() -> Result<serde_json::Value, String> {
     if st.playing {
         st.playing = false;
         st.paused_at = Some(Instant::now());
-        println!("[bass] Playback state set to paused, but stream remains active for downloading");
+    log_debug!("[bass] Playback state set to paused; stream remains active for downloading");
     }
 
     // Emit status update
@@ -1402,18 +1554,18 @@ pub async fn playback_pause_internal() -> Result<serde_json::Value, String> {
 }
 
 pub async fn playback_resume_internal() -> Result<serde_json::Value, String> {
-    println!("[bass] playback_resume called");
+    log_debug!("[bass] playback_resume called");
     let mut st = STATE.lock().unwrap();
     if let Some(h) = st.stream {
         if let Some(lib) = st.bass_lib.as_ref() {
-            println!("[bass] Resuming stream with handle: {}", h);
+            log_debug!("[bass] Resuming stream with handle: {}", h);
             if channel_play(lib, h, 0) == 0 {
                 let error = bass_err(lib);
-                println!("[bass] Resume failed: {}", error);
+                log_error!("[bass] Resume failed: {}", error);
                 st.last_error = Some(error.clone());
                 return Err(error);
             }
-            println!("[bass] Stream resumed successfully");
+            log_info!("[bass] Stream resumed successfully");
         }
     }
     if !st.playing {
@@ -1421,7 +1573,6 @@ pub async fn playback_resume_internal() -> Result<serde_json::Value, String> {
             st.accumulated_paused += paused_at.elapsed();
         }
         st.playing = true;
-        //println!("[bass] Playback state set to playing");
     }
 
     // Emit status update
@@ -1481,7 +1632,7 @@ pub async fn playback_stop_internal() -> Result<serde_json::Value, String> {
             download_state.total_bytes = t;
         }
 
-        println!(
+        log_debug!(
             "[bass] Finalizing cache file for stopped track: {}",
             cache_path.display()
         );
@@ -1517,10 +1668,10 @@ pub async fn playback_stop_internal() -> Result<serde_json::Value, String> {
 }
 
 pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, String> {
-    println!("[bass] playback_seek called with position: {}", position);
+    log_debug!("[bass] playback_seek called position={}", position);
     let mut st = STATE.lock().unwrap();
     if st.stream.is_none() || st.bass_lib.is_none() {
-        println!("[bass] No stream or library available for seeking");
+        log_warn!("[bass] No stream or library available for seeking");
         return Ok(serde_json::json!({
             "success": false,
             "reason": "no_stream",
@@ -1534,14 +1685,14 @@ pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, 
     // Clamp position to valid range
     let pos = if let Some(d) = st.duration {
         let clamped = position.clamp(0.0, d);
-        println!(
+        log_debug!(
             "[bass] Position clamped from {} to {} (duration: {})",
             position, clamped, d
         );
         clamped
     } else {
         let clamped = position.max(0.0);
-        println!(
+        log_debug!(
             "[bass] No duration available, clamped position from {} to {}",
             position, clamped
         );
@@ -1552,7 +1703,7 @@ pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, 
     let _len_bytes = channel_get_length(lib, h, BASS_POS_BYTE);
 
     let bytes = channel_seconds2bytes(lib, h, pos);
-    println!(
+    log_debug!(
         "[bass] Seeking to position {} seconds = {} bytes",
         pos, bytes
     );
@@ -1560,7 +1711,7 @@ pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, 
     // Check if position is valid before seeking
     if bytes == 0xFFFFFFFF {
         let error = "Invalid seek position (bytes conversion failed)";
-        println!("[bass] {}", error);
+    log_error!("[bass] {}", error);
         return Ok(serde_json::json!({
             "success": false,
             "reason": "invalid_position",
@@ -1576,7 +1727,7 @@ pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, 
 
         // If we're already very close to the target position, don't seek
         if diff < 0.1 {
-            println!(
+            log_debug!(
                 "[bass] Already at target position ({} vs {}), skipping seek",
                 current_pos, pos
             );
@@ -1592,12 +1743,12 @@ pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, 
     // For streaming content, try seek but don't fail the entire operation if it doesn't work
     if channel_set_position(lib, h, bytes, BASS_POS_BYTE) == 0 {
         let error = bass_err(lib);
-        println!("[bass] Seek failed: {}", error);
+    log_error!("[bass] Seek failed: {}", error);
 
         // For streaming content, seeking errors are often non-fatal
         // Instead of failing, we can continue playback and just update our internal position
         if error.contains("BASS_ERROR_NOTAVAIL") {
-            println!(
+            log_warn!(
                 "[bass] Seek data not available, updating position tracker without actual seek"
             );
             // Update our position tracker as if the seek succeeded
@@ -1633,7 +1784,7 @@ pub async fn playback_seek_internal(position: f64) -> Result<serde_json::Value, 
         }));
     }
 
-    println!("[bass] Seek successful to position {} seconds", pos);
+    log_info!("[bass] Seek successful position={}s", pos);
 
     st.seek_offset = pos;
     st.started_at = Some(Instant::now());
@@ -1711,7 +1862,7 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
             .unwrap_or(false);
 
         if started_recently {
-            println!(
+            log_debug!(
                 "[bass] Stream reported STOPPED within startup grace window; suppressing end"
             );
         } else {
@@ -1734,7 +1885,7 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
                 let known_total = download_state.total_bytes;
                 let download_complete = download_state.download_complete;
 
-                println!(
+                log_debug!(
                     "[bass] Finalizing cache file after BASS stopped: {}",
                     cache_path.display()
                 );
@@ -1765,7 +1916,7 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
     if st.duration.is_none() {
         st.duration = probe_duration_bass(lib, h);
         if st.duration.is_some() {
-            println!("[bass] Got duration: {:.2}s", st.duration.unwrap());
+            log_debug!("[bass] Got duration: {:.2}s", st.duration.unwrap());
         }
     }
 
@@ -1799,8 +1950,8 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
         // Tighten end condition: require either credible near-end, or STOPPED after grace period
         let allow_end = (duration >= 2.0 && is_near_end) || (stream_stopped && !started_recently);
         if allow_end {
-            println!("[bass] Track reached end: position {:.2}s >= duration {:.2}s (near_end: {}, stopped: {})", 
-                    position, duration, is_near_end, stream_stopped);
+        log_info!("[bass] Track ended position {:.2}s >= duration {:.2}s (near_end: {}, stopped: {})", 
+            position, duration, is_near_end, stream_stopped);
             st.playing = false;
             st.ended = true;
             // Immediately notify the frontend that playback ended so it can advance the queue
@@ -1819,7 +1970,7 @@ pub async fn playback_status_internal() -> Result<serde_json::Value, String> {
                 let known_total = download_state.total_bytes;
                 let download_complete = download_state.download_complete;
 
-                println!(
+                log_debug!(
                     "[bass] Finalizing cache file for naturally ended track: {}",
                     cache_path.display()
                 );
@@ -1954,7 +2105,7 @@ fn start_position_update_timer() {
 }
 
 pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
-    println!("[bass] Getting audio devices...");
+    log_debug!("[bass] Getting audio devices...");
 
     // First try to get the BASS library
     let mut state = STATE.lock().unwrap();
@@ -1964,7 +2115,7 @@ pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
         match ensure_bass_loaded() {
             Ok(lib) => state.bass_lib = Some(lib),
             Err(e) => {
-                println!(
+                log_warn!(
                     "[bass] Warning: Could not load BASS library for device enumeration: {}",
                     e
                 );
@@ -2038,16 +2189,18 @@ pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
         let is_default = bass_says_default && !found_default_device;
         if is_default {
             found_default_device = true;
-            println!(
+            log_debug!(
                 "[bass] Setting device {} as the single default device",
                 device_index
             );
         }
 
-        println!(
+        /*
+        log_debug!(
             "[bass] Found device {}: {} (driver: {}, enabled: {}, default: {}, init: {})",
             device_index, device_name, driver_name, is_enabled, is_default, is_initialized
         );
+        */
 
         // Add device to list (include all devices, but mark their status)
         devices.push(serde_json::json!({
@@ -2063,14 +2216,14 @@ pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
 
         // Safety limit to prevent infinite loops
         if device_index > 32 {
-            println!("[bass] Device enumeration safety limit reached");
+            log_warn!("[bass] Device enumeration safety limit reached");
             break;
         }
     }
 
     // If no devices were found, add a fallback default device
     if devices.is_empty() {
-        println!("[bass] No devices found, adding fallback default device");
+    log_warn!("[bass] No devices found, adding fallback default device");
         devices.push(serde_json::json!({
             "id": -1,
             "name": "System Default",
@@ -2081,7 +2234,7 @@ pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
         }));
     }
 
-    println!(
+    log_info!(
         "[bass] Device enumeration complete, found {} devices",
         devices.len()
     );
@@ -2093,167 +2246,99 @@ pub async fn get_audio_devices_internal() -> Result<serde_json::Value, String> {
 }
 
 pub async fn get_audio_settings_internal() -> Result<serde_json::Value, String> {
+    let settings = get_audio_settings();
     let state = STATE.lock().unwrap();
 
     // Get actual audio settings from BASS if initialized
-    let (actual_device, actual_sample_rate, actual_bit_depth, actual_output_channels) = if state
-        .bass_initialized
-    {
+    let (actual_device, actual_sample_rate, actual_bit_depth, actual_output_channels) = if state.bass_initialized {
         if let Some(lib) = state.bass_lib.as_ref() {
-            // Get BASS_GetDevice and BASS_GetInfo functions
             // Get current device
             let current_device = get_device(lib);
-            println!("[bass] Current BASS device: {}", current_device);
+            log_debug!("[bass] Current BASS device: {}", current_device);
 
-            // If BASS returns BASS_DEVICE_DEFAULT (which is -1 but returned as large uint),
-            // we need to find the actual device ID that corresponds to the default device
-            let resolved_device =
-                if current_device == (BASS_DEVICE_DEFAULT as u32) || current_device == u32::MAX {
-                    // Find the real default device by enumerating devices
-                    let mut device_index = 0u32;
-                    let mut found_device = current_device as i32;
-                    loop {
-                        let mut device_info = BassDeviceInfo {
-                            name: std::ptr::null(),
-                            driver: std::ptr::null(),
-                            flags: 0,
-                        };
-                        let result = get_device_info(lib, device_index, &mut device_info);
-                        if result == 0 {
-                            break;
-                        }
-                        if (device_info.flags & BASS_DEVICE_DEFAULT_FLAG) != 0 {
-                            println!(
-                                "[bass] Found real default device: {} (was {})",
-                                device_index, current_device
-                            );
-                            found_device = device_index as i32;
-                            break;
-                        }
-                        device_index += 1;
-                        if device_index > 32 {
-                            break;
-                        }
+            // If BASS returns BASS_DEVICE_DEFAULT, find the actual default device
+            let resolved_device = if current_device == (BASS_DEVICE_DEFAULT as u32) || current_device == u32::MAX {
+                let mut device_index = 0u32;
+                let mut found_device = current_device as i32;
+                loop {
+                    let mut device_info = BassDeviceInfo {
+                        name: std::ptr::null(),
+                        driver: std::ptr::null(),
+                        flags: 0,
+                    };
+                    let result = get_device_info(lib, device_index, &mut device_info);
+                    if result == 0 {
+                        break;
                     }
-                    found_device
-                } else {
-                    current_device as i32
-                };
-
-            println!(
-                "[bass] Resolved device: {} (original: {})",
-                resolved_device, current_device
-            );
+                    if (device_info.flags & BASS_DEVICE_DEFAULT_FLAG) != 0 {
+                        log_debug!("[bass] Found real default device: {} (was {})", device_index, current_device);
+                        found_device = device_index as i32;
+                        break;
+                    }
+                    device_index += 1;
+                    if device_index > 32 { break; }
+                }
+                found_device
+            } else {
+                current_device as i32
+            };
 
             let mut bass_info = BassInfo {
-                flags: 0,
-                hwsize: 0,
-                hwfree: 0,
-                freesam: 0,
-                free3d: 0,
-                minrate: 0,
-                maxrate: 0,
-                eax: 0,
-                minbuf: 0,
-                dsver: 0,
-                latency: 0,
-                initflags: 0,
-                speakers: 0,
-                freq: 0,
+                flags: 0, hwsize: 0, hwfree: 0, freesam: 0, free3d: 0,
+                minrate: 0, maxrate: 0, eax: 0, minbuf: 0, dsver: 0,
+                latency: 0, initflags: 0, speakers: 0, freq: 0,
             };
 
             let result = get_info(lib, &mut bass_info);
             if result != 0 {
-                println!(
-                    "[bass] BASS_GetInfo successful - freq: {}Hz, speakers: {}, latency: {}ms",
-                    bass_info.freq, bass_info.speakers, bass_info.latency
-                );
+                log_debug!("[bass] BASS_GetInfo successful - freq: {}Hz, speakers: {}, latency: {}ms",
+                         bass_info.freq, bass_info.speakers, bass_info.latency);
 
-                // Extract bit depth from init flags or use reasonable default
-                // BASS doesn't directly report bit depth, so we'll infer from flags or use 16-bit as default
+                // Extract bit depth from init flags
                 let bit_depth = if (bass_info.initflags & 0x8) != 0 {
-                    32
-                }
-                // BASS_DEVICE_FLOAT
-                else if (bass_info.initflags & 0x10) != 0 {
-                    24
-                }
-                // Placeholder for 24-bit detection
-                else {
-                    16
-                }; // Default to 16-bit
-
-                // Use actual speakers count from BASS, with fallback to 2 if 0
-                let output_channels = if bass_info.speakers > 0 {
-                    bass_info.speakers
+                    32 // BASS_DEVICE_FLOAT
+                } else if (bass_info.initflags & 0x10) != 0 {
+                    24 // Placeholder for 24-bit detection
                 } else {
-                    2
+                    16 // Default to 16-bit
                 };
 
+                let output_channels = if bass_info.speakers > 0 { bass_info.speakers } else { 2 };
                 (resolved_device, bass_info.freq, bit_depth, output_channels)
             } else {
-                println!("[bass] BASS_GetInfo failed, using defaults");
-                (resolved_device, 44100, 16, 2) // Fallback defaults
+                log_warn!("[bass] BASS_GetInfo failed, using defaults");
+                (resolved_device, 44100, 16, 2)
             }
         } else {
-            println!("[bass] BASS library not loaded, using defaults");
-            (-1, 44100, 16, 2) // Fallback defaults
+            log_warn!("[bass] BASS library not loaded, using defaults");
+            (-1, 44100, 16, 2)
         }
     } else {
-        println!("[bass] BASS not initialized, checking for default device from enumeration");
-        // Since BASS is not initialized yet, try to find the default device by enumerating devices
-        if let Some(lib) = state.bass_lib.as_ref() {
-            let mut device_index = 0u32;
-            let mut default_device_id = -1i32;
-            loop {
-                let mut device_info = BassDeviceInfo {
-                    name: std::ptr::null(),
-                    driver: std::ptr::null(),
-                    flags: 0,
-                };
-                let result = get_device_info(lib, device_index, &mut device_info);
-                if result == 0 {
-                    break;
-                }
-                if (device_info.flags & BASS_DEVICE_DEFAULT_FLAG) != 0 {
-                    println!(
-                        "[bass] Found default device during enumeration: {}",
-                        device_index
-                    );
-                    default_device_id = device_index as i32;
-                    break;
-                }
-                device_index += 1;
-                if device_index > 32 {
-                    break;
-                }
-            }
-            (default_device_id, 44100, 16, 2) // Use found default device with fallback settings
-        } else {
-            println!("[bass] BASS library not loaded, using defaults");
-            (-1, 44100, 16, 2) // Fallback defaults
-        }
+        // BASS not initialized yet - report current settings as provisional
+    log_debug!("[bass] BASS not initialized, reporting current settings");
+        (settings.device_id, settings.sample_rate, settings.bit_depth, settings.output_channels)
     };
 
-    /*
-    println!("[bass] Current audio settings - device: {}, sample_rate: {}Hz, bit_depth: {}bit, volume: {:.2}, output_channels: {}",
-             actual_device, actual_sample_rate, actual_bit_depth, state.volume, actual_output_channels);
-    */
+    if actual_sample_rate as u32 != settings.sample_rate {
+    log_warn!("[bass] Actual sample rate ({} Hz) differs from desired ({} Hz)",
+         actual_sample_rate, settings.sample_rate);
+    }
 
     Ok(serde_json::json!({
         "success": true,
         "settings": {
             "device": actual_device,
             "sample_rate": actual_sample_rate,
+            "desired_device": settings.device_id,
+            "desired_sample_rate": settings.sample_rate,
             "bit_depth": actual_bit_depth,
-            // Report the current runtime configuration values
-            "buffer_size": get_runtime_cfg_snapshot().buffer_size_ms,
-            "net_buffer": get_runtime_cfg_snapshot().net_buffer_ms,
-            "net_timeout": get_runtime_cfg_snapshot().net_timeout_ms,
-            "additional_buffer_wait": get_runtime_cfg_snapshot().additional_buffer_wait_ms,
-            "volume": state.volume,
-            "exclusive_mode": false, // This would need to be tracked separately
-            "output_channels": actual_output_channels // Derived from BASS speakers count
+            "buffer_size": settings.buffer_size_ms,
+            "net_buffer": settings.net_buffer_ms,
+            "net_timeout": settings.net_timeout_ms,
+            "additional_buffer_wait": settings.additional_buffer_wait_ms,
+            "volume": settings.volume,
+            "exclusive_mode": settings.exclusive_mode,
+            "output_channels": actual_output_channels
         }
     }))
 }
@@ -2261,148 +2346,155 @@ pub async fn get_audio_settings_internal() -> Result<serde_json::Value, String> 
 pub async fn set_audio_settings_internal(
     settings: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    println!("[bass] Setting audio configuration: {:?}", settings);
+    log_info!("[bass] Setting audio configuration: {:?}", settings);
 
-    let mut state = STATE.lock().unwrap();
     let mut needs_reinit = false;
-    let mut new_device = None;
-    let mut new_sample_rate = None;
-    let mut new_buffer_size = None;
-    let mut new_net_timeout = None;
-    let mut new_net_buffer = None;
-    let mut new_additional_wait = None;
+    let mut needs_volume_update = false;
 
-    // Check if settings that require reinitialization have changed
-    if let Some(device) = settings.get("device").and_then(|v| v.as_i64()) {
-        new_device = Some(device as i32);
-        needs_reinit = true;
-        println!("[bass] Device change detected: {}", device);
-    }
+    // Update settings using the centralized system
+    let updated_settings = update_audio_settings(|audio_settings| {
+        // Check if settings that require reinitialization have changed
+        if let Some(device) = settings.get("device").and_then(|v| v.as_i64()) {
+            if audio_settings.device_id != device as i32 {
+                needs_reinit = true;
+                log_info!("[bass] Device change detected: {}", device);
+                audio_settings.device_id = device as i32;
+                audio_settings.has_user_override = true;
+            }
+        }
 
-    if let Some(sample_rate) = settings.get("sample_rate").and_then(|v| v.as_u64()) {
-        new_sample_rate = Some(sample_rate as u32);
-        needs_reinit = true;
-        println!("[bass] Sample rate change detected: {}", sample_rate);
-    }
+        if let Some(sample_rate) = settings.get("sample_rate").and_then(|v| v.as_u64()) {
+            if audio_settings.sample_rate != sample_rate as u32 {
+                needs_reinit = true;
+                log_info!("[bass] Sample rate change detected: {}", sample_rate);
+                audio_settings.sample_rate = sample_rate as u32;
+                audio_settings.has_user_override = true;
+            }
+        }
 
-    if let Some(buffer_size) = settings.get("buffer_size").and_then(|v| v.as_u64()) {
-        new_buffer_size = Some(buffer_size as u32);
-        needs_reinit = true; // BASS_CONFIG_BUFFER must be set before init
-        println!("[bass] Buffer size change detected: {}", buffer_size);
-    }
+        if let Some(buffer_size) = settings.get("buffer_size").and_then(|v| v.as_u64()) {
+            if audio_settings.buffer_size_ms != buffer_size as u32 {
+                needs_reinit = true; // BASS_CONFIG_BUFFER must be set before init
+                log_info!("[bass] Buffer size change detected: {}", buffer_size);
+                audio_settings.buffer_size_ms = buffer_size as u32;
+            }
+        }
 
-    // Network timeout and buffer do not require reinit; they can be applied live
-    if let Some(timeout) = settings.get("net_timeout").and_then(|v| v.as_u64()) {
-        new_net_timeout = Some(timeout as u32);
-        println!("[bass] Net timeout change detected: {} ms", timeout);
-    }
-    if let Some(net_buf) = settings.get("net_buffer").and_then(|v| v.as_u64()) {
-        new_net_buffer = Some(net_buf as u32);
-        println!("[bass] Net buffer change detected: {} ms", net_buf);
-    }
-    if let Some(wait_ms) = settings
-        .get("additional_buffer_wait")
-        .and_then(|v| v.as_u64())
+        // Audio quality settings that require reinitialization
+        if let Some(bit_depth) = settings.get("bit_depth").and_then(|v| v.as_u64()) {
+            if audio_settings.bit_depth != bit_depth as u32 {
+                needs_reinit = true;
+                log_info!("[bass] Bit depth change detected: {}", bit_depth);
+                audio_settings.bit_depth = bit_depth as u32;
+                audio_settings.has_user_override = true;
+            }
+        }
+
+        if let Some(exclusive) = settings.get("exclusive_mode").and_then(|v| v.as_bool()) {
+            if audio_settings.exclusive_mode != exclusive {
+                needs_reinit = true;
+                log_info!("[bass] Exclusive mode change detected: {}", exclusive);
+                audio_settings.exclusive_mode = exclusive;
+                audio_settings.has_user_override = true;
+            }
+        }
+
+        if let Some(channels) = settings.get("output_channels").and_then(|v| v.as_u64()) {
+            if audio_settings.output_channels != channels as u32 {
+                needs_reinit = true;
+                log_info!("[bass] Output channels change detected: {}", channels);
+                audio_settings.output_channels = channels as u32;
+                audio_settings.has_user_override = true;
+            }
+        }
+
+        // Network settings can be applied live (no reinit needed)
+        if let Some(timeout) = settings.get("net_timeout").and_then(|v| v.as_u64()) {
+            audio_settings.net_timeout_ms = timeout as u32;
+            log_debug!("[bass] Net timeout change detected: {} ms", timeout);
+        }
+        
+        if let Some(net_buf) = settings.get("net_buffer").and_then(|v| v.as_u64()) {
+            audio_settings.net_buffer_ms = net_buf as u32;
+            log_debug!("[bass] Net buffer change detected: {} ms", net_buf);
+        }
+        
+        if let Some(wait_ms) = settings.get("additional_buffer_wait").and_then(|v| v.as_u64()) {
+            audio_settings.additional_buffer_wait_ms = wait_ms as u64;
+            log_debug!("[bass] Additional buffer wait change detected: {} ms", wait_ms);
+        }
+
+        // Volume settings
+        if let Some(volume) = settings.get("volume").and_then(|v| v.as_f64()) {
+            audio_settings.volume = volume as f32;
+            needs_volume_update = true;
+            log_info!("[bass] Volume change detected: {}", volume);
+        }
+
+        if let Some(muted) = settings.get("muted").and_then(|v| v.as_bool()) {
+            if muted != audio_settings.muted {
+                if muted {
+                    audio_settings.volume_before_mute = audio_settings.volume;
+                }
+                audio_settings.muted = muted;
+                needs_volume_update = true;
+                log_info!("[bass] Mute change detected: {}", muted);
+            }
+        }
+    })?;
+
+    // Apply network settings immediately if BASS is initialized
     {
-        new_additional_wait = Some(wait_ms as u64);
-        println!(
-            "[bass] Additional buffer wait change detected: {} ms",
-            wait_ms
-        );
-    }
-
-    // Update volume if provided (doesn't require reinitialization)
-    if let Some(volume) = settings.get("volume").and_then(|v| v.as_f64()) {
-        state.volume = volume as f32;
-        println!("[bass] Volume change detected: {}", volume);
-
-        // Apply volume to current stream if playing
-        if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
-            let current_volume = if state.muted { 0.0 } else { state.volume };
-            let _ = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, current_volume);
-            println!(
-                "[bass] Applied volume to current stream: {}",
-                current_volume
-            );
-        }
-    }
-
-    // Persist runtime-only changes first (no reinit needed)
-    if new_net_timeout.is_some() || new_net_buffer.is_some() || new_additional_wait.is_some() {
-        let mut cfg = RUNTIME_CFG.lock().unwrap();
-        if let Some(v) = new_net_timeout {
-            cfg.net_timeout_ms = v;
-        }
-        if let Some(v) = new_net_buffer {
-            cfg.net_buffer_ms = v;
-        }
-        if let Some(v) = new_additional_wait {
-            cfg.additional_buffer_wait_ms = v;
-        }
-
-        // If BASS is initialized, apply the net_* changes immediately
+        let state = STATE.lock().unwrap();
         if state.bass_initialized {
             if let Some(lib) = state.bass_lib.as_ref() {
-                bass_set_config(lib, BASS_CONFIG_NET_TIMEOUT, cfg.net_timeout_ms);
-                bass_set_config(lib, BASS_CONFIG_NET_BUFFER, cfg.net_buffer_ms);
+                bass_set_config(lib, BASS_CONFIG_NET_TIMEOUT, updated_settings.net_timeout_ms);
+                bass_set_config(lib, BASS_CONFIG_NET_BUFFER, updated_settings.net_buffer_ms);
             }
         }
     }
 
-    // If reinitialization is needed, do it
-    if needs_reinit && state.bass_initialized {
-        println!(
-            "[bass] Reinitialization required, stopping current playback and reinitializing BASS"
-        );
+    // Handle reinitialization if needed
+    if needs_reinit {
+        // Capture current playback state before reinitialization
+        let playback_snapshot = {
+            let state = STATE.lock().unwrap();
+            let lib = state.bass_lib.as_ref();
+            PlaybackStateSnapshot::capture(&state, lib)
+        };
 
-        // Stop current playback if any
-        if let Some(handle) = state.stream.take() {
-            if let Some(lib) = state.bass_lib.as_ref() {
-                channel_stop(lib, handle);
-                stream_free(lib, handle);
-                println!("[bass] Stopped and freed current stream");
+        // Reinitialize BASS
+        {
+            let mut state = STATE.lock().unwrap();
+            if state.bass_initialized {
+                log_info!("[bass] Reinitialization required; preserving playback state and reinitializing BASS");
+                ensure_bass_initialized(&mut state, true)?;
+                log_info!("[bass] Successfully reinitialized BASS with new settings");
+            } else {
+                log_debug!("[bass] BASS not initialized yet, settings will be applied when first initialized");
             }
         }
 
-        // Free BASS if initialized
-        if let Some(lib) = state.bass_lib.as_ref() {
-            bass_free(lib);
-            println!("[bass] Freed BASS resources");
-        }
-        state.bass_initialized = false;
-
-        // Get current or new settings
-        let device_id = new_device.unwrap_or(BASS_DEVICE_DEFAULT);
-        let sample_rate = new_sample_rate.unwrap_or(44100);
-        // Sync runtime config with buffer_size change
-        if let Some(buf) = new_buffer_size {
-            RUNTIME_CFG.lock().unwrap().buffer_size_ms = buf;
-        }
-        let buffer_size = RUNTIME_CFG.lock().unwrap().buffer_size_ms;
-
-        // Reinitialize with new settings
-        if let Some(lib) = state.bass_lib.as_ref() {
-            // Apply runtime config before initialization
-            apply_bass_runtime_config(lib);
-            println!(
-                "[bass] Applied runtime config: buffer={}ms, net_timeout={}ms, net_buffer={}ms",
-                buffer_size,
-                get_runtime_cfg_snapshot().net_timeout_ms,
-                get_runtime_cfg_snapshot().net_buffer_ms
-            );
-
-            let ok = bass_init(lib, device_id, sample_rate, 0);
-            if ok == 0 {
-                let error = bass_err(lib);
-                return Err(format!("Failed to reinitialize audio: {}", error));
+        // Restore playback state if there was something playing
+        if playback_snapshot.has_playback() {
+            // Give BASS a moment to fully initialize before restoring playback
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            
+            if let Err(e) = restore_playback_state(playback_snapshot).await {
+                log_warn!("[bass] Failed to restore playback state after reinitialization: {}", e);
+                // Don't fail the entire operation if playback restoration fails
             }
-
-            state.bass_initialized = true;
-            println!("[bass] Successfully reinitialized BASS with device: {}, sample_rate: {}, buffer_size: {}", 
-                     device_id, sample_rate, buffer_size);
         }
-    } else if needs_reinit && !state.bass_initialized {
-        println!("[bass] BASS not initialized yet, settings will be applied when BASS is first initialized");
+    }
+
+    // Apply volume changes to current stream if needed
+    if needs_volume_update {
+        let state = STATE.lock().unwrap();
+        if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
+            let current_volume = if updated_settings.muted { 0.0 } else { updated_settings.volume };
+            let _ = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, current_volume);
+            log_debug!("[bass] Applied volume to current stream: {}", current_volume);
+        }
     }
 
     Ok(serde_json::json!({
@@ -2417,46 +2509,39 @@ pub async fn reinitialize_audio_internal(
     sample_rate: u32,
     buffer_size: u32,
 ) -> Result<serde_json::Value, String> {
-    println!(
-        "[bass] Reinitializing audio with device: {}, sample_rate: {}, buffer_size: {}",
-        device_id, sample_rate, buffer_size
-    );
+    log_info!("[bass] Reinitializing audio with device: {}, sample_rate: {}, buffer_size: {}",
+             device_id, sample_rate, buffer_size);
 
-    let mut state = STATE.lock().unwrap();
+    // Update settings and force reinit
+    update_audio_settings(|settings| {
+        settings.device_id = device_id;
+        settings.sample_rate = sample_rate;
+        settings.buffer_size_ms = buffer_size;
+        settings.has_user_override = true;
+    })?;
 
-    // Stop current playback if any
-    if let Some(handle) = state.stream.take() {
-        if let Some(lib) = state.bass_lib.as_ref() {
-            channel_stop(lib, handle);
-            stream_free(lib, handle);
-        }
+    // Capture current playback state before reinitialization
+    let playback_snapshot = {
+        let state = STATE.lock().unwrap();
+        let lib = state.bass_lib.as_ref();
+        PlaybackStateSnapshot::capture(&state, lib)
+    };
+
+    // Force reinitialize BASS
+    {
+        let mut state = STATE.lock().unwrap();
+        ensure_bass_initialized(&mut state, true)?;
     }
 
-    // Free BASS if initialized
-    if state.bass_initialized {
-        if let Some(lib) = state.bass_lib.as_ref() {
-            bass_free(lib);
+    // Restore playback state if there was something playing
+    if playback_snapshot.has_playback() {
+        // Give BASS a moment to fully initialize before restoring playback
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        if let Err(e) = restore_playback_state(playback_snapshot).await {
+            log_warn!("[bass] Failed to restore playback state after reinitialization: {}", e);
+            // Don't fail the entire operation if playback restoration fails
         }
-        state.bass_initialized = false;
-    }
-
-    // Reinitialize with new settings
-    if let Some(lib) = state.bass_lib.as_ref() {
-        // Sync and apply runtime config prior to init
-        {
-            let mut cfg = RUNTIME_CFG.lock().unwrap();
-            cfg.buffer_size_ms = buffer_size;
-        }
-        apply_bass_runtime_config(lib);
-
-        let ok = bass_init(lib, device_id, sample_rate, 0);
-        if ok == 0 {
-            let error = bass_err(lib);
-            return Err(format!("Failed to reinitialize audio: {}", error));
-        }
-
-        state.bass_initialized = true;
-        println!("[bass] Audio reinitialized successfully");
     }
 
     Ok(serde_json::json!({
@@ -2491,29 +2576,31 @@ pub async fn playback_cleanup_internal() -> Result<bool, String> {
 // Volume control commands
 
 pub async fn playback_set_volume_internal(volume: f32) -> Result<serde_json::Value, String> {
-    let mut state = STATE.lock().unwrap();
-
     // Clamp volume between 0.0 and 1.0
     let clamped_volume = volume.max(0.0).min(1.0);
-    state.volume = clamped_volume;
+    
+    // Update settings
+    let updated_settings = update_audio_settings(|settings| {
+        settings.volume = clamped_volume;
+    })?;
 
     // If currently muted, don't actually set the volume yet
-    if state.muted {
-        state.volume_before_mute = clamped_volume;
+    if updated_settings.muted {
         return Ok(serde_json::json!({
             "success": true,
             "data": {
                 "volume": clamped_volume,
-                "muted": state.muted
+                "muted": updated_settings.muted
             }
         }));
     }
 
     // Apply volume to current stream if playing
+    let state = STATE.lock().unwrap();
     if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
         let result = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, clamped_volume);
         if result == 0 {
-            println!("[bass] Warning: Failed to set channel volume");
+            log_warn!("[bass] Failed to set channel volume");
         }
     }
 
@@ -2521,73 +2608,61 @@ pub async fn playback_set_volume_internal(volume: f32) -> Result<serde_json::Val
         "success": true,
         "data": {
             "volume": clamped_volume,
-            "muted": state.muted
+            "muted": updated_settings.muted
         }
     }))
 }
 
 pub async fn playback_get_volume_internal() -> Result<serde_json::Value, String> {
-    let state = STATE.lock().unwrap();
+    let settings = get_audio_settings();
 
     Ok(serde_json::json!({
         "success": true,
         "data": {
-            "volume": state.volume,
-            "muted": state.muted
+            "volume": settings.volume,
+            "muted": settings.muted
         }
     }))
 }
 
 pub async fn playback_set_mute_internal(muted: bool) -> Result<serde_json::Value, String> {
-    let mut state = STATE.lock().unwrap();
+    log_info!("[bass] Setting mute to {}", muted);
 
-    println!("[bass] Setting mute to {}", muted);
-
-    if muted && !state.muted {
-        // Muting: save current volume and set to 0
-        state.volume_before_mute = state.volume;
-        state.muted = true;
-
-        if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
-            let result = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, 0.0);
-            if result == 0 {
-                println!("[bass] Warning: Failed to mute channel");
-            } else {
-                println!("[bass] Channel muted successfully");
-            }
+    let updated_settings = update_audio_settings(|settings| {
+        if muted && !settings.muted {
+            // Muting: save current volume
+            settings.volume_before_mute = settings.volume;
+            settings.muted = true;
+        } else if !muted && settings.muted {
+            // Unmuting: restore previous volume
+            settings.muted = false;
+            settings.volume = settings.volume_before_mute;
         }
-    } else if !muted && state.muted {
-        // Unmuting: restore previous volume
-        state.muted = false;
+    })?;
 
-        if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
-            let result =
-                channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, state.volume_before_mute);
-            if result == 0 {
-                println!("[bass] Warning: Failed to unmute channel");
-            } else {
-                println!("[bass] Channel unmuted successfully");
-            }
+    // Apply volume change to current stream if any
+    let state = STATE.lock().unwrap();
+    if let (Some(handle), Some(ref lib)) = (state.stream, state.bass_lib.as_ref()) {
+        let target_volume = if updated_settings.muted { 0.0 } else { updated_settings.volume };
+        let result = channel_set_attribute(lib, handle, BASS_ATTRIB_VOL, target_volume);
+        if result == 0 {
+            log_warn!("[bass] Failed to set channel volume");
+        } else {
+            log_debug!("[bass] Channel volume set successfully to {}", target_volume);
         }
-
-        state.volume = state.volume_before_mute;
     }
 
     Ok(serde_json::json!({
         "success": true,
         "data": {
-            "volume": state.volume,
-            "muted": state.muted
+            "volume": updated_settings.volume,
+            "muted": updated_settings.muted
         }
     }))
 }
 
 pub async fn playback_toggle_mute_internal() -> Result<serde_json::Value, String> {
-    let current_muted = {
-        let state = STATE.lock().unwrap();
-        state.muted
-    };
-
+    let current_muted = get_audio_settings().muted;
     playback_set_mute_internal(!current_muted).await
 }
 

@@ -23,3 +23,22 @@ License summary:
 distribute the software.
 
 Fetch script: `npm run fetch:ytdlp` (downloads platform executable into `src-tauri/bin/`).
+
+## librqbit / librqbit-core Runtime Notice
+
+This project integrates the Rust BitTorrent client library `librqbit` (and related crates) to provide torrent session management, piece scheduling, streaming support, and protocol handling (DHT, PEX, uTP, IPv6, BEP extensions, etc.).
+
+Upstream Repository: https://github.com/ikatson/rqbit
+
+License: Apache License 2.0
+
+License summary (non-exhaustive, refer to full text):
+* Permissive license allowing use, modification, distribution, and sublicensing
+* Requires preservation of copyright & license notice in redistributions
+* Provides express patent grant from contributors
+* Distributed on an "AS IS" basis without warranties or conditions
+
+We do not redistribute a modified version at this time; integration is via compiled crates. If this changes, NOTICE updates will follow.
+
+You are responsible for reviewing the upstream LICENSE for full compliance obligations.
+

@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { usePlaylists } from '../../core/Playlists';
 
@@ -165,7 +166,7 @@ const LeftPanelPlaylists = React.memo(({
       filterActions.setTagFilter('');
       filterActions.setQuery('');
     } catch (err) {
-      console.error(err);
+      frontendLogger.error(err);
     }
   }, [newName, createPlaylist, uiActions, filterActions]);
 

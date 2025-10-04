@@ -354,7 +354,6 @@
 }
 
 .lyrics-right-panel .lyrics-body {
-    padding: 50px 0;
     gap: calc(max(1vw, 1vh) * 1.5); /* Smaller gaps for right panel */
 }
 

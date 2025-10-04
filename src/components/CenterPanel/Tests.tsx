@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import GeniusClient, { SongDetails } from '../../core/Genius';
 import { SpotifyClient, useSpotifyClient } from '../../core/SpotifyClient';
 import { useAlerts, LogEntry as AlertLogEntry } from '../../core/Alerts';
 import { useContextMenu, ContextMenuItem } from '../../core/ContextMenu';
 import { useDB } from '../../core/Database';
+import { runTauriCommand, unwrapTauriResult } from '../../core/TauriCommands';
 
 // Torrent search runs in Node (server/Electron). Avoid importing node-only modules in client bundle.
 // We'll use window.electron.torrent (preload) or a server endpoint if available.
@@ -62,45 +64,58 @@ export default function APIsTests(){
   const [loading, setLoading] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
 
-  // Torrent search test state
+  // Torrent scrapers test state
   const [tQuery, setTQuery] = useState('');
-  const [tProvider, setTProvider] = useState('all');
-  const [tPage, setTPage] = useState(1);
+  const [tProvider, setTProvider] = useState<string>('all');
   const [tResults, setTResults] = useState<any[]>([]);
-  const [scrapers, setScrapers] = useState<Array<{id:string,name:string}>>([]);
+  const [scrapers, setScrapers] = useState<Array<{name: string; provider?: string; version?: string; type?: string}>>([]);
 
   useEffect(()=>{
-    const w:any = window;
-    if(w.electron?.torrent?.listScrapers){
-      (async()=> setScrapers(await w.electron.torrent.listScrapers()))();
-    } else {
-      // no electron torrent API available in renderer; leave scrapers empty or optionally fetch a server endpoint
-      setScrapers([]);
-    }
+    // Fetch scrapers from Tauri backend
+    (async()=>{
+      try {
+        const list = await runTauriCommand<any[]>('torrent_list_scrapers');
+        const val = unwrapTauriResult(list) || [];
+        if (Array.isArray(val)) {
+          setScrapers(val);
+          append('torrent:scrapers', val);
+        }
+      } catch (e:any) {
+        append('torrent:scrapers:error', { error: e?.message || String(e) });
+      }
+    })();
   }, []);
 
   async function runTorrentSearch(){
     if(!tQuery.trim()) return;
     setLoading(true);
     try {
-      const w:any = window;
-      let results:any[] = [];
-      if(w.electron?.torrent?.search){
-        results = await w.electron.torrent.search({ query: tQuery, page: tPage });
-      } else {
-        // fallback: try server API (if implemented)
-        try {
-          const resp = await fetch(`http://localhost:9000/api/torrent-search?q=${encodeURIComponent(tQuery)}&page=${tPage}`);
-          if(resp.ok) results = await resp.json();
-        } catch(err) {
-          // ignore
-        }
-      }
-      const filtered = tProvider==='all' ? results : results.filter((r:any)=> r.source === tProvider);
-      setTResults(filtered);
-      append('torrent:search', { query: tQuery, results: filtered.slice(0,50) });
+      const payload: any = { query: tQuery };
+      if (tProvider && tProvider !== 'all') payload.provider = tProvider;
+      const res = await runTauriCommand<any[]>('torrent_search', { payload });
+      const results = unwrapTauriResult(res) || [];
+      setTResults(results);
+      append('torrent:search', { query: tQuery, provider: tProvider, results: results.slice(0,50) });
     } catch(e:any){ append('torrent:search:error', { error: e && e.message ? e.message : String(e) }); }
     finally { setLoading(false); }
+  }
+
+  async function torrentGetFiles(magnetOrHash: string) {
+    try {
+      const res = await runTauriCommand<any>('torrent_get_files', { id: magnetOrHash, timeout_ms: 1500 });
+      append('torrent:get_files', res);
+    } catch (e:any) {
+      append('torrent:get_files:error', { error: e?.message || String(e) });
+    }
+  }
+
+  async function torrentStartFirst(magnetOrHash: string) {
+    try {
+      const res = await runTauriCommand<any>('torrent_start_download', { magnet: magnetOrHash, index: 0 });
+      append('torrent:start_download', res);
+    } catch (e:any) {
+      append('torrent:start_download:error', { error: e?.message || String(e) });
+    }
   }
 
   // Genius inputs
@@ -205,17 +220,17 @@ export default function APIsTests(){
   const testApiCall = async () => {
     setLoading(true)
     setResult(null)
-    console.log('🧪 Testing API cache with track:', testTrackId)
+    frontendLogger.log('🧪 Testing API cache with track:', testTrackId)
     
     try {
       // Make the same call twice - first should be API call, second should be cache hit
-      console.log('🔄 First call (should be API call):')
+      frontendLogger.log('🔄 First call (should be API call):')
       const result1 = await spotifyClient.getTrack(testTrackId)
-      console.log('✅ First call result:', { name: result1?.name, id: result1?.id })
+      frontendLogger.log('✅ First call result:', { name: result1?.name, id: result1?.id })
       
-      console.log('🔄 Second call (should be cache hit):')
+      frontendLogger.log('🔄 Second call (should be cache hit):')
       const result2 = await spotifyClient.getTrack(testTrackId)
-      console.log('✅ Second call result:', { name: result2?.name, id: result2?.id })
+      frontendLogger.log('✅ Second call result:', { name: result2?.name, id: result2?.id })
       
       const finalResult = {
         trackName: result1.name,
@@ -225,17 +240,17 @@ export default function APIsTests(){
         cacheStatus: 'Both calls returned cached data (no API calls needed!)'
       }
       
-      console.log('🎯 Setting final result:', finalResult)
+      frontendLogger.log('🎯 Setting final result:', finalResult)
       setResult(finalResult)
     } catch (error: any) {
-      console.error('❌ API cache test error details:', {
+      frontendLogger.error('❌ API cache test error details:', {
         message: error?.message,
         stack: error?.stack,
         name: error?.name
       })
       setResult({ error: error?.message || 'Unknown error' })
     } finally {
-      console.log('🏁 Test completed, setting loading to false')
+      frontendLogger.log('🏁 Test completed, setting loading to false')
       setLoading(false)
     }
   }
@@ -292,7 +307,7 @@ export default function APIsTests(){
         setEntries(recentEntries)
 
       } catch (error) {
-        console.error("Failed to fetch cache stats:", error)
+        frontendLogger.error("Failed to fetch cache stats:", error)
         setCount(0)
         setEntries([])
       }
@@ -390,6 +405,47 @@ export default function APIsTests(){
           </details>
         ))}
       </div>
+  <h2 className="np-sec-title" style={{marginTop:0}}>Torrent scrapers</h2>
+  <div className="gt-grid">
+    <div className="gt-block">
+      <div style={{display:'flex', gap:8, alignItems:'center'}}>
+        <input className="tb-search" value={tQuery} onChange={e=>setTQuery(e.target.value)} placeholder="Search torrents (e.g., Artist - Track)" />
+        <select value={tProvider} onChange={e=>setTProvider(e.target.value)}>
+          <option value="all">All providers</option>
+          {scrapers.map((p, idx) => (
+            <option key={idx} value={p.name}>{p.name}</option>
+          ))}
+        </select>
+        <button className="np-pill" disabled={loading || !tQuery.trim()} onClick={runTorrentSearch}>Search</button>
+      </div>
+      <div style={{marginTop:8}}>
+        <small>Providers: {scrapers.map(s=>s.name).join(', ') || 'none'}</small>
+      </div>
+    </div>
+  </div>
+  {tResults.length > 0 && (
+    <div style={{marginTop:12}}>
+      <h3 className="mini-title" style={{margin:'6px 0 4px'}}>Results</h3>
+      <div className="gt-log" aria-label="Torrent results">
+        {tResults.slice(0,100).map((r:any, i:number) => (
+          <details key={i}>
+            <summary>
+              <strong>{r.title || '(no title)'}</strong>
+              {r.size ? <span> — {(Number(r.size)/1024/1024).toFixed(1)} MB</span> : null}
+              {typeof r.seeders !== 'undefined' ? <span> — S:{r.seeders} L:{r.leechers ?? '?'} </span> : null}
+              {r.provider ? <span> — [{r.provider}]</span> : null}
+            </summary>
+            <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+              {r.magnet && <button className="np-pill" onClick={()=>torrentGetFiles(r.magnet)}>Get files</button>}
+              {r.magnet && <button className="np-pill" onClick={()=>torrentStartFirst(r.magnet)}>Start first file</button>}
+              {r.url && <a className="np-pill" href={r.url} target="_blank" rel="noreferrer">Open page</a>}
+            </div>
+            <pre className="gt-pre">{JSON.stringify(r, null, 2)}</pre>
+          </details>
+        ))}
+      </div>
+    </div>
+  )}
   <h2 className="np-sec-title" style={{marginTop:0}}>{t('tests.apis')}</h2>
       {/* Genius Section */}
   <h3 className="mini-title" style={{margin:'6px 0 4px'}}>{t('tests.genius.api')}</h3>
@@ -472,15 +528,15 @@ export default function APIsTests(){
           if(!openMenu){ append('context:menu:error', { message: 'ContextMenuProvider not available' }); return; }
           const items = [
             { id: 'group1', type: 'group', title: 'Group 1', items: [
-              { id: 'g1o1', label: 'Group 1 - Option 1', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Group 1 - Option 1 clicked', item); }},
-              { id: 'g1o2', label: 'Group 1 - Option 2', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Group 1 - Option 2 clicked', item); }},
+              { id: 'g1o1', label: 'Group 1 - Option 1', type: 'action', onClick: (item: ContextMenuItem) => { frontendLogger.log('Group 1 - Option 1 clicked', item); }},
+              { id: 'g1o2', label: 'Group 1 - Option 2', type: 'action', onClick: (item: ContextMenuItem) => { frontendLogger.log('Group 1 - Option 2 clicked', item); }},
             ]},
-            { id: 'copy', label: 'Copy', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Copy action clicked', item); }, icon: 'content_copy' },
+            { id: 'copy', label: 'Copy', type: 'action', onClick: (item: ContextMenuItem) => { frontendLogger.log('Copy action clicked', item); }, icon: 'content_copy' },
             { id: 'open', label: 'Open website', type: 'link', href: 'https://example.com', icon: 'open_in_new'},
             { id: 'sep1', type: 'separator' },
             { id: 'more', label: 'More', type: 'submenu', submenu: [
-              { id: 'sub1', label: 'Sub option 1', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Sub option 1 clicked', item); }},
-              { id: 'sub2', label: 'Sub option 2', type: 'action', onClick: (item: ContextMenuItem) => { console.log('Sub option 2 clicked', item); }},
+              { id: 'sub1', label: 'Sub option 1', type: 'action', onClick: (item: ContextMenuItem) => { frontendLogger.log('Sub option 1 clicked', item); }},
+              { id: 'sub2', label: 'Sub option 2', type: 'action', onClick: (item: ContextMenuItem) => { frontendLogger.log('Sub option 2 clicked', item); }},
             ]}
           ];
           try {
@@ -488,48 +544,6 @@ export default function APIsTests(){
             append('context:menu:result', { result: res });
           } catch(e:any){ append('context:menu:error', { error: String(e) }); }
         }}>Open Context Menu (test)</button>
-      </div>
-
-      {/* Torrent Search Test Section */}
-      <h3 className="mini-title" style={{margin:'28px 0 4px'}}>Torrent Search</h3>
-      <div className="gt-grid">
-        <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Query</h4>
-          <input className="tb-search" value={tQuery} onChange={e=>setTQuery(e.target.value)} placeholder="Search torrents" />
-        </div>
-        <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Provider</h4>
-          <select className="tb-search" value={tProvider} onChange={e=>setTProvider(e.target.value)}>
-            <option value="all">All</option>
-            {scrapers.map(s=> (<option key={s.id} value={s.id}>{s.name}</option>))}
-          </select>
-        </div>
-        <div className="gt-block">
-          <h4 className="mini-title" style={{marginTop:0}}>Page</h4>
-          <input className="tb-search" type="number" value={tPage} onChange={e=>setTPage(Number(e.target.value))} min={1} />
-        </div>
-        <div className="gt-block">
-          <div style={{display:'flex', gap:8, alignItems:'center'}}>
-            <button className="np-pill" disabled={loading || !tQuery.trim()} onClick={runTorrentSearch}>Search</button>
-            <button className="np-pill" onClick={()=>{ setTResults([]); }}>{'Clear'}</button>
-          </div>
-        </div>
-      </div>
-
-      <div style={{marginTop:12}}>
-        {tResults.length===0 && <p className="np-hint">No torrent results</p>}
-        {tResults.map((r, idx)=>(
-          <div key={idx} style={{display:'flex', justifyContent:'space-between', gap:12, alignItems:'center', padding:'8px 10px', borderRadius:8, background:'var(--surface-1)', border:'1px solid var(--border-subtle)', marginBottom:8}}>
-            <div style={{minWidth:0}}>
-              <div style={{fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{r.title}</div>
-              <div style={{fontSize:12, opacity:.75}}>{r.size || ''} · {r.seeders ?? 0}▲ · {r.leechers ?? 0}▼ · {r.source}</div>
-            </div>
-            <div style={{display:'flex', gap:8}}>
-              {r.magnetURI && <button className="btn" onClick={()=> window.open(r.magnetURI, '_blank')}>Magnet</button>}
-              {r.url && <button className="btn" onClick={()=> window.open(r.url, '_blank')}>Detail</button>}
-            </div>
-          </div>
-        ))}
       </div>
 
     </section>

@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useState, useRef, useMemo, useEffect } from 'react';
+import { frontendLogger } from './FrontendLogger';
 
 export type AlertSeverity = 'info' | 'warn' | 'error';
 
@@ -111,7 +112,7 @@ export const AlertsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try { 
         fn(entry); 
       } catch (error) {
-        console.warn('Error in log listener:', error);
+        frontendLogger.warn('Error in log listener:', error);
       }
     }
   }, []);

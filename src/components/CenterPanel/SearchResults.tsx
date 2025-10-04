@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback, MouseEvent } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { usePlaybackSelector } from '../../core/Playback';
 import { fetchAlbumTracks, fetchArtistTracks, fetchPlaylistTracks } from '../../core/SpotifyClient';
@@ -167,7 +168,7 @@ const CollectionPlayButton = React.memo<CollectionPlayButtonProps>(({ kind, id, 
         onPlay(fetchedTracks.map(t => String(t.id)));
       }
     } catch (err) {
-      console.warn(`Failed to play collection ${kind}:${id}`, err);
+      frontendLogger.warn(`Failed to play collection ${kind}:${id}`, err);
     }
   }, [kind, id, onPlay, fetchers]);
 

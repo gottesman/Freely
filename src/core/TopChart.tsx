@@ -1,4 +1,5 @@
 import { env } from './AccessEnv';
+import { frontendLogger } from './FrontendLogger';
 
 // Performance constants
 const CHARTS_ENV_KEY = 'CHARTS_SPOTIFY_ENDPOINT';
@@ -51,7 +52,7 @@ const chartsUrl = async (): Promise<string> => {
   _chartsUrlCached = remote || '';
   
   if (_chartsUrlCached === '') {
-    console.warn(WARNING_MESSAGE);
+    frontendLogger.warn(WARNING_MESSAGE);
   }
   
   return _chartsUrlCached;
@@ -233,7 +234,7 @@ export const getWeeklyTops = async ({ limit }: { limit?: number } = {}): Promise
     return ChartProcessor.processApiResponse(json, limit);
     
   } catch (e) {
-    console.warn('getWeeklyTops error', e);
+    frontendLogger.warn('getWeeklyTops error', e);
     return { 
       songs: [], 
       albums: [], 

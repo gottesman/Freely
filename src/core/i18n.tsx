@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback, useMemo } from 'react';
+import { frontendLogger } from './FrontendLogger';
 import { setSpotifyLocale } from './SpotifyClient';
 
 // Performance constants
@@ -53,7 +54,7 @@ class I18nUtils {
           return (await import('../lang/en.json')).default as Record<string, string>;
       }
     } catch (error) {
-      console.warn(`[i18n] Failed to load locale for ${lang}:`, error);
+      frontendLogger.warn(`[i18n] Failed to load locale for ${lang}:`, error);
       return {};
     }
   }
@@ -85,7 +86,7 @@ class I18nUtils {
     try {
       setSpotifyLocale(locale);
     } catch (error) {
-      console.warn('[i18n] Failed to set Spotify locale:', error);
+      frontendLogger.warn('[i18n] Failed to set Spotify locale:', error);
     }
   }
 }

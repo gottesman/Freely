@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { SpotifyTrack, SpotifyPlaylist } from '../../core/SpotifyClient'
 import { usePlaylists } from '../../core/Playlists';
@@ -88,7 +89,7 @@ const usePlaylistOperations = () => {
       }
       pushAlert(t('pl.created', 'Playlist created'), 'info');
     } catch (error) {
-      console.error('Error during playlist cloning:', error);
+      frontendLogger.error('Error during playlist cloning:', error);
       pushAlert(t('pl.createFailed', 'Failed to create playlist'), 'error');
     }
   }, [createPlaylistWithTracks, prompt, pushAlert, t]);
@@ -116,7 +117,7 @@ const usePlaylistOperations = () => {
       await deletePlaylist(localRecord.id);
       pushAlert(t('pl.deleted', 'Playlist deleted'), 'info');
     } catch (e) {
-      console.warn('deletePlaylist failed', e);
+      frontendLogger.warn('deletePlaylist failed', e);
       pushAlert(t('pl.deleteFailed', 'Failed to delete playlist'), 'error');
     }
     refresh();
@@ -127,7 +128,7 @@ const usePlaylistOperations = () => {
       try {
         await removeTrack(localRecord.id, trackId);
       } catch (error) {
-        console.error('Failed to remove track:', error);
+        frontendLogger.error('Failed to remove track:', error);
         refresh();
       }
     }
@@ -213,7 +214,7 @@ const PlaylistInfoTab = React.memo(({ playlistId }: { playlistId?: string }) => 
           await loadRemotePlaylist();
         }
       } catch (error) {
-        console.error('Error loading playlist:', error);
+        frontendLogger.error('Error loading playlist:', error);
       } finally {
         if (!cancelled) {
           stateActions.setLoading(false);
@@ -281,7 +282,7 @@ const PlaylistInfoTab = React.memo(({ playlistId }: { playlistId?: string }) => 
           stateActions.setTracks(pll.tracks);
         }
       } catch (error) {
-        console.error('Failed to load remote playlist:', error);
+        frontendLogger.error('Failed to load remote playlist:', error);
       }
     };
 
@@ -297,7 +298,7 @@ const PlaylistInfoTab = React.memo(({ playlistId }: { playlistId?: string }) => 
             : await api.getTrack(id);
           if (track) tracks.push(track);
         } catch (error) {
-          console.warn('Failed to fetch track:', id, error);
+          frontendLogger.warn('Failed to fetch track:', id, error);
         }
       }
 

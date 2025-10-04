@@ -34,9 +34,7 @@ export default defineConfig(({}) => ({
       },
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom'],
-          webtorrent: ['webtorrent'],
-          utils: ['buffer', 'cheerio', 'node-fetch']
+          vendor: ['react', 'react-dom']
         }
       }
     },

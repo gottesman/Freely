@@ -1,6 +1,6 @@
 {
   "name": "freely-player",
-  "version": "1.3.0-test",
+  "version": "1.4.0-alpha",
   "author": {
     "name": "Gottesman",
     "email": "gottesman@example.com"
@@ -9,14 +9,13 @@
   "private": true,
   "scripts": {
     "dev:frontend": "vite",
-    "dev": "npm-run-all --parallel dev:frontend build:server",
+    "dev": "vite",
     "build": "tsc && vite build",
     "build:optimized": "set NODE_ENV=production&& tsc && vite build --mode production",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "tauri build",
     "tauri:build:release": "tauri build --release",
-    "build:server": "webpack --config webpack.server.config.js --mode production",
     "analyze": "vite build --mode analyze",
     "typecheck": "tsc --noEmit",
     "lint:css": "stylelint \"src/**/*.css\"",
@@ -28,16 +27,8 @@
   "dependencies": {
     "@tauri-apps/plugin-notification": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.1",
-    "buffer": "^6.0.3",
-    "cheerio": "^1.0.0-rc.12",
-    "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
-    "node-fetch": "^3.3.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "utp-native": "^2.5.3",
-    "webtorrent": "^2.8.4"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.0.0-beta.18",
@@ -45,19 +36,15 @@
     "@types/node": "^20.14.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/webtorrent": "^0.109.9",
     "@types/ws": "^8.5.10",
     "@vitejs/plugin-react": "^4.3.1",
     "adm-zip": "^0.5.10",
-    "npm-run-all": "^4.1.5",
     "prebuild-install": "^7.1.1",
     "prettier": "^3.3.1",
     "stylelint": "^16.6.1",
     "stylelint-config-standard": "^36.0.0",
     "stylelint-order": "^6.0.4",
     "typescript": "^5.4.5",
-    "vite": "^5.2.13",
-    "webpack": "^5.101.3",
-    "webpack-cli": "^6.0.1"
+    "vite": "^5.2.13"
   }
 }

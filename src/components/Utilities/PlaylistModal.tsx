@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { usePlaylists } from '../../core/Playlists';
 import { useAlerts } from '../../core/Alerts';
@@ -320,7 +321,7 @@ export default function AddToPlaylistModal({
       
       onAdded?.(playlistId, playlistName);
     } catch (error) {
-      console.error('[AddToPlaylistModal] Failed to toggle track:', error);
+      frontendLogger.error('[AddToPlaylistModal] Failed to toggle track:', error);
       const action = isInPlaylist ? 'remove track from' : 'add track to';
       pushAlert(`Failed to ${action} ${playlistName}`, 'error');
     } finally {
@@ -343,7 +344,7 @@ export default function AddToPlaylistModal({
         handleClose();
       }
     } catch (error) {
-      console.error('[AddToPlaylistModal] Failed to create playlist:', error);
+      frontendLogger.error('[AddToPlaylistModal] Failed to create playlist:', error);
       pushAlert(`Failed to create playlist "${name}"`, 'error');
     } finally {
       actions.setAddingToPlaylistId(null);

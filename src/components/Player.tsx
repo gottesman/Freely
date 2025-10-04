@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { usePlaybackSelector, usePlayback, useCacheStatus } from '../core/Playback';
+import { frontendLogger } from '../core/FrontendLogger';
+import { usePlaybackSelector, usePlayback } from '../core/Playback';
 import { useI18n } from '../core/i18n';
 import { useAlerts } from '../core/Alerts';
 import { usePlaylists } from '../core/Playlists';
@@ -118,12 +119,14 @@ export default function Player({
     setVolume(volumePercent);
   }, [setVolume]);
 
-  // Alert on playback errors
+  // Alert on playback errors (avoid dependency on alerts to reduce reruns)
+  const lastErrorRef = useRef<string | null>(null);
   useEffect(() => {
-    if (error && !alerts.some((a) => a.msg === error)) {
+    if (error && lastErrorRef.current !== error) {
+      lastErrorRef.current = error;
       pushAlert(error, 'error');
     }
-  }, [error, alerts, pushAlert]);
+  }, [error, pushAlert]);
 
   // Reset position when track changes
   useEffect(() => {
@@ -279,7 +282,7 @@ export default function Player({
         backendSeek(0);
         setPositionMs(0);
       } catch (error) {
-        console.error('Failed to seek to start:', error);
+        frontendLogger.error('Failed to seek to start:', error);
       }
       return;
     }
@@ -294,7 +297,7 @@ export default function Player({
         playbackControls.prev();
       }
     } catch (error) {
-      console.error('Failed to get previous track from history:', error);
+      frontendLogger.error('Failed to get previous track from history:', error);
       playbackControls.prev();
     }
   }, [backendPosition, backendSeek, currentTrack?.id, getRecentPlays, playbackCtx, playbackControls.prev]);
@@ -389,6 +392,48 @@ export default function Player({
     []
   );
 
+  // Stabilize volume input ref setter and wheel handler
+  const setVolumeElRef = useCallback((el: HTMLInputElement | null) => {
+    refs.current.volume = el;
+  }, []);
+  const onVolumeWheel = useCallback((e: React.WheelEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -5 : 5;
+    const newVolume = Math.max(0, Math.min(100, volume * 100 + delta));
+    onVolume(newVolume);
+  }, [onVolume, volume]);
+
+  // Memoized artist buttons to avoid remapping on unrelated state changes
+  const artistButtons = useMemo(() => {
+    const list = currentTrack?.artists || [];
+    return list.map((artist: any, index: number) => (
+      <React.Fragment key={artist.id || artist.name}>
+        {index > 0 ? ', ' : ''}
+        <button
+          type="button"
+          className="np-link artist inline"
+          onClick={(e) => onArtistClick(e as any, artist)}
+        >
+          {artist.name}
+        </button>
+      </React.Fragment>
+    ));
+  }, [currentTrack?.artists, onArtistClick]);
+
+  // Precompute title hover text for metadata
+  const metaTitle = useMemo(() => {
+    const t1 = trackMetadata.title || '';
+    const t2 = trackMetadata.artist ? ` - ${trackMetadata.artist}` : '';
+    const t3 = trackMetadata.album ? ` (${trackMetadata.album})` : '';
+    return `${t1}${t2}${t3}`;
+  }, [trackMetadata.title, trackMetadata.artist, trackMetadata.album]);
+
+  // Stable styles/labels
+  const loadingDotsStyle = useMemo(() => ({ width: 52, textAlign: 'center' as const }), []);
+  const playAriaLabel = useMemo(() => (
+    noSource ? t('player.noSource', 'No source selected') : isTrackLoading ? t('np.loading', 'Loading') : (playingFlag ? t('player.pause') : t('player.play'))
+  ), [noSource, isTrackLoading, playingFlag, t]);
+
   const getFormatDetails = useCallback(() => {
     if (!codec && !sampleRate && !bitsPerSample) return null;
     const sample = (sampleRate ? `${Math.round(sampleRate / 100) / 10} kHz` : '') + 
@@ -408,7 +453,7 @@ export default function Player({
   }, [codec, sampleRate, bitsPerSample]);
 
   // Render common elements
-  const renderControls = () => (
+  const renderControls = useMemo(() => (
     <div className="controls">
       <button className="small player-icons player-icons-shuffle" aria-label={t('player.shuffle')}>
         <span className="material-symbols-rounded filled">shuffle</span>
@@ -425,12 +470,12 @@ export default function Player({
       <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
         <button
           className={`play player-icons player-icons-play ${(noSource || isTrackLoading) ? 'disabled' : ''}`}
-          aria-label={noSource ? t('player.noSource', 'No source selected') : isTrackLoading ? t('np.loading', 'Loading') : (playingFlag ? t('player.pause') : t('player.play'))}
+          aria-label={playAriaLabel}
           onClick={togglePlay}
           disabled={noSource || isTrackLoading}
         >
           {(noSource || isTrackLoading) ? (
-            <div className="loading-dots" style={{ width: 52, textAlign: 'center' }} aria-label={t('np.loading', 'Loading')}>
+            <div className="loading-dots" style={loadingDotsStyle} aria-label={t('np.loading', 'Loading')}>
               <span></span><span></span><span></span>
             </div>
           ) : (
@@ -472,9 +517,9 @@ export default function Player({
         <span className="material-symbols-rounded filled">repeat</span>
       </button>
     </div>
-  );
+  ), [t, handlePrevious, playbackControls.next, noSource, isTrackLoading, playAriaLabel, togglePlay, loadingDotsStyle, showSourcePopup, currentTrack?.id, playingFlag]);
 
-  const renderVolumeControls = () => (
+  const renderVolumeControls = useMemo(() => (
     <>
       <button
         className="small player-icons player-icons-mute"
@@ -487,31 +532,26 @@ export default function Player({
       </button>
 
       <input
-        ref={(el) => { refs.current.volume = el; }}
+        ref={setVolumeElRef}
         className="volume-range"
         type="range"
         min={0}
         max={100}
         value={volume * 100}
         onChange={(e) => onVolume(Number(e.target.value))}
-        onWheel={(e) => {
-          e.preventDefault();
-          const delta = e.deltaY > 0 ? -5 : 5;
-          const newVolume = Math.max(0, Math.min(100, volume * 100 + delta));
-          onVolume(newVolume);
-        }}
+        onWheel={onVolumeWheel}
         style={{ ['--vol' as any]: `${volume * 100}%` }}
         aria-label={t('player.volume', 'Volume')}
       />
     </>
-  );
+  ), [muted, t, toggleMute, setVolumeElRef, volume, onVolume, onVolumeWheel]);
 
-  const renderMetadata = () => (
+  const renderMetadata = useMemo(() => (
     <div className="meta-block">
       <div
         className="meta"
         role="button"
-        title={`${trackMetadata.title}${trackMetadata.artist ? ` - ${trackMetadata.artist}` : ''}${trackMetadata.album ? ` (${trackMetadata.album})` : ''}`}
+        title={metaTitle}
         tabIndex={0}
         aria-label={t('np.showDetails', 'Show song details')}
         onClick={onMetaActivate}
@@ -533,20 +573,7 @@ export default function Player({
         )}
         <div className="meta-text">
           <div className="song-title overflow-ellipsis">{trackMetadata.title}</div>
-          <div className="song-artist overflow-ellipsis">
-            {currentTrack?.artists?.map((artist: any, index: number) => (
-              <React.Fragment key={artist.id || artist.name}>
-                {index > 0 ? ', ' : ''}
-                <button
-                  type="button"
-                  className="np-link artist inline"
-                  onClick={(e) => onArtistClick(e, artist)}
-                >
-                  {artist.name}
-                </button>
-              </React.Fragment>
-            ))}
-          </div>
+          <div className="song-artist overflow-ellipsis">{artistButtons}</div>
           <div className="song-album overflow-ellipsis">{trackMetadata.album}</div>
         </div>
       </div>
@@ -566,7 +593,7 @@ export default function Player({
       </button>
       {(codec || sampleRate || bitsPerSample) && getFormatDetails()}
     </div>
-  );
+  ), [variant, trackMetadata.title, trackMetadata.artist, trackMetadata.album, trackMetadata.cover, t, onMetaActivate, artistButtons, onAddToPlaylist, currentTrack, isTrackInAnyPlaylist, codec, sampleRate, bitsPerSample, getFormatDetails, metaTitle]);
 
   // Variant-specific rendering
   if (variant === 'small') {
@@ -580,9 +607,9 @@ export default function Player({
           style={trackMetadata.cover ? { ['--cover-image' as any]: `url(${trackMetadata.cover})` } : undefined}
         />
         <div className="track-player">
-          {renderControls()}
+          {renderControls}
           <div className="extras">
-            {renderVolumeControls()}
+            {renderVolumeControls}
             <button
               className="small player-icons player-icons-mini"
               onClick={() => onPIPtoggle?.(false)}
@@ -592,7 +619,7 @@ export default function Player({
             </button>
           </div>
         </div>
-        {renderMetadata()}
+        {renderMetadata}
       </div>
     );
   }
@@ -621,8 +648,8 @@ export default function Player({
       </div>
 
       <div className="track-player">
-        {renderMetadata()}
-        {renderControls()}
+  {renderMetadata}
+  {renderControls}
         <div className="extras">
           <button
             className={`small player-icons player-icons-download ${downloadsActive ? 'active' : ''}`}
@@ -648,7 +675,7 @@ export default function Player({
           >
             <span className="material-symbols-rounded filled">line_weight</span>
           </button>
-          {renderVolumeControls()}
+          {renderVolumeControls}
           <button
             className="small player-icons player-icons-mini"
             aria-label={t('player.mini')}

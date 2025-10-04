@@ -20,29 +20,6 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
   </head>
   <body>
-    <script>
-      (function(){
-        try {
-          /* Vendor webtorrent browser bundle (if present) */
-          const url = 'https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js';
-          var xhr = new XMLHttpRequest();
-          xhr.open('HEAD', url, true);
-          xhr.onreadystatechange = function(){
-            if (xhr.readyState === 4) {
-              if (xhr.status === 200) {
-                var s = document.createElement('script');
-                s.src = url;
-                s.async = false;
-                document.head.appendChild(s);
-              }
-            }
-          };
-          xhr.send();
-        } catch (e) {
-          // ignore
-        }
-      })();
-    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

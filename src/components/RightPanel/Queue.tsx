@@ -1,4 +1,5 @@
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { usePlaybackSelector } from '../../core/Playback';
 import { useI18n } from '../../core/i18n';
 import { useContextMenu } from '../../core/ContextMenu';
@@ -296,7 +297,7 @@ const useMissingTrackFetcher = (queueIds: string[], trackCache: Record<string, a
 
         setAdditionalTrackData(prev => ({ ...prev, ...newTrackData }));
       } catch (e) {
-        console.warn('[Queue] Failed to fetch missing track metadata:', e);
+        frontendLogger.warn('[Queue] Failed to fetch missing track metadata:', e);
       } finally {
         // Clear loading state
         setLoadingTracks(prev => {
@@ -491,7 +492,7 @@ export const QueueTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) => {
   // Memoized derived values
   const queueData = useMemo(() => {
     // Debug visibility to help diagnose empty queue list
-    try { console.debug('[QueueTab] queueIds:', queueIds.length, 'currentIndex:', currentIndex); } catch {}
+    try { frontendLogger.debug('[QueueTab] queueIds:', queueIds.length, 'currentIndex:', currentIndex); } catch {}
     const currentId = queueIds[currentIndex];
     const restIds = queueIds.filter((_, i) => i !== currentIndex);
     return { currentId, restIds };

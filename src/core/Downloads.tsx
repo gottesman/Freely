@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { frontendLogger } from './FrontendLogger';
 import { useAlerts } from './Alerts';
-import { runTauriCommand } from './TauriCommands';
 import { useDB } from './Database';
 
 // Contract
@@ -18,9 +18,12 @@ export interface DownloadItem {
   trackId: string;
   sourceType: string;
   sourceHash: string;
+  fileIndex?: number;      // Optional selected file index for torrents
   status: DownloadStatus;
   bytes?: number;
   total?: number;
+  // progress: normalized 0..1 if known (backend supplied percent preferred for torrents)
+  progress?: number;
   tmpPath?: string;        // .part path when provided
   cachedPath?: string;     // final path when completed
   updatedAt: number;
@@ -106,7 +109,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       if (name && typeof name === 'string') return name;
       return trackId; // fallback to original string if no name found
     } catch (error) {
-      console.error('Error fetching track name:', error);
+      frontendLogger.error('Error fetching track name:', error);
       return trackId;
     }
   };
@@ -134,6 +137,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   trackId: safeTrackId,
         sourceType: existing?.sourceType || (patch.sourceType as string) || '',
         sourceHash: existing?.sourceHash || (patch.sourceHash as string) || '',
+        fileIndex: (typeof patch.fileIndex === 'number' ? patch.fileIndex : (existing?.fileIndex)),
         status: existing?.status || 'queued',
         bytes: existing?.bytes,
         total: existing?.total,
@@ -167,6 +171,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
             const id = createId(trackId, sourceType, sourceHash);
             const bytes = typeof it.bytes_downloaded === 'number' ? Number(it.bytes_downloaded) : undefined;
             const total = typeof it.total_bytes === 'number' ? Number(it.total_bytes) : undefined;
+            const fileIndex = typeof it.file_index === 'number' ? Number(it.file_index) : undefined;
             // Skip seeding entries that are already complete
             if (typeof bytes === 'number' && typeof total === 'number' && total > 0 && bytes >= total) continue;
             upsert(id, {
@@ -174,6 +179,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
               status: 'downloading', origin: 'cache',
               bytes,
               total,
+              fileIndex,
             });
           }
         }
@@ -194,8 +200,10 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
         // Extract bytes/total from cache or playback payloads
         const extractBytesTotal = (payload: any, kind: 'cache' | 'playback') => {
           if (kind === 'cache') {
-            const bytes = Number(payload.bytes_downloaded || 0) || 0;
-            const total = payload.total_bytes != null ? Number(payload.total_bytes) : undefined;
+            const bytesRaw = (payload.bytes_downloaded ?? payload.downloaded_bytes ?? 0);
+            const totalRaw = (payload.total_bytes ?? payload.size ?? undefined);
+            const bytes = Number(bytesRaw) || 0;
+            const total = totalRaw != null ? Number(totalRaw) : undefined;
             return { bytes, total } as { bytes: number; total?: number };
           }
           const data = payload?.data || payload;
@@ -226,7 +234,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           }, 1000);
         };
 
-        // Cache: ready
+  // Cache: ready
         const un1 = await listen('cache:download:ready', (evt: any) => {
           if (!mounted) return;
           const p: any = evt.payload || evt;
@@ -234,7 +242,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (trackId) knownTrackIdsRef.current[id] = trackId;
           const { bytes, total } = extractBytesTotal(p, 'cache');
           if (typeof total === 'number' && total > 0 && bytes >= total) return; // already complete
-          upsert(id, { trackId, sourceType, sourceHash, status: 'ready', origin: 'cache', tmpPath: p.tmpPath, bytes, total });
+          const fileIndex = typeof p.file_index === 'number' ? Number(p.file_index) : undefined;
+          upsert(id, { trackId, sourceType, sourceHash, status: 'ready', origin: 'cache', tmpPath: p.tmpPath, bytes, total, fileIndex });
         });
         unsubs.push(un1);
 
@@ -249,7 +258,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
             scheduleRemoval(id);
             return;
           }
-          upsert(id, { trackId, sourceType, sourceHash, status: 'downloading', origin: 'cache', bytes, total });
+          const fileIndex = typeof p.file_index === 'number' ? Number(p.file_index) : undefined;
+          upsert(id, { trackId, sourceType, sourceHash, status: 'downloading', origin: 'cache', bytes, total, fileIndex });
         });
         unsubs.push(un2);
 
@@ -309,14 +319,84 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
           if (typeof totalNum === 'number' && totalNum > 0 && bytesNum >= totalNum) {
             scheduleRemoval(id);
           } else {
-            upsert(id, { status: 'downloading', origin: (target?.origin ?? 'playback'), bytes: bytesNum, total: totalNum });
+            const frac = (typeof totalNum === 'number' && totalNum > 0) ? (bytesNum / totalNum) : undefined;
+            upsert(id, { status: 'downloading', origin: (target?.origin ?? 'playback'), bytes: bytesNum, total: totalNum, progress: frac });
           }
         });
         unsubs.push(un7);
+
+        // Torrent: progress events from backend (provides percent already)
+        const un8 = await listen('torrent:progress', (evt: any) => {
+          if (!mounted) return;
+          const p: any = evt.payload || evt;
+          const key: string = String(p.id || '');
+          if (!key) return;
+          // percent may already be computed server-side with two decimal precision
+          const percentRaw = typeof p.percent === 'number' ? p.percent : undefined;
+          const normalized = (typeof percentRaw === 'number') ? Math.max(0, Math.min(100, percentRaw)) / 100 : undefined;
+          const fileIndex = typeof p.fileIndex === 'number' ? p.fileIndex : undefined;
+          const bytes = typeof p.verifiedBytes === 'number' ? p.verifiedBytes : (typeof p.bytes === 'number' ? p.bytes : undefined);
+          const total = typeof p.total === 'number' ? p.total : undefined;
+          // Attempt to locate existing download item(s) referencing this torrent by matching sourceHash
+          // Our item IDs embed <trackId>_<sourceType>_<sourceHash>; so match suffix after last '_' occurrences.
+          const matches: string[] = Object.keys(itemsRef.current).filter(idKey => idKey.endsWith(`_${key}`) || idKey.includes(`_${key}`));
+          if (matches.length === 0) {
+            // Create a synthetic placeholder item so user sees progress even before track metadata resolves.
+            const syntheticId = `unknown_torrent_${key}`; // sanitized pattern
+            upsert(syntheticId, {
+              trackId: 'unknown',
+              sourceType: 'torrent',
+              sourceHash: key,
+              status: 'downloading',
+              fileIndex,
+              bytes,
+              total,
+              progress: normalized ?? (typeof bytes === 'number' && typeof total === 'number' && total > 0 ? bytes / total : undefined),
+              origin: 'cache'
+            });
+            return;
+          }
+          for (const idKey of matches) {
+            const existing = itemsRef.current[idKey];
+            const frac = normalized ?? (typeof bytes === 'number' && typeof total === 'number' && total > 0 ? bytes / total : existing?.progress);
+            upsert(idKey, {
+              status: 'downloading',
+              bytes: typeof bytes === 'number' ? bytes : existing?.bytes,
+              total: typeof total === 'number' ? total : existing?.total,
+              progress: frac,
+              fileIndex: existing?.fileIndex ?? fileIndex,
+              sourceType: 'torrent'
+            });
+          }
+        });
+        unsubs.push(un8);
+
+  // Torrent: completion (verified bytes == total); the backend emits this once per (torrent,fileIndex).
+  // We map the info-hash (id) back to existing DownloadItems (their ids embed sourceHash) and schedule removal.
+  // If only a synthetic placeholder existed (unknown_torrent_<hash>), remove that instead.
+        const un9 = await listen('torrent:complete', (evt: any) => {
+          if (!mounted) return;
+          const p: any = evt.payload || evt;
+          const key: string = String(p.id || '');
+          if (!key) return;
+          const matches: string[] = Object.keys(itemsRef.current).filter(idKey => idKey.endsWith(`_${key}`) || idKey.includes(`_${key}`));
+          if (matches.length === 0) {
+            // If we created a synthetic placeholder earlier, its id will be unknown_torrent_<hash>
+            const syntheticId = `unknown_torrent_${key}`;
+            if (itemsRef.current[syntheticId]) {
+              scheduleRemoval(syntheticId);
+            }
+            return;
+          }
+          for (const idKey of matches) {
+            scheduleRemoval(idKey);
+          }
+        });
+        unsubs.push(un9);
       } catch (e) {
         // Tauri not available in browser preview; ignore
         if (process.env.NODE_ENV !== 'production') {
-          console.debug('[Downloads] Event API unavailable', e);
+          frontendLogger.debug('[Downloads] Event API unavailable', e);
         }
       }
     })();

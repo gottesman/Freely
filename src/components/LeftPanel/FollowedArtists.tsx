@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import useFollowedArtists from '../../core/Artists';
 
@@ -85,7 +86,7 @@ const LeftPanelArtists = React.memo(({
         detail: { artistId, source: 'left-panel' } 
       }));
     } catch (e) {
-      console.warn('LeftPanelArtists selectArtist failed', e);
+      frontendLogger.warn('LeftPanelArtists selectArtist failed', e);
     }
   }, []);
 

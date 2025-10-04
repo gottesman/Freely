@@ -1,3 +1,4 @@
+import { frontendLogger } from './FrontendLogger';
 import { runTauriCommand } from './TauriCommands';
 
 export interface CacheStats {
@@ -16,7 +17,7 @@ export async function startPlaybackWithSource(
   preferCache: boolean = true,
   sourceMeta?: Record<string, any>
 ): Promise<any> {
-  console.log('[audioCache] startPlaybackWithSource called with:', { 
+  frontendLogger.log('[audioCache] startPlaybackWithSource called with:', { 
     trackId, 
     sourceType, 
     sourceValue, 
@@ -74,20 +75,20 @@ export async function startPlaybackWithSource(
         client_request_id: clientRequestId
       }
     }).then((r) => {
-      console.log('[audioCache] playback_start_with_source invoke completed (background):', r);
+      frontendLogger.log('[audioCache] playback_start_with_source invoke completed (background):', r);
       return { invokeResult: r };
     }).catch((e) => {
-      console.warn('[audioCache] playback_start_with_source invoke failed (background):', e);
+      frontendLogger.warn('[audioCache] playback_start_with_source invoke failed (background):', e);
       return { invokeError: e };
     });
 
     // Race the ack (which includes a timeout) with the invoke result. Prefer
     // the ack, but accept a fast invoke result when it arrives first.
     const res = await Promise.race([ackPromise, invokePromise]);
-    console.log('[audioCache] Playback ack or timeout:', res);
+    frontendLogger.log('[audioCache] Playback ack or timeout:', res);
     return res;
   } catch (error) {
-    console.error('[audioCache] Failed to start playback with source:', error);
+    frontendLogger.error('[audioCache] Failed to start playback with source:', error);
     throw error;
   }
 }
@@ -97,18 +98,14 @@ export async function startPlaybackWithSource(
  */
 export async function getCachedFile(trackId: string, sourceType: string, sourceHash: string, fileIndex?: number): Promise<string | null> {
   try {
-    // Send both camelCase and snake_case keys for maximum compatibility
+    // Send parameters using camelCase as Tauri converts snake_case Rust params to camelCase for JS
     const args: any = {
-      trackId,
-      track_id: trackId,
-      sourceType,
-      source_type: sourceType,
-      sourceHash,
-      source_hash: sourceHash
+      trackId: trackId,
+      sourceType: sourceType,
+      sourceHash: sourceHash
     };
     if (typeof fileIndex === 'number') {
       args.fileIndex = Math.floor(fileIndex);
-      args.file_index = Math.floor(fileIndex);
     }
     const result: any = await runTauriCommand('cache_get_file', args);
     // Support both direct JSON and { success, data } wrapper forms
@@ -122,7 +119,7 @@ export async function getCachedFile(trackId: string, sourceType: string, sourceH
     }
     return null;
   } catch (error) {
-    console.warn('[cache] Failed to check cache:', error);
+    frontendLogger.warn('[cache] Failed to check cache:', error);
     return null;
   }
 }
@@ -132,30 +129,26 @@ export async function getCachedFile(trackId: string, sourceType: string, sourceH
  */
 export async function downloadAndCache(trackId: string, sourceType: string, sourceHash: string, url: string, fileIndex?: number): Promise<string | null> {
   try {
-    // Send both camelCase and snake_case keys for maximum compatibility
+    // Send parameters using camelCase as Tauri converts snake_case Rust params to camelCase for JS
     const args: any = {
       trackId: trackId,
-      track_id: trackId,
       sourceType: sourceType,
-      source_type: sourceType,
       sourceHash: sourceHash,
-      source_hash: sourceHash,
       url: url
     };
     
-    // Only add file_index if it's a valid number
+    // Only add fileIndex if it's a valid number
     if (typeof fileIndex === 'number' && !isNaN(fileIndex)) {
       args.fileIndex = Math.floor(fileIndex);
-      args.file_index = Math.floor(fileIndex);
     }
     
     // Helpful runtime debug
-    try { console.debug('[audioCache] cache_download_and_store args:', { ...args, url: typeof url === 'string' ? (url.startsWith('magnet:') ? 'magnet:...' : url) : url }); } catch {}
+    try { frontendLogger.debug('[audioCache] cache_download_and_store args:', { ...args, url: typeof url === 'string' ? (url.startsWith('magnet:') ? 'magnet:...' : url) : url }); } catch {}
 
-    console.log('[audioCache] About to call runTauriCommand with cache_download_and_store');
-    console.log('[audioCache] Final args being sent:', JSON.stringify(args, null, 2));
+    frontendLogger.log('[audioCache] About to call runTauriCommand with cache_download_and_store');
+    frontendLogger.log('[audioCache] Final args being sent:', JSON.stringify(args, null, 2));
     const result: any = await runTauriCommand('cache_download_and_store', args);
-    console.log('[audioCache] runTauriCommand returned:', result);
+    frontendLogger.log('[audioCache] runTauriCommand returned:', result);
     // Backend returns a plain string ("Download started"); also handle wrapper style
     if (typeof result === 'string') return result;
     if (result && typeof result === 'object' && 'success' in result) {
@@ -163,7 +156,7 @@ export async function downloadAndCache(trackId: string, sourceType: string, sour
     }
     return result ?? null;
   } catch (error) {
-    console.error('[cache] Failed to download and cache:', error);
+    frontendLogger.error('[cache] Failed to download and cache:', error);
     return null;
   }
 }
@@ -176,7 +169,7 @@ export async function getCacheStats(): Promise<CacheStats | null> {
     const result = await runTauriCommand('cache_get_stats');
     return result?.success ? result.data : null;
   } catch (error) {
-    console.warn('[cache] Failed to get cache stats:', error);
+    frontendLogger.warn('[cache] Failed to get cache stats:', error);
     return null;
   }
 }
@@ -189,7 +182,7 @@ export async function clearCache(): Promise<boolean> {
     const result = await runTauriCommand('cache_clear');
     return result?.success === true;
   } catch (error) {
-    console.error('[cache] Failed to clear cache:', error);
+    frontendLogger.error('[cache] Failed to clear cache:', error);
     return false;
   }
 }

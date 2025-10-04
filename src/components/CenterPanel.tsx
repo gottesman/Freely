@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { frontendLogger } from '../core/FrontendLogger';
 import HomeTab from './CenterPanel/Home';
 import SongInfoTab from './CenterPanel/SongInfo';
 import AlbumInfoTab from './CenterPanel/AlbumInfo';
@@ -89,7 +90,7 @@ function useIdChangeDetection(
     if (SCROLL_RESET_TABS.includes(tab as any) && 
         ids[tabType] !== currentIds[tabType]) {
       
-      console.log('CenterTabs: id changed for tab', tab, 'resetting scroll');
+      frontendLogger.log('CenterTabs: id changed for tab', tab, 'resetting scroll');
       currentIds[tabType] = ids[tabType];
       scrollReset();
     }
@@ -216,7 +217,7 @@ export default function CenterTabs({
             results={normalizedSearchResults}
             onMoreClick={(id) => {
               // Handle "more" actions for search results
-              console.log('More clicked for track:', id);
+              frontendLogger.log('More clicked for track:', id);
             }}
             // @ts-expect-error - loading prop may be optional
             loading={searchLoading}

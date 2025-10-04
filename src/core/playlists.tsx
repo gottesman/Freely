@@ -1,4 +1,5 @@
-import React, { useCallback, useMemo, useState, useEffect } from 'react';
+import { useCallback, useMemo, useState, useEffect } from 'react';
+import { frontendLogger } from './FrontendLogger';
 import { useDB } from './Database'; // Using the new provider
 
 // Performance constants
@@ -29,7 +30,7 @@ const scheduleSubscriberCall = (fn: () => void) => {
   if (subscriberTimers.has(fn)) return;
   const id = setTimeout(() => {
     subscriberTimers.delete(fn);
-    try { fn(); } catch (err) { console.warn('[playlists-debug] subscriber error', err); }
+    try { fn(); } catch (err) { frontendLogger.warn('[playlists-debug] subscriber error', err); }
   }, SUBSCRIBER_DEBOUNCE_MS) as unknown as number;
   subscriberTimers.set(fn, id);
 };
@@ -39,7 +40,7 @@ const notifyPlaylistSubscribers = () => {
   notifyScheduled = true;
   setTimeout(() => {
     notifyScheduled = false;
-    //try { console.log('[playlists-debug] notify subscribers count=', playlistSubscribers.size); } catch(_) {}
+    //try { frontendLogger.log('[playlists-debug] notify subscribers count=', playlistSubscribers.size); } catch(_) {}
     playlistSubscribers.forEach(fn => scheduleSubscriberCall(fn));
   }, NOTIFICATION_DELAY_MS);
 };
@@ -202,7 +203,7 @@ const refreshShared = async (db: IDBDatabase) => {
 
   inFlightRefresh = (async () => {
     try {
-      //console.log('[playlists-debug] refreshShared() called');
+      //frontendLogger.log('[playlists-debug] refreshShared() called');
       shared.loading = true;
       shared.error = undefined;
 
@@ -221,7 +222,7 @@ const refreshShared = async (db: IDBDatabase) => {
 
     } catch (e: any) {
       shared.error = e?.message || String(e);
-      console.warn('[playlists-debug] refreshShared error', e);
+      frontendLogger.warn('[playlists-debug] refreshShared error', e);
     } finally {
       shared.loading = false;
       inFlightRefresh = null;
@@ -273,7 +274,7 @@ export const usePlaylists = () => {
   ): Promise<number | undefined> => {
     if (!db) return undefined;
     
-    //console.log('[playlists-debug] createPlaylist called name=', name);
+    //frontendLogger.log('[playlists-debug] createPlaylist called name=', name);
     
     // Optimistic update
     const optimisticPlaylist = PlaylistUtils.createOptimisticPlaylist(name, tags, opts);
@@ -290,9 +291,9 @@ export const usePlaylists = () => {
         store => store.add(newPlaylistRecord)
       ) as number;
       
-      //console.log('[playlists-debug] createPlaylist insert complete newId=', newId);
+      //frontendLogger.log('[playlists-debug] createPlaylist insert complete newId=', newId);
     } catch (e) {
-      console.warn('createPlaylist error', e);
+      frontendLogger.warn('createPlaylist error', e);
     } finally {
       await refreshShared(db);
     }
@@ -329,7 +330,7 @@ export const usePlaylists = () => {
       );
       await refreshShared(db);
     } catch (e) {
-      console.warn('updatePlaylist failed', e);
+      frontendLogger.warn('updatePlaylist failed', e);
     }
   }, [db]);
 
@@ -363,7 +364,7 @@ export const usePlaylists = () => {
       );
       await refreshShared(db);
     } catch (e) {
-      console.warn('deletePlaylist failed', e);
+      frontendLogger.warn('deletePlaylist failed', e);
     }
   }, [db]);
 
@@ -394,7 +395,7 @@ export const usePlaylists = () => {
       );
       await refreshShared(db);
     } catch (e) {
-      console.warn('addTracks error:', e);
+      frontendLogger.warn('addTracks error:', e);
       throw e;
     }
   }, [db]);
@@ -440,7 +441,7 @@ export const usePlaylists = () => {
         }
       );
     } catch (e) {
-      console.error('createPlaylistWithTracks error', e);
+      frontendLogger.error('createPlaylistWithTracks error', e);
     } finally {
       await refreshShared(db);
     }
@@ -469,14 +470,14 @@ export const usePlaylists = () => {
               }
               cursor.continue();
             } else {
-              console.warn('removeTrack: track not found in playlist.');
+              frontendLogger.warn('removeTrack: track not found in playlist.');
             }
           };
         }
       );
       await refreshShared(db);
     } catch (e) {
-      console.error('removeTrack failed:', e);
+      frontendLogger.error('removeTrack failed:', e);
       throw e;
     }
   }, [db]);
@@ -502,7 +503,7 @@ export const usePlaylists = () => {
           }
         });
     } catch (e) {
-      console.warn('getPlaylistTracks failed:', e);
+      frontendLogger.warn('getPlaylistTracks failed:', e);
       return [];
     }
   }, [db]);

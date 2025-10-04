@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n';
 import { SpotifyArtist, SpotifyAlbum, SpotifyTrack, SpotifyPlaylist } from '../../core/SpotifyClient';
 import useFollowedArtists from '../../core/Artists';
@@ -373,7 +374,7 @@ function useFollowManagement(artist?: SpotifyArtist) {
         await followArtist(artist);
       }
     } catch (e) {
-      console.warn('follow toggle failed', e);
+      frontendLogger.warn('follow toggle failed', e);
       optimisticUpdateRef.current = null;
       legacyEventHandledRef.current = false;
       setLocalFollowing(currently);

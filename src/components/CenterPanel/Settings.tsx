@@ -1,11 +1,15 @@
 import React, { useState } from 'react'
+import { frontendLogger } from '../../core/FrontendLogger';
 import { useI18n } from '../../core/i18n'
 import { useDB } from '../../core/Database'
 import { usePlaylists } from '../../core/Playlists'
 import { usePrompt } from '../../core/PromptContext'
 import { useAlerts } from '../../core/Alerts'
-import { getAudioDevices, getAudioSettings, setAudioSettings, reinitializeAudio, AudioDevice, AudioSettings, isTauriAvailable, runTauriCommand } from '../../core/TauriCommands'
-import { APPEARANCE_DEFAULTS, hexToHue, unsplash, thumbnailUnsplash } from '../../core/Appearance'
+import { getAudioDevices, getAudioSettings, setAudioSettings, reinitializeAudio, AudioDevice, AudioSettings, isTauriAvailable, runTauriCommand, pluginsList, pluginsSetEnabled, pluginsDelete, pluginsInstallZipFromFile } from '../../core/TauriCommands'
+import { APPEARANCE_DEFAULTS, unsplash, thumbnailUnsplash, setAppearance, getAppearance } from '../../core/Appearance'
+
+// Consistent icon style for buttons (non-delete)
+const ICON_STYLE: React.CSSProperties = { fontSize: 18, lineHeight: '1', verticalAlign: 'middle' };
 
 // Resolve background entry (may be a URL, data:, or a special marker like 'unsplash:ID')
 const resolveBackground = (entry: string | null | undefined) => {
@@ -13,7 +17,7 @@ const resolveBackground = (entry: string | null | undefined) => {
   if (entry.startsWith('unsplash:')) {
     const parts = entry.split(':');
     const id = parts.slice(1).join(':');
-    return unsplash({id});
+    return unsplash({ id });
   }
   return entry;
 };
@@ -38,7 +42,7 @@ const mainPreviewFor = (entry: string | null | undefined) => {
   return entry;
 };
 
-export default function Settings(){
+export default function Settings() {
   const { exportJSON, importJSON, clearCache, clearLocalData, getSetting, setSetting } = useDB()
   const [accent, setAccent] = useState(APPEARANCE_DEFAULTS.accent)
   const [textColor, setTextColor] = useState(APPEARANCE_DEFAULTS.textColor)
@@ -48,12 +52,11 @@ export default function Settings(){
   // Background appearance settings
   // Use backgrounds from APPEARANCE_DEFAULTS
   const [bgCarouselIndex, setBgCarouselIndex] = useState<number>(APPEARANCE_DEFAULTS.bgImageIndex as number);
-    // Store the resolved URL (resolve 'unsplash:ID' markers to real URLs)
-    const [bgImage, setBgImage] = useState<string>(resolveBackground(APPEARANCE_DEFAULTS.backgrounds[APPEARANCE_DEFAULTS.bgImageIndex as number]));
+  // Store the resolved URL (resolve 'unsplash:ID' markers to real URLs)
+  const [bgImage, setBgImage] = useState<string>(resolveBackground(APPEARANCE_DEFAULTS.backgrounds[APPEARANCE_DEFAULTS.bgImageIndex as number]));
   const [bgCustomUrl, setBgCustomUrl] = useState<string>(APPEARANCE_DEFAULTS.bgCustomUrl);
   const [bgBlur, setBgBlur] = useState<boolean>(APPEARANCE_DEFAULTS.bgBlur);
   const [bgBlurAmount, setBgBlurAmount] = useState<number>(APPEARANCE_DEFAULTS.bgBlurAmount);
-  const [bgAnimate, setBgAnimate] = useState<boolean>(APPEARANCE_DEFAULTS.bgAnimate);
   const [bgOverlayColor, setBgOverlayColor] = useState<string>(APPEARANCE_DEFAULTS.bgOverlayColor);
   const [bgOverlayOpacity, setBgOverlayOpacity] = useState<number>(APPEARANCE_DEFAULTS.bgOverlayOpacity);
   // Shadow (app background RGB triplet via --bg)
@@ -66,17 +69,14 @@ export default function Settings(){
   const { push: pushAlert } = useAlerts();
 
   // Helper to apply background CSS variables to the .bg element
-  const applyBackgroundVars = React.useCallback((imageUrl: string, blurAmount: number, animate: boolean, overlayColor?: string, overlayOpacity?: number) => {
+  const applyBackgroundVars = React.useCallback((imageUrl: string, blurAmount: number, overlayColor?: string, overlayOpacity?: number) => {
     // Try to apply to the .bg element. If it's not present yet, retry a few times with a short delay.
     const doApply = (attemptsLeft: number) => {
       try {
         const bgEl = document.querySelector('.bg') as HTMLElement | null;
         // Prepare computed values and defaults so we can apply them to :root as fallback
-  const url = imageUrl?.trim() ? `url('${imageUrl}')` : `url('${resolveBackground(APPEARANCE_DEFAULTS.backgrounds[0])}')`;
-  const filter = blurAmount > 0 ? `blur(${blurAmount}px)` : 'none';
-        const animation = animate ? 'rotate 40s linear infinite' : 'none';
-        const size = animate ? '200%' : '100%';
-        const radius = animate ? '100em' : '0';
+        const url = imageUrl?.trim() ? `url('${imageUrl}')` : `url('${resolveBackground(APPEARANCE_DEFAULTS.backgrounds[0])}')`;
+        const filter = blurAmount > 0 ? `blur(${blurAmount}px)` : 'none';
 
         // Apply to :root as a fallback for early startup when .bg may not exist
         try {
@@ -84,19 +84,16 @@ export default function Settings(){
           if (root) {
             root.style.setProperty('--bg-image', url);
             root.style.setProperty('--bg-filter', filter);
-            root.style.setProperty('--bg-animation', animation);
-            root.style.setProperty('--bg-size', size);
-            root.style.setProperty('--bg-radius', radius);
             if (overlayColor !== undefined && overlayOpacity !== undefined) {
               const a = Math.max(0, Math.min(1, overlayOpacity));
-              const hex = overlayColor.replace('#','');
-              const r = parseInt(hex.substring(0,2), 16) || 0;
-              const g = parseInt(hex.substring(2,4), 16) || 0;
-              const b = parseInt(hex.substring(4,6), 16) || 0;
+              const hex = overlayColor.replace('#', '');
+              const r = parseInt(hex.substring(0, 2), 16) || 0;
+              const g = parseInt(hex.substring(2, 4), 16) || 0;
+              const b = parseInt(hex.substring(4, 6), 16) || 0;
               root.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
             }
           }
-        } catch (_) {}
+        } catch (_) { }
 
         if (!bgEl) {
           if (attemptsLeft > 0) {
@@ -104,18 +101,15 @@ export default function Settings(){
           }
           return;
         }
-  bgEl.style.setProperty('--bg-image', url);
-  bgEl.style.setProperty('--bg-filter', filter);
-  bgEl.style.setProperty('--bg-animation', animation);
-  bgEl.style.setProperty('--bg-size', size);
-  bgEl.style.setProperty('--bg-radius', radius);
+        bgEl.style.setProperty('--bg-image', url);
+        bgEl.style.setProperty('--bg-filter', filter);
         if (overlayColor !== undefined && overlayOpacity !== undefined) {
           const a = Math.max(0, Math.min(1, overlayOpacity));
           // Convert hex to rgba
-          const hex = overlayColor.replace('#','');
-          const r = parseInt(hex.substring(0,2), 16) || 0;
-          const g = parseInt(hex.substring(2,4), 16) || 0;
-          const b = parseInt(hex.substring(4,6), 16) || 0;
+          const hex = overlayColor.replace('#', '');
+          const r = parseInt(hex.substring(0, 2), 16) || 0;
+          const g = parseInt(hex.substring(2, 4), 16) || 0;
+          const b = parseInt(hex.substring(4, 6), 16) || 0;
           bgEl.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
         }
       } catch (_) { /* ignore */ }
@@ -123,201 +117,162 @@ export default function Settings(){
     doApply(6); // try for ~300ms total
   }, [APPEARANCE_DEFAULTS.backgrounds]);
 
-  React.useEffect(()=>{
+  React.useEffect(() => {
     let mounted = true
-    ;(async ()=>{
-      try{
-        const a = await getSetting('ui.accent')
-        if(a && mounted){
-          setAccent(a);
-          document.documentElement.style.setProperty('--accent', a);
-          // Derive and set --accent-rgb from hex for components that use the RGB triplet
-          try {
-            const h = a.replace('#','');
-            const r = parseInt(h.substring(0,2),16) || 0;
-            const g = parseInt(h.substring(2,4),16) || 0;
-            const b = parseInt(h.substring(4,6),16) || 0;
-            document.documentElement.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
-          } catch {}
-          const hue = hexToHue(a);
-          document.documentElement.style.setProperty('--accent-hue', String(hue));
-        }
-      }catch{}
-      // Load text colors
-      try{
-        const [txt, txtDark] = await Promise.all([
-          getSetting('ui.text'),
-          getSetting('ui.textDark')
-        ]);
-        if (!mounted) return;
-        if (txt) { setTextColor(txt); document.documentElement.style.setProperty('--text', txt); }
-        if (txtDark) { setTextDarkColor(txtDark); document.documentElement.style.setProperty('--text-dark', txtDark); }
-        if (txtDark) {
-          const hueDark = hexToHue(txtDark);
-          document.documentElement.style.setProperty('--text-dark-hue', String(hueDark));
-        }
-      }catch{}
-      // Load Shadow (app background rgb triplet)
-      try {
-        const storedRgb = await getSetting('ui.bg.rgb');
-        if (!mounted) return;
-        const toHex = (rgbStr: string) => {
-          try{
-            const parts = rgbStr.split(',').map(s=>parseInt(s.trim(),10));
-            const [r,g,b] = [parts[0]||0, parts[1]||0, parts[2]||0];
-            const hex = `#${[r,g,b].map(v => v.toString(16).padStart(2,'0')).join('')}`;
-            return hex;
-          }catch{ return '#0f1724'; }
-        };
-        if (storedRgb) {
-          document.documentElement.style.setProperty('--bg', storedRgb);
-          setShadowHex(toHex(storedRgb));
-        } else {
-          // Default from variables.css: 15, 23, 36
-          document.documentElement.style.setProperty('--bg', '15, 23, 36');
-          setShadowHex('#0f1724');
-        }
-      } catch {}
+      ; (async () => {
+        try {
+          const a = await getSetting('ui.accent')
+          if (a && mounted) {
+            setAccent(a);
+            setAppearance({ accent: a });
+          }
+        } catch { }
+        // Load text colors
+        try {
+          const [txt, txtDark] = await Promise.all([
+            getSetting('ui.text'),
+            getSetting('ui.textDark')
+          ]);
+          if (!mounted) return;
+          if (txt) { setTextColor(txt); setAppearance({ text: txt }); }
+          if (txtDark) { setTextDarkColor(txtDark); setAppearance({ textDark: txtDark }); }
+        } catch { }
+        // Load Shadow (app background rgb triplet)
+        try {
+          const storedRgb = await getSetting('ui.bg.rgb');
+          if (!mounted) return;
+          const toHex = (rgbStr: string) => {
+            try {
+              const parts = rgbStr.split(',').map(s => parseInt(s.trim(), 10));
+              const [r, g, b] = [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+              const hex = `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+              return hex;
+            } catch { return '#0f1724'; }
+          };
+          if (storedRgb) { setShadowHex(toHex(storedRgb)); setAppearance({ bgRgb: storedRgb }); }
+          else { setShadowHex('#0f1724'); setAppearance({ bgRgb: '15, 23, 36' }); }
+        } catch { }
 
-      // Load background appearance settings
-      try {
-        const [storedImage, storedBlur, storedBlurAmount, storedAnimate, storedOverlay, storedOverlayOpacity] = await Promise.all([
-          getSetting('ui.bg.image'),
-          getSetting('ui.bg.blur'),
-          getSetting('ui.bg.blurAmount'),
-          getSetting('ui.bg.animate'),
-          getSetting('ui.bg.overlayColor'),
-          getSetting('ui.bg.overlayOpacity')
-        ]);
-        if (!mounted) return;
-  const image = storedImage || resolveBackground(APPEARANCE_DEFAULTS.backgrounds[0]);
-  setBgImage(image);
-  const idx = APPEARANCE_DEFAULTS.backgrounds.findIndex(entry => resolveBackground(entry) === image);
-        setBgCarouselIndex(idx >= 0 ? idx : 0);
-        // If the image is not a default background and not a data URL, show it in the custom URL input
-        if (idx < 0 && !image.startsWith('data:')) {
-          setBgCustomUrl(image);
-        }
-  // Treat missing or empty storedBlur as enabled by default
-  const blur = (storedBlur === null || storedBlur === undefined || storedBlur === '') ? '1' : storedBlur;
-        const animate = storedAnimate === null || storedAnimate === undefined ? '1' : storedAnimate;
-        const blurBool = blur === '1' || blur === 'true';
-        const animateBool = animate === '1' || animate === 'true';
-        setBgBlur(blurBool);
-        setBgAnimate(animateBool);
-        const blurAmount = storedBlurAmount != null ? Math.max(0, Math.min(200, Number(storedBlurAmount))) : 200;
-        setBgBlurAmount(blurAmount);
-  const overlayColor = storedOverlay || APPEARANCE_DEFAULTS.bgOverlayColor;
-  const overlayOpacity = storedOverlayOpacity != null ? Number(storedOverlayOpacity) : APPEARANCE_DEFAULTS.bgOverlayOpacity;
-        setBgOverlayColor(overlayColor);
-        setBgOverlayOpacity(overlayOpacity);
-        applyBackgroundVars(image, blurBool ? blurAmount : 0, animateBool, overlayColor, overlayOpacity);
-      } catch (_) { /* ignore */ }
-      
-      // Load audio settings
-      try {
-        // First get devices (this initializes BASS)
-        const devicesResult = await getAudioDevices()
-        const devices = devicesResult.devices || []
-        setAudioDevices(devices)
+        // Load background appearance settings
+        try {
+          const [storedImage, storedBlur, storedBlurAmount, storedOverlay, storedOverlayOpacity] = await Promise.all([
+            getSetting('ui.bg.image'),
+            getSetting('ui.bg.blur'),
+            getSetting('ui.bg.blurAmount'),
+            getSetting('ui.bg.overlayColor'),
+            getSetting('ui.bg.overlayOpacity')
+          ]);
+          if (!mounted) return;
+          const image = storedImage || resolveBackground(APPEARANCE_DEFAULTS.backgrounds[0]);
+          setBgImage(image);
+          const idx = APPEARANCE_DEFAULTS.backgrounds.findIndex(entry => resolveBackground(entry) === image);
+          setBgCarouselIndex(idx >= 0 ? idx : 0);
+          // If the image is not a default background and not a data URL, show it in the custom URL input
+          if (idx < 0 && !image.startsWith('data:')) {
+            setBgCustomUrl(image);
+          }
+          // Treat missing or empty storedBlur as enabled by default
+          const blur = (storedBlur === null || storedBlur === undefined || storedBlur === '') ? '1' : storedBlur;
+          const blurBool = blur === '1' || blur === 'true';
+          setBgBlur(blurBool);
+          const blurAmount = storedBlurAmount != null ? Math.max(0, Math.min(200, Number(storedBlurAmount))) : 200;
+          setBgBlurAmount(blurAmount);
+          const overlayColor = storedOverlay || APPEARANCE_DEFAULTS.bgOverlayColor;
+          const overlayOpacity = storedOverlayOpacity != null ? Number(storedOverlayOpacity) : APPEARANCE_DEFAULTS.bgOverlayOpacity;
+          setBgOverlayColor(overlayColor);
+          setBgOverlayOpacity(overlayOpacity);
+          setAppearance({
+            bgImage: image,
+            blur: blurBool,
+            blurAmount: blurAmount,
+            overlayColor: overlayColor,
+            overlayOpacity: overlayOpacity
+          });
+        } catch (_) { /* ignore */ }
 
-        // Then get settings (now that BASS is initialized)
-        const settingsResult = await getAudioSettings()
-        
-        if (mounted) {
-          // If no device is set in settings, select the default device
-          let settings = settingsResult.settings
-          if (settings.device === undefined || settings.device === null || settings.device === -1) {
-            const defaultDevice = devices.find(device => device.is_default)
-            if (defaultDevice) {
-              settings = { ...settings, device: defaultDevice.id }
-              // Update the backend with the default device selection
-              try {
-                await setAudioSettings({ device: defaultDevice.id })
-              } catch (error) {
-                console.error('Failed to set default device:', error)
+        // Load audio settings
+        try {
+          // First get devices (this initializes BASS)
+          const devicesResult = await getAudioDevices()
+          const devices = devicesResult.devices || []
+          setAudioDevices(devices)
+
+          // Then get settings (now that BASS is initialized)
+          const settingsResult = await getAudioSettings()
+
+          if (mounted) {
+            // If no device is set in settings, select the default device
+            let settings = settingsResult.settings
+            if (settings.device === undefined || settings.device === null || settings.device === -1) {
+              const defaultDevice = devices.find(device => device.is_default)
+              if (defaultDevice) {
+                settings = { ...settings, device: defaultDevice.id }
+                // Update the backend with the default device selection
+                try {
+                  // Preserve current sample_rate to avoid falling back to 44100 during reinit
+                  await setAudioSettings({ device: defaultDevice.id, sample_rate: settings.sample_rate })
+                } catch (error) {
+                  frontendLogger.error('Failed to set default device:', error)
+                }
               }
             }
+            setAudioSettingsState(settings)
           }
-          setAudioSettingsState(settings)
+        } catch (error) {
+          frontendLogger.error('Failed to load audio settings:', error)
         }
-      } catch (error) {
-        console.error('Failed to load audio settings:', error)
-      }
-    })()
-  return ()=>{ mounted=false }
-  },[])
+      })()
+    return () => { mounted = false }
+  }, [])
 
-  async function saveAccent(){
-    document.documentElement.style.setProperty('--accent', accent)
-    try{
-      // Derive and persist RGB triplet alongside hex
-      const h = accent.replace('#','');
-      const r = parseInt(h.substring(0,2),16) || 0;
-      const g = parseInt(h.substring(2,4),16) || 0;
-      const b = parseInt(h.substring(4,6),16) || 0;
-      const triplet = `${r}, ${g}, ${b}`;
-      document.documentElement.style.setProperty('--accent-rgb', triplet);
-      await setSetting('ui.accent.rgb', triplet);
-    }catch{}
-    try{ await setSetting('ui.accent', accent) }catch{}
+  async function saveAccent() {
+  setAppearance({ accent });
+  try { const triplet = getAppearance().accentRgb; await setSetting('ui.accent.rgb', triplet); } catch { }
+    try { await setSetting('ui.accent', accent) } catch { }
   }
 
   // Apply on change (no Save button)
   const onAccentChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = e.target.value;
     setAccent(val);
-    document.documentElement.style.setProperty('--accent', val);
-    // Compute and persist RGB triplet for --accent-rgb
-    try {
-      const h = val.replace('#','');
-      const r = parseInt(h.substring(0,2),16) || 0;
-      const g = parseInt(h.substring(2,4),16) || 0;
-      const b = parseInt(h.substring(4,6),16) || 0;
-      const triplet = `${r}, ${g}, ${b}`;
-      document.documentElement.style.setProperty('--accent-rgb', triplet);
-      setSetting('ui.accent.rgb', triplet).catch(() => {});
-    } catch {}
-    const hue = hexToHue(val);
-    document.documentElement.style.setProperty('--accent-hue', String(hue));
-    setSetting('ui.accent', val).catch(() => {});
+  setAppearance({ accent: val });
+  try { const triplet = getAppearance().accentRgb; setSetting('ui.accent.rgb', triplet).catch(() => {}); } catch {}
+    setSetting('ui.accent', val).catch(() => { });
   };
 
   const onTextColorChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = e.target.value;
     setTextColor(val);
-    document.documentElement.style.setProperty('--text', val);
-    setSetting('ui.text', val).catch(() => {});
+  setAppearance({ text: val });
+    setSetting('ui.text', val).catch(() => { });
   };
 
   const onTextDarkColorChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = e.target.value;
     setTextDarkColor(val);
-    document.documentElement.style.setProperty('--text-dark', val);
-    setSetting('ui.textDark', val).catch(() => {});
-    const hue = hexToHue(val);
-    document.documentElement.style.setProperty('--text-dark-hue', String(hue));
+  setAppearance({ textDark: val });
+    setSetting('ui.textDark', val).catch(() => { });
   };
 
   // Background setting handlers
   const onCycleBackground = (dir: -1 | 1) => {
-  const len = APPEARANCE_DEFAULTS.backgrounds.length;
+    const len = APPEARANCE_DEFAULTS.backgrounds.length;
     const next = (bgCarouselIndex + dir + len) % len;
     setBgCarouselIndex(next);
-  const entry = APPEARANCE_DEFAULTS.backgrounds[next];
-  const url = resolveBackground(entry);
+    const entry = APPEARANCE_DEFAULTS.backgrounds[next];
+    const url = resolveBackground(entry);
     setBgImage(url);
-  applyBackgroundVars(url, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
-    setSetting('ui.bg.image', url).catch(() => {});
+  setAppearance({ bgImage: url });
+    setSetting('ui.bg.image', url).catch(() => { });
   };
 
   const onApplyCustomUrl = () => {
     const url = bgCustomUrl.trim();
     if (!url) return;
     setBgImage(url);
-  applyBackgroundVars(url, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
-    setSetting('ui.bg.image', url).catch(() => {});
-    pushAlert(t('settings.background.applied', 'Background updated'), 'info');
+  setAppearance({ bgImage: url });
+    setSetting('ui.bg.image', url).catch(() => { });
+  pushAlert(t('settings.background.applied'), 'info');
   };
 
   const onSelectCustomFile: React.ChangeEventHandler<HTMLInputElement> = async (e) => {
@@ -325,7 +280,7 @@ export default function Settings(){
       const file = e.target.files?.[0];
       if (!file) return;
       if (!file.type.startsWith('image/')) {
-  pushAlert(t('settings.background.fileInvalid', 'Please select an image file'), 'warn');
+        pushAlert(t('settings.background.fileInvalid'), 'warn');
         return;
       }
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -335,112 +290,105 @@ export default function Settings(){
         reader.readAsDataURL(file);
       });
       setBgImage(dataUrl);
-  applyBackgroundVars(dataUrl, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
-      setSetting('ui.bg.image', dataUrl).catch(() => {});
+  setAppearance({ bgImage: dataUrl });
+      setSetting('ui.bg.image', dataUrl).catch(() => { });
       setBgCustomUrl('');
       setBgCarouselIndex(0);
-      pushAlert(t('settings.background.applied', 'Background updated'), 'info');
+  pushAlert(t('settings.background.applied'), 'info');
     } catch (err) {
-      console.error('Failed to set custom background:', err);
-      pushAlert(t('settings.background.applyFailed', 'Failed to set background'), 'error');
+      frontendLogger.error('Failed to set custom background:', err);
+  pushAlert(t('settings.background.applyFailed'), 'error');
     } finally {
-      try { (e.target as HTMLInputElement).value = ''; } catch {}
+      try { (e.target as HTMLInputElement).value = ''; } catch { }
     }
   };
 
   const onToggleBlur: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = e.target.checked;
     setBgBlur(val);
-  applyBackgroundVars(bgImage, val ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
-    setSetting('ui.bg.blur', val ? '1' : '0').catch(() => {});
-  };
-
-  const onToggleAnimate: React.ChangeEventHandler<HTMLInputElement> = (e) => {
-    const val = e.target.checked;
-    setBgAnimate(val);
-    applyBackgroundVars(bgImage, bgBlur ? bgBlurAmount : 0, val, bgOverlayColor, bgOverlayOpacity);
-    setSetting('ui.bg.animate', val ? '1' : '0').catch(() => {});
+    setAppearance({ bgImage, blur: val });
+    setSetting('ui.bg.blur', val ? '1' : '0').catch(() => { });
   };
 
   const onOverlayColorChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = e.target.value;
     setBgOverlayColor(val);
-    applyBackgroundVars(bgImage, bgBlur ? bgBlurAmount : 0, bgAnimate, val, bgOverlayOpacity);
-    setSetting('ui.bg.overlayColor', val).catch(() => {});
+    setAppearance({ bgImage, overlayColor: val });
+    setSetting('ui.bg.overlayColor', val).catch(() => { });
   };
 
   const onBlurAmountChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = Math.max(0, Math.min(200, Number(e.target.value)));
     setBgBlurAmount(val);
-    applyBackgroundVars(bgImage, bgBlur ? val : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
-    setSetting('ui.bg.blurAmount', String(val)).catch(() => {});
+    setAppearance({ bgImage, blurAmount: val });
+    setSetting('ui.bg.blurAmount', String(val)).catch(() => { });
   };
 
   const onOverlayOpacityChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const val = Math.max(0, Math.min(1, Number(e.target.value)));
     setBgOverlayOpacity(val);
-    applyBackgroundVars(bgImage, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, val);
-    setSetting('ui.bg.overlayOpacity', String(val)).catch(() => {});
+    setAppearance({ bgImage, overlayOpacity: val });
+    setSetting('ui.bg.overlayOpacity', String(val)).catch(() => { });
   };
 
   // Shadow color change handler (hex -> "r, g, b")
   const onShadowHexChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const hex = e.target.value || '#000000';
     setShadowHex(hex);
-    try{
-      const h = hex.replace('#','');
-      const r = parseInt(h.substring(0,2),16) || 0;
-      const g = parseInt(h.substring(2,4),16) || 0;
-      const b = parseInt(h.substring(4,6),16) || 0;
+    try {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0, 2), 16) || 0;
+      const g = parseInt(h.substring(2, 4), 16) || 0;
+      const b = parseInt(h.substring(4, 6), 16) || 0;
       const triplet = `${r}, ${g}, ${b}`;
-      document.documentElement.style.setProperty('--bg', triplet);
-      setSetting('ui.bg.rgb', triplet).catch(()=>{});
-    }catch{}
+    setAppearance({ bgRgb: triplet });
+      setSetting('ui.bg.rgb', triplet).catch(() => { });
+    } catch { }
   };
 
-  async function onExport(){
+  async function onExport() {
     try {
       const j = await exportJSON()
-      
+
       // If running inside Tauri, call the backend command to show a save dialog and write the file
       if (isTauriAvailable() && runTauriCommand) {
         try {
-          const result = await runTauriCommand('save_file_and_write', { 
-            default_file_name: 'freely-export.json', 
-            contents: j 
+          const result = await runTauriCommand('save_file_and_write', {
+            default_file_name: 'freely-export.json',
+            contents: j
           });
           // runTauriCommand returns false if Tauri unavailable, an error object on failure, or the result
           if (result && typeof result === 'object' && 'error' in result) {
             throw new Error((result as any).message || 'Failed to save');
           }
           // Successful or cancelled (null/false) — show exported message
-          pushAlert(t('settings.exported', 'Settings exported'), 'info');
+          pushAlert(t('settings.exported'), 'info');
         } catch (err) {
-          console.warn('Tauri save_file_and_write failed, falling back to browser download', err);
+          frontendLogger.warn('Tauri save_file_and_write failed, falling back to browser download', err);
           // Fallback to browser download
           const blob = new Blob([j], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
-          a.href = url; 
-          a.download = 'freely-export.json'; 
+          a.href = url;
+          a.download = 'freely-export.json';
           a.click();
           URL.revokeObjectURL(url);
-          pushAlert(t('settings.exported', 'Settings exported'), 'info');
+          pushAlert(t('settings.exported'), 'info');
         }
       } else {
         // Browser fallback
         const blob = new Blob([j], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; 
-        a.download = 'freely-export.json'; 
+        a.href = url;
+        a.download = 'freely-export.json';
         a.click();
         URL.revokeObjectURL(url);
-        pushAlert(t('settings.exported', 'Settings exported'), 'info');
+  pushAlert(t('settings.exported'), 'info');
       }
     } catch (e) {
-      console.error('Failed to export settings:', e);
-      pushAlert(t('settings.exportFailed', 'Failed to export settings'), 'error');
+  frontendLogger.error('Failed to export settings:', e);
+  pushAlert(t('settings.exportFailed'), 'error');
     }
   }
 
@@ -457,7 +405,6 @@ export default function Settings(){
         shadowHex,
         bgBlur,
         bgBlurAmount,
-        bgAnimate,
         bgOverlayColor,
         bgOverlayOpacity
       };
@@ -484,9 +431,9 @@ export default function Settings(){
             throw new Error((result as any).message || 'Failed to save');
           }
           // Successful or cancelled (null/false) — show exported message
-          pushAlert(t('settings.appearance.exported', 'Appearance exported'), 'info');
+          pushAlert(t('settings.appearance.exported'), 'info');
         } catch (err) {
-          console.warn('Tauri save_file_and_write failed, falling back to browser download', err);
+          frontendLogger.warn('Tauri save_file_and_write failed, falling back to browser download', err);
           const blob = new Blob([data], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -494,7 +441,7 @@ export default function Settings(){
           a.download = 'freely-appearance.json';
           a.click();
           URL.revokeObjectURL(url);
-          pushAlert(t('settings.appearance.exported', 'Appearance exported'), 'info');
+          pushAlert(t('settings.appearance.exported'), 'info');
         }
       } else {
         const blob = new Blob([data], { type: 'application/json' });
@@ -503,12 +450,12 @@ export default function Settings(){
         a.href = url;
         a.download = 'freely-appearance.json';
         a.click();
-        URL.revokeObjectURL(url);
-        pushAlert(t('settings.appearance.exported', 'Appearance exported'), 'info');
+  URL.revokeObjectURL(url);
+  pushAlert(t('settings.appearance.exported'), 'info');
       }
     } catch (e) {
-      console.error('Failed to export appearance:', e);
-      pushAlert(t('settings.appearance.exportFailed', 'Failed to export appearance'), 'error');
+  frontendLogger.error('Failed to export appearance:', e);
+  pushAlert(t('settings.appearance.exportFailed'), 'error');
     }
   }
 
@@ -520,16 +467,15 @@ export default function Settings(){
       const parsed = JSON.parse(s);
 
       // Apply settings if present
-      if (parsed.accent) { setAccent(parsed.accent); document.documentElement.style.setProperty('--accent', parsed.accent); setSetting('ui.accent', parsed.accent).catch(()=>{}); }
-      if (parsed.textColor) { setTextColor(parsed.textColor); document.documentElement.style.setProperty('--text', parsed.textColor); setSetting('ui.text', parsed.textColor).catch(()=>{}); }
-      if (parsed.textDarkColor) { setTextDarkColor(parsed.textDarkColor); document.documentElement.style.setProperty('--text-dark', parsed.textDarkColor); setSetting('ui.textDark', parsed.textDarkColor).catch(()=>{}); }
-      if (parsed.shadowHex) { setShadowHex(parsed.shadowHex); try{ const h = parsed.shadowHex.replace('#',''); const r = parseInt(h.substring(0,2),16)||0; const g = parseInt(h.substring(2,4),16)||0; const b = parseInt(h.substring(4,6),16)||0; const triplet = `${r}, ${g}, ${b}`; document.documentElement.style.setProperty('--bg', triplet); setSetting('ui.bg.rgb', triplet).catch(()=>{}); }catch{} }
+      if (parsed.accent) { setAccent(parsed.accent); document.documentElement.style.setProperty('--accent', parsed.accent); setSetting('ui.accent', parsed.accent).catch(() => { }); }
+      if (parsed.textColor) { setTextColor(parsed.textColor); document.documentElement.style.setProperty('--text', parsed.textColor); setSetting('ui.text', parsed.textColor).catch(() => { }); }
+      if (parsed.textDarkColor) { setTextDarkColor(parsed.textDarkColor); document.documentElement.style.setProperty('--text-dark', parsed.textDarkColor); setSetting('ui.textDark', parsed.textDarkColor).catch(() => { }); }
+      if (parsed.shadowHex) { setShadowHex(parsed.shadowHex); try { const h = parsed.shadowHex.replace('#', ''); const r = parseInt(h.substring(0, 2), 16) || 0; const g = parseInt(h.substring(2, 4), 16) || 0; const b = parseInt(h.substring(4, 6), 16) || 0; const triplet = `${r}, ${g}, ${b}`; document.documentElement.style.setProperty('--bg', triplet); setSetting('ui.bg.rgb', triplet).catch(() => { }); } catch { } }
 
       // Collect the new values for background application
       let newBgImage = bgImage;
       let newBgBlur = bgBlur;
       let newBgBlurAmount = bgBlurAmount;
-      let newBgAnimate = bgAnimate;
       let newOverlayColor = bgOverlayColor;
       let newOverlayOpacity = bgOverlayOpacity;
 
@@ -537,149 +483,144 @@ export default function Settings(){
       if (parsed.bgImageBase64) {
         newBgImage = parsed.bgImageBase64;
         setBgImage(parsed.bgImageBase64);
-        setSetting('ui.bg.image', parsed.bgImageBase64).catch(()=>{});
+        setSetting('ui.bg.image', parsed.bgImageBase64).catch(() => { });
       } else if (parsed.bgImageUrl || parsed.bgImage) {
         const img = parsed.bgImageUrl || parsed.bgImage;
         newBgImage = img;
         setBgImage(img);
-        setSetting('ui.bg.image', img).catch(()=>{});
+        setSetting('ui.bg.image', img).catch(() => { });
       }
 
       if (parsed.bgCustomUrl !== undefined) setBgCustomUrl(parsed.bgCustomUrl);
-      if (parsed.bgBlur !== undefined) { 
-        newBgBlur = Boolean(parsed.bgBlur); 
-        setBgBlur(Boolean(parsed.bgBlur)); 
-        setSetting('ui.bg.blur', parsed.bgBlur ? '1' : '0').catch(()=>{}); 
+      if (parsed.bgBlur !== undefined) {
+        newBgBlur = Boolean(parsed.bgBlur);
+        setBgBlur(Boolean(parsed.bgBlur));
+        setSetting('ui.bg.blur', parsed.bgBlur ? '1' : '0').catch(() => { });
       }
-      if (parsed.bgBlurAmount !== undefined) { 
-        newBgBlurAmount = Number(parsed.bgBlurAmount); 
-        setBgBlurAmount(Number(parsed.bgBlurAmount)); 
-        setSetting('ui.bg.blurAmount', String(parsed.bgBlurAmount)).catch(()=>{}); 
+      if (parsed.bgBlurAmount !== undefined) {
+        newBgBlurAmount = Number(parsed.bgBlurAmount);
+        setBgBlurAmount(Number(parsed.bgBlurAmount));
+        setSetting('ui.bg.blurAmount', String(parsed.bgBlurAmount)).catch(() => { });
       }
-      if (parsed.bgAnimate !== undefined) { 
-        newBgAnimate = Boolean(parsed.bgAnimate); 
-        setBgAnimate(Boolean(parsed.bgAnimate)); 
-        setSetting('ui.bg.animate', parsed.bgAnimate ? '1' : '0').catch(()=>{}); 
+      if (parsed.bgOverlayColor) {
+        newOverlayColor = parsed.bgOverlayColor;
+        setBgOverlayColor(parsed.bgOverlayColor);
+        setSetting('ui.bg.overlayColor', parsed.bgOverlayColor).catch(() => { });
       }
-      if (parsed.bgOverlayColor) { 
-        newOverlayColor = parsed.bgOverlayColor; 
-        setBgOverlayColor(parsed.bgOverlayColor); 
-        setSetting('ui.bg.overlayColor', parsed.bgOverlayColor).catch(()=>{}); 
-      }
-      if (parsed.bgOverlayOpacity !== undefined) { 
-        newOverlayOpacity = Number(parsed.bgOverlayOpacity); 
-        setBgOverlayOpacity(Number(parsed.bgOverlayOpacity)); 
-        setSetting('ui.bg.overlayOpacity', String(parsed.bgOverlayOpacity)).catch(()=>{}); 
+      if (parsed.bgOverlayOpacity !== undefined) {
+        newOverlayOpacity = Number(parsed.bgOverlayOpacity);
+        setBgOverlayOpacity(Number(parsed.bgOverlayOpacity));
+        setSetting('ui.bg.overlayOpacity', String(parsed.bgOverlayOpacity)).catch(() => { });
       }
 
       // Apply all background variables with the updated settings
-      applyBackgroundVars(newBgImage, newBgBlur ? newBgBlurAmount : 0, newBgAnimate, newOverlayColor, newOverlayOpacity);
+      applyBackgroundVars(newBgImage, newBgBlur ? newBgBlurAmount : 0, newOverlayColor, newOverlayOpacity);
 
-      pushAlert(t('settings.appearance.imported', 'Appearance imported'), 'info');
+  pushAlert(t('settings.appearance.imported'), 'info');
     } catch (err) {
-      console.error('Failed to import appearance:', err);
-      pushAlert(t('settings.appearance.importFailed', 'Failed to import appearance'), 'error');
+  frontendLogger.error('Failed to import appearance:', err);
+  pushAlert(t('settings.appearance.importFailed'), 'error');
     } finally {
-      try { (e.target as HTMLInputElement).value = ''; } catch {}
+      try { (e.target as HTMLInputElement).value = ''; } catch { }
     }
   }
 
-  async function onImportUpload(e:React.ChangeEvent<HTMLInputElement>){
+  async function onImportUpload(e: React.ChangeEvent<HTMLInputElement>) {
     try {
-      const f = e.target.files?.[0]; 
+      const f = e.target.files?.[0];
       if (!f) return;
-      
+
       setImportFileName(f.name);
-      
+
       // Validate file type
       if (!f.name.toLowerCase().endsWith('.json')) {
-        pushAlert(t('settings.import.invalidFile', 'Please select a valid JSON file'), 'warn');
+        pushAlert(t('settings.import.invalidFile'), 'warn');
         return;
       }
-      
+
       const s = await f.text();
-      
+
       // Validate JSON format
       try {
         JSON.parse(s);
       } catch (parseErr) {
-        pushAlert(t('settings.import.invalidJSON', 'Invalid JSON file format'), 'error');
+        pushAlert(t('settings.import.invalidJSON'), 'error');
         return;
       }
-      
-      // Import the settings
-      await importJSON(s);
-      pushAlert(t('settings.imported', 'Settings imported successfully'), 'info');
-      
+
+  // Import the settings
+  await importJSON(s);
+  pushAlert(t('settings.imported'), 'info');
+
       // Trigger a page refresh to apply imported settings
-      try { 
-        window.dispatchEvent(new CustomEvent('freely:settingsImported')); 
-      } catch(_) {}
-      
+      try {
+        window.dispatchEvent(new CustomEvent('freely:settingsImported'));
+      } catch (_) { }
+
     } catch (error) {
-      console.error('Failed to import settings:', error);
-      pushAlert(t('settings.importFailed', 'Failed to import settings'), 'error');
+  frontendLogger.error('Failed to import settings:', error);
+  pushAlert(t('settings.importFailed'), 'error');
     } finally {
       // Clear the file input
-      try { 
-        (e.target as HTMLInputElement).value = ''; 
+      try {
+        (e.target as HTMLInputElement).value = '';
         setImportFileName('');
-      } catch {}
+      } catch { }
     }
   }
 
   async function onClearCache() {
     const ok = await prompt.confirm(t('settings.data.confirm'));
-    if(!ok) return;
-    try { await clearCache(); pushAlert(t('settings.data.cache.cleared'), 'info'); }
-    catch (error) { console.error('Failed to clear cache:', error); pushAlert('Failed to clear cache. Check console for details.', 'error'); }
+    if (!ok) return;
+  try { await clearCache(); pushAlert(t('settings.data.cache.cleared'), 'info'); }
+  catch (error) { frontendLogger.error('Failed to clear cache:', error); pushAlert(t('settings.data.cache.clearFailed'), 'error'); }
   }
 
   async function onClearLocalData() {
     const ok = await prompt.confirm(t('settings.data.confirm'));
-    if(!ok) return;
+    if (!ok) return;
     try {
       await clearLocalData();
-      try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch(_) {}
-      try { if(location.hash) location.hash = ''; } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('freely:localDataCleared')); } catch (_) { }
+      try { if (location.hash) location.hash = ''; } catch (_) { }
       pushAlert(t('settings.data.local.cleared'), 'info');
-    } catch (error) { console.error('Failed to clear local data:', error); pushAlert('Failed to clear local data. Check console for details.', 'error'); }
+    } catch (error) { frontendLogger.error('Failed to clear local data:', error); pushAlert(t('settings.data.local.clearFailed'), 'error'); }
   }
 
   async function updateAudioSetting(key: keyof AudioSettings, value: any) {
     if (!audioSettings) return;
-    
+
     setIsLoadingAudio(true);
     try {
       const newSettings = { ...audioSettings, [key]: value };
       setAudioSettingsState(newSettings);
-      
+
       const result = await setAudioSettings({ [key]: value });
-      
+
       // Show appropriate message based on whether reinitialization occurred
       if (result.reinitialized) {
         pushAlert(t('settings.audio.reinitialized'), 'info');
       } else {
         pushAlert(t('settings.audio.updated'), 'info');
       }
-      
+
       // Refresh settings to get the actual current state after reinitialization
       if (result.reinitialized) {
         try {
           const settingsResult = await getAudioSettings();
           setAudioSettingsState(settingsResult.settings);
         } catch (refreshError) {
-          console.warn('Failed to refresh settings after reinitialization:', refreshError);
+          frontendLogger.warn('Failed to refresh settings after reinitialization:', refreshError);
         }
       }
     } catch (error) {
-      console.error('Failed to update audio setting:', error);
+      frontendLogger.error('Failed to update audio setting:', error);
       pushAlert(t('settings.audio.updateFailed'), 'error');
       // Revert on error
       try {
         const settingsResult = await getAudioSettings();
         setAudioSettingsState(settingsResult.settings);
-      } catch {}
+      } catch { }
     } finally {
       setIsLoadingAudio(false);
     }
@@ -691,14 +632,14 @@ export default function Settings(){
       // First get devices (this ensures BASS is initialized)
       const devicesResult = await getAudioDevices();
       setAudioDevices(devicesResult.devices || []);
-      
+
       // Then get settings (now that BASS is initialized)
       const settingsResult = await getAudioSettings();
       setAudioSettingsState(settingsResult.settings);
-      
+
       pushAlert(t('settings.audio.refreshed'), 'info');
     } catch (error) {
-      console.error('Failed to refresh audio settings:', error);
+      frontendLogger.error('Failed to refresh audio settings:', error);
       pushAlert(t('settings.audio.refreshFailed'), 'error');
     } finally {
       setIsLoadingAudio(false);
@@ -707,23 +648,26 @@ export default function Settings(){
 
   async function applyDeviceChange(deviceId: number) {
     if (!audioSettings) return;
-    
+
     const confirmed = await prompt.confirm(t('settings.audio.deviceChange.confirm'));
     if (!confirmed) return;
-    
+
     setIsLoadingAudio(true);
     try {
-      // Persist device selection before reinitialization so backend state is consistent
-      try { await setAudioSettings({ device: deviceId }); } catch (e) { console.warn('Failed to persist device before reinit:', e); }
-      await reinitializeAudio(deviceId, audioSettings.sample_rate, audioSettings.buffer_size);
-      
+      // Persist device selection together with current sample_rate/buffer_size so backend reinit uses desired params in one shot
+      try {
+        await setAudioSettings({ device: deviceId, sample_rate: audioSettings.sample_rate, buffer_size: audioSettings.buffer_size });
+      } catch (e) {
+        frontendLogger.warn('Failed to persist device before reinit:', e);
+      }
+
       // Reload settings after reinitialization
       const settingsResult = await getAudioSettings();
       setAudioSettingsState({ ...settingsResult.settings, device: deviceId });
-      
+
       pushAlert(t('settings.audio.deviceChanged'), 'info');
     } catch (error) {
-      console.error('Failed to change audio device:', error);
+      frontendLogger.error('Failed to change audio device:', error);
       pushAlert(t('settings.audio.deviceChangeFailed'), 'error');
     } finally {
       setIsLoadingAudio(false);
@@ -732,35 +676,56 @@ export default function Settings(){
 
   async function applyAdvancedSettings() {
     if (!audioSettings) return;
-    
+
     const confirmed = await prompt.confirm(t('settings.audio.advancedSettings.confirm'));
     if (!confirmed) return;
-    
+
     setIsLoadingAudio(true);
     try {
-      // Persist all advanced settings first so reinitialization uses the latest values
-      try {
-        await setAudioSettings({
-          device: audioSettings.device,
-          sample_rate: audioSettings.sample_rate,
-          buffer_size: audioSettings.buffer_size,
-          bit_depth: audioSettings.bit_depth,
-          output_channels: audioSettings.output_channels,
-          exclusive_mode: audioSettings.exclusive_mode,
-          net_buffer: audioSettings.net_buffer,
-        });
-      } catch (persistErr) {
-        console.warn('Failed to persist advanced audio settings before reinit:', persistErr);
+      // Persist all advanced settings; backend will reinitialize immediately when required
+      const result = await setAudioSettings({
+        device: audioSettings.device,
+        sample_rate: audioSettings.sample_rate,
+        buffer_size: audioSettings.buffer_size,
+        bit_depth: audioSettings.bit_depth,
+        output_channels: audioSettings.output_channels,
+        exclusive_mode: audioSettings.exclusive_mode,
+        net_buffer: audioSettings.net_buffer,
+      });
+
+      // If for any reason the backend did not reinitialize, perform it explicitly
+      if (!result?.reinitialized) {
+        await reinitializeAudio(audioSettings.device, audioSettings.sample_rate, audioSettings.buffer_size);
       }
-      await reinitializeAudio(audioSettings.device, audioSettings.sample_rate, audioSettings.buffer_size);
+
+      // Refresh settings from backend to reflect actual applied state
+      try {
+        const refreshed = await getAudioSettings();
+        setAudioSettingsState(refreshed.settings);
+      } catch (refreshErr) {
+        frontendLogger.warn('Failed to refresh audio settings after apply:', refreshErr);
+      }
+
       pushAlert(t('settings.audio.advancedApplied'), 'info');
     } catch (error) {
-      console.error('Failed to apply advanced audio settings:', error);
+      frontendLogger.error('Failed to apply advanced audio settings:', error);
       pushAlert(t('settings.audio.advancedFailed'), 'error');
     } finally {
       setIsLoadingAudio(false);
     }
   }
+
+  function colorButton(name: string, value: string, label: string, onChange: React.ChangeEventHandler<HTMLInputElement>) {
+    return (
+      <div className="settings-field block">
+        <div className="settings-color-wrap">
+          <label className="settings-field-label" htmlFor={name}>{label}</label>
+          <input id={name} type="color" value={value} onChange={onChange} className="settings-color-input" aria-label={label} />
+        </div>
+      </div>
+    );
+  }
+
 
   return (
     <div className="settings-page">
@@ -774,58 +739,44 @@ export default function Settings(){
           <div className="settings-card">
             <div className="settings-fields">
               <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="accent-color">{t('settings.accent')}</label>
-                <div className="settings-color-wrap">
-                  <input id="accent-color" type="color" value={accent} onChange={onAccentChange} className="settings-color-input" aria-label={t('settings.accent')} />
-                </div>
-              </div>
-              <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="text-color">{t('settings.text', 'Text')}</label>
-                <div className="settings-color-wrap">
-                  <input id="text-color" type="color" value={textColor} onChange={onTextColorChange} className="settings-color-input" aria-label={t('settings.text', 'Text')} />
-                </div>
-              </div>
-              <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="text-dark-color">{t('settings.textSecondary', 'Secondary Text')}</label>
-                <div className="settings-color-wrap">
-                  <input id="text-dark-color" type="color" value={textDarkColor} onChange={onTextDarkColorChange} className="settings-color-input" aria-label={t('settings.textSecondary', 'Secondary Text')} />
-                </div>
-              </div>
-              <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="bg-shadow-color">{t('settings.shadow', 'Shadow')}</label>
-                <div className="settings-color-wrap">
-                  <input id="bg-shadow-color" type="color" value={shadowHex} onChange={onShadowHexChange} className="settings-color-input" aria-label={t('settings.shadow', 'Shadow')} />
-                </div>
-              </div>
-              <div className="settings-field inline">
                 <label className="settings-field-label" htmlFor="language-select">{t('settings.language')}</label>
-                <select id="language-select" value={lang} onChange={e=>setLang(e.target.value)} className="settings-control-select" aria-label={t('settings.language')}>
+                <select id="language-select" value={lang} onChange={e => setLang(e.target.value)} className="settings-control-select" aria-label={t('settings.language')}>
                   <option value="en">English</option>
                   <option value="es">Español</option>
                 </select>
               </div>
+              {/* Colors */}
+              <div className="settings-field">
+                <label className="settings-field-label">{t('settings.colors')}</label>
+                <div className="settings-group">
+                  {colorButton('accent-color', accent, t('settings.accent'), onAccentChange)}
+                  {colorButton('text-color', textColor, t('settings.text'), onTextColorChange)}
+                  {colorButton('text-dark-color', textDarkColor, t('settings.textSecondary'), onTextDarkColorChange)}
+                  {colorButton('bg-shadow-color', shadowHex, t('settings.shadow'), onShadowHexChange)}
+                </div>
+              </div>
 
               {/* Background settings */}
               <div className="settings-field">
-                <label className="settings-field-label">{t('settings.background', 'Background')}</label>
+                <label className="settings-field-label">{t('settings.background')}</label>
                 <div className="bg-carousel" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8, alignItems: 'center' }}>
                   <div className="bg-preview" style={{ position: 'relative', height: 120, borderRadius: 10, overflow: 'hidden', border: '8px solid var(--border-subtle)' }}>
                     <button
                       className="btn btn-subtle"
                       onClick={() => onCycleBackground(-1)}
-                      aria-label={t('settings.background.prev', 'Previous background')}
+                      aria-label={t('settings.background.prev')}
                       style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', zIndex: 3 }}
                     >
-                      <span className="material-symbols-rounded" aria-hidden>chevron_left</span>
+                      <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>chevron_left</span>
                     </button>
-                    <img src={mainPreviewFor(APPEARANCE_DEFAULTS.backgrounds[bgCarouselIndex])} alt={t('settings.background.preview', 'Background preview')} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: bgBlur ? 'blur(0px)' : 'none', border: 'solid 1px var(--border-strong)'}} />
+                    <img src={mainPreviewFor(APPEARANCE_DEFAULTS.backgrounds[bgCarouselIndex])} alt={t('settings.background.preview')} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: bgBlur ? 'blur(0px)' : 'none', border: 'solid 1px var(--border-strong)' }} />
                     <button
                       className="btn btn-subtle"
                       onClick={() => onCycleBackground(1)}
-                      aria-label={t('settings.background.next', 'Next background')}
+                      aria-label={t('settings.background.next')}
                       style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', zIndex: 3 }}
                     >
-                      <span className="material-symbols-rounded" aria-hidden>chevron_right</span>
+                      <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>chevron_right</span>
                     </button>
                     {/* Thumbnails moved below the preview — rendered separately to improve layout */}
                   </div>
@@ -844,8 +795,8 @@ export default function Settings(){
                           onClick={() => {
                             setBgCarouselIndex(i);
                             setBgImage(resolved);
-                            applyBackgroundVars(resolved, bgBlur ? bgBlurAmount : 0, bgAnimate, bgOverlayColor, bgOverlayOpacity);
-                            setSetting('ui.bg.image', resolved).catch(() => {});
+                            applyBackgroundVars(resolved, bgBlur ? bgBlurAmount : 0, bgOverlayColor, bgOverlayOpacity);
+                            setSetting('ui.bg.image', resolved).catch(() => { });
                           }}
                           style={{
                             width: 64,
@@ -861,16 +812,19 @@ export default function Settings(){
                     })}
                   </div>
                 </div>
-                <div className="settings-field-hint">{t('settings.background.hint', 'Browse default images or set a custom one.')}</div>
+                <div className="settings-field-hint">{t('settings.background.hint')}</div>
               </div>
 
               <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="bg-custom-url">{t('settings.background.custom', 'Custom image')}</label>
+                <label className="settings-field-label" htmlFor="bg-custom-url">{t('settings.background.custom')}</label>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%' }}>
-                  <input id="bg-custom-url" type="url" placeholder={t('settings.background.customUrl', 'Paste image URL') || 'Paste image URL'} value={bgCustomUrl} onChange={e=>setBgCustomUrl(e.target.value)} className="settings-control-input" style={{ flex: 1 }} />
-                  <button className="btn btn-subtle" onClick={onApplyCustomUrl}>{t('settings.background.use', 'Use')}</button>
+                  <input id="bg-custom-url" type="url" placeholder={t('settings.background.customUrl')} value={bgCustomUrl} onChange={e => setBgCustomUrl(e.target.value)} className="settings-control-input" style={{ flex: 1 }} />
+                  <button className="btn btn-subtle" onClick={onApplyCustomUrl}>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>check_circle</span>
+                    {t('settings.background.use')}
+                  </button>
                   <label className="btn btn-subtle" style={{ cursor: 'pointer' }}>
-                    <span className="material-symbols-rounded" aria-hidden>image</span>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>image</span>
                     <input type="file" accept="image/*" onChange={onSelectCustomFile} style={{ display: 'none' }} />
                   </label>
                 </div>
@@ -879,13 +833,13 @@ export default function Settings(){
               <div className="settings-field inline">
                 <label className="settings-field-label">
                   <input type="checkbox" checked={bgBlur} onChange={onToggleBlur} style={{ marginRight: 8 }} />
-                  {t('settings.background.blur', 'Blur background')}
+                  {t('settings.background.blur')}
                 </label>
               </div>
 
               {bgBlur && (
                 <div className="settings-field inline">
-                  <label className="settings-field-label" htmlFor="bg-blur-amount">{t('settings.background.blurAmount', 'Blur amount')}</label>
+                  <label className="settings-field-label" htmlFor="bg-blur-amount">{t('settings.background.blurAmount')}</label>
                   <input
                     id="bg-blur-amount"
                     type="range"
@@ -894,7 +848,7 @@ export default function Settings(){
                     step={1}
                     value={bgBlurAmount}
                     onChange={onBlurAmountChange}
-                    aria-label={t('settings.background.blurAmount', 'Blur amount')}
+                    aria-label={t('settings.background.blurAmount')}
                     style={{ ["--range-progress" as any]: `${(bgBlurAmount / 200) * 100}%` }}
                   />
                   <span className="settings-field-value">{bgBlurAmount}px</span>
@@ -902,21 +856,14 @@ export default function Settings(){
               )}
 
               <div className="settings-field inline">
-                <label className="settings-field-label">
-                  <input type="checkbox" checked={bgAnimate} onChange={onToggleAnimate} style={{ marginRight: 8 }} />
-                  {t('settings.background.animate', 'Animate background')}
-                </label>
-              </div>
-
-              <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="bg-overlay-color">{t('settings.background.overlayColor', 'Background color')}</label>
+                <label className="settings-field-label" htmlFor="bg-overlay-color">{t('settings.background.overlayColor')}</label>
                 <div className="settings-color-wrap">
-                  <input id="bg-overlay-color" type="color" value={bgOverlayColor} onChange={onOverlayColorChange} className="settings-color-input" aria-label={t('settings.background.overlayColor', 'Background color')} />
+                  <input id="bg-overlay-color" type="color" value={bgOverlayColor} onChange={onOverlayColorChange} className="settings-color-input" aria-label={t('settings.background.overlayColor')} />
                 </div>
               </div>
 
               <div className="settings-field inline">
-                <label className="settings-field-label" htmlFor="bg-overlay-opacity">{t('settings.background.overlayOpacity', 'Background opacity')}</label>
+                <label className="settings-field-label" htmlFor="bg-overlay-opacity">{t('settings.background.overlayOpacity')}</label>
                 <input
                   id="bg-overlay-opacity"
                   type="range"
@@ -925,20 +872,24 @@ export default function Settings(){
                   step={0.05}
                   value={bgOverlayOpacity}
                   onChange={onOverlayOpacityChange}
-                  aria-label={t('settings.background.overlayOpacity', 'Background opacity')}
+                  aria-label={t('settings.background.overlayOpacity')}
                   style={{ ["--range-progress" as any]: `${bgOverlayOpacity * 100}%` }}
                 />
               </div>
               {/* Appearance import/export for background and accent */}
               <div className="settings-field" style={{ marginTop: 8 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button className="btn" onClick={onExportAppearance}>{t('settings.appearance.export', 'Export appearance')}</button>
+                  <button className="btn" onClick={onExportAppearance}>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>upload</span>
+                    {t('settings.appearance.export')}
+                  </button>
                   <label className="btn btn-subtle" style={{ cursor: 'pointer' }}>
-                    {t('settings.appearance.import', 'Import appearance')}
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>download</span>
+                    {t('settings.appearance.import')}
                     <input type="file" accept="application/json" onChange={onImportAppearanceUpload} style={{ display: 'none' }} />
                   </label>
                 </div>
-                <div className="settings-field-hint">{t('settings.appearance.importExportHint', 'Export or import appearance settings (includes custom image as base64 or URL)')}</div>
+                <div className="settings-field-hint">{t('settings.appearance.importExportHint')}</div>
               </div>
             </div>
           </div>
@@ -949,13 +900,13 @@ export default function Settings(){
           <div className="settings-section-header">
             <span className="material-symbols-rounded settings-icon" aria-hidden="true">volume_up</span>
             <h3 id="audio-header" className="settings-section-title">{t('settings.audio')}</h3>
-            <button 
-              className="btn btn-subtle" 
+            <button
+              className="btn btn-subtle"
               onClick={refreshAudioSettings}
               disabled={isLoadingAudio}
               title={t('settings.audio.refresh')}
             >
-              <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>refresh</span>
+              <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>refresh</span>
               {t('settings.audio.refresh')}
             </button>
           </div>
@@ -968,7 +919,7 @@ export default function Settings(){
                     <p className="settings-info-title">{t('settings.audio.currentStatus')}</p>
                     <div className="settings-info-grid">
                       <span>{t('settings.audio.device')}: {
-                        audioDevices.find(device => device.id === audioSettings.device)?.name || 
+                        audioDevices.find(device => device.id === audioSettings.device)?.name ||
                         t('settings.audio.device.unknown')
                       }</span>
                       <span>{t('settings.audio.sampleRate')}: {audioSettings.sample_rate}Hz</span>
@@ -981,20 +932,20 @@ export default function Settings(){
                 {/* Audio Device */}
                 <div className="settings-field inline">
                   <label className="settings-field-label" htmlFor="audio-device">{t('settings.audio.device')}</label>
-                  <select 
-                    id="audio-device" 
-                    value={audioSettings.device} 
+                  <select
+                    id="audio-device"
+                    value={audioSettings.device}
                     onChange={e => applyDeviceChange(parseInt(e.target.value))}
                     className="settings-control-select"
                     disabled={isLoadingAudio}
                   >
                     {audioDevices.map(device => (
-                      <option 
-                        key={device.id} 
+                      <option
+                        key={device.id}
                         value={device.id}
                         disabled={!device.is_enabled}
                       >
-                        {device.name} 
+                        {device.name}
                         {device.is_default && ` ${t('settings.audio.device.default')}`}
                         {!device.is_enabled && ` ${t('settings.audio.device.disabled')}`}
                       </option>
@@ -1005,10 +956,10 @@ export default function Settings(){
                 {/* Sample Rate */}
                 <div className="settings-field inline">
                   <label className="settings-field-label" htmlFor="sample-rate">{t('settings.audio.sampleRate')}</label>
-                  <select 
-                    id="sample-rate" 
-                    value={audioSettings.sample_rate} 
-                    onChange={e => setAudioSettingsState({...audioSettings, sample_rate: parseInt(e.target.value)})}
+                  <select
+                    id="sample-rate"
+                    value={audioSettings.sample_rate}
+                    onChange={e => setAudioSettingsState({ ...audioSettings, sample_rate: parseInt(e.target.value) })}
                     className="settings-control-select"
                     disabled={isLoadingAudio}
                   >
@@ -1024,10 +975,10 @@ export default function Settings(){
                 {/* Bit Depth */}
                 <div className="settings-field inline">
                   <label className="settings-field-label" htmlFor="bit-depth">{t('settings.audio.bitDepth')}</label>
-                  <select 
-                    id="bit-depth" 
-                    value={audioSettings.bit_depth} 
-                    onChange={e => setAudioSettingsState({...audioSettings, bit_depth: parseInt(e.target.value)})}
+                  <select
+                    id="bit-depth"
+                    value={audioSettings.bit_depth}
+                    onChange={e => setAudioSettingsState({ ...audioSettings, bit_depth: parseInt(e.target.value) })}
                     className="settings-control-select"
                     disabled={isLoadingAudio}
                   >
@@ -1040,10 +991,10 @@ export default function Settings(){
                 {/* Buffer Size */}
                 <div className="settings-field inline">
                   <label className="settings-field-label" htmlFor="buffer-size">{t('settings.audio.bufferSize')}</label>
-                  <select 
-                    id="buffer-size" 
-                    value={audioSettings.buffer_size} 
-                    onChange={e => setAudioSettingsState({...audioSettings, buffer_size: parseInt(e.target.value)})}
+                  <select
+                    id="buffer-size"
+                    value={audioSettings.buffer_size}
+                    onChange={e => setAudioSettingsState({ ...audioSettings, buffer_size: parseInt(e.target.value) })}
                     className="settings-control-select"
                     disabled={isLoadingAudio}
                   >
@@ -1058,9 +1009,9 @@ export default function Settings(){
                 {/* Network Buffer */}
                 <div className="settings-field inline">
                   <label className="settings-field-label" htmlFor="net-buffer">{t('settings.audio.netBuffer')}</label>
-                  <select 
-                    id="net-buffer" 
-                    value={audioSettings.net_buffer} 
+                  <select
+                    id="net-buffer"
+                    value={audioSettings.net_buffer}
                     onChange={e => updateAudioSetting('net_buffer', parseInt(e.target.value))}
                     className="settings-control-select"
                     disabled={isLoadingAudio}
@@ -1076,10 +1027,10 @@ export default function Settings(){
                 {/* Output Channels */}
                 <div className="settings-field inline">
                   <label className="settings-field-label" htmlFor="output-channels">{t('settings.audio.outputChannels')}</label>
-                  <select 
-                    id="output-channels" 
-                    value={audioSettings.output_channels} 
-                    onChange={e => setAudioSettingsState({...audioSettings, output_channels: parseInt(e.target.value)})}
+                  <select
+                    id="output-channels"
+                    value={audioSettings.output_channels}
+                    onChange={e => setAudioSettingsState({ ...audioSettings, output_channels: parseInt(e.target.value) })}
                     className="settings-control-select"
                     disabled={isLoadingAudio}
                   >
@@ -1108,19 +1059,19 @@ export default function Settings(){
                 {/* Apply Advanced Settings Button */}
                 <div className="settings-field">
                   <div className="btn-row">
-                    <button 
-                      className="btn" 
+                    <button
+                      className="btn"
                       onClick={applyAdvancedSettings}
                       disabled={isLoadingAudio}
                     >
                       {isLoadingAudio ? (
                         <>
-                          <span className="material-symbols-rounded spinning" aria-hidden="true" style={{fontSize:18}}>refresh</span>
+                          <span className="material-symbols-rounded spinning" aria-hidden="true" style={ICON_STYLE}>refresh</span>
                           {t('settings.audio.applying')}
                         </>
                       ) : (
                         <>
-                          <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>tune</span>
+                          <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>tune</span>
                           {t('settings.audio.applyAdvanced')}
                         </>
                       )}
@@ -1133,7 +1084,7 @@ export default function Settings(){
               </div>
             ) : (
               <div className="loading-state">
-                <span className="material-symbols-rounded spinning">refresh</span>
+                <span className="material-symbols-rounded spinning" aria-hidden="true" style={ICON_STYLE}>refresh</span>
                 {t('settings.audio.loading')}
               </div>
             )}
@@ -1144,26 +1095,26 @@ export default function Settings(){
         <section className="settings-section" aria-labelledby="import-export-header">
           <div className="settings-section-header">
             <span className="material-symbols-rounded settings-icon" aria-hidden="true">sync_alt</span>
-            <h3 id="import-export-header" className="settings-section-title">{t('settings.importExport', 'Import & Export')}</h3>
+            <h3 id="import-export-header" className="settings-section-title">{t('settings.importExport')}</h3>
           </div>
           <div className="settings-card">
             <div className="settings-fields">
               <div className="settings-field">
                 <div className="btn-row">
                   <button className="btn" onClick={onExport}>
-                    <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>upload</span>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>upload</span>
                     {t('settings.export')}
                   </button>
                   <div className="file-input-wrap">
                     <input id="import-file" className="file-input-hidden" type="file" accept="application/json" onChange={onImportUpload} aria-label={t('settings.import.placeholder')} />
-                    <label htmlFor="import-file" className="file-input-visual">
-                      <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>download</span>
-                      {t('settings.import', 'Import Settings')}
+                    <label htmlFor="import-file" className="btn btn-subtle" style={{ cursor: 'pointer' }}>
+                      <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>download</span>
+                      {t('settings.import')}
                       {importFileName && <span className="file-input-filename" title={importFileName}>{importFileName}</span>}
                     </label>
                   </div>
                 </div>
-                <p className="settings-field-hint">{t('settings.importExport.hint', 'Export all your settings and playlists to a JSON file, or import them from a previously exported file.')}</p>
+                <p className="settings-field-hint">{t('settings.importExport.hint')}</p>
               </div>
             </div>
           </div>
@@ -1173,7 +1124,7 @@ export default function Settings(){
         <section className="settings-section" aria-labelledby="plugins-header">
           <div className="settings-section-header">
             <span className="material-symbols-rounded settings-icon" aria-hidden="true">extension</span>
-            <h3 id="plugins-header" className="settings-section-title">{t('plugins.detected')}</h3>
+            <h3 id="plugins-header" className="settings-section-title">{t('plugins.plugins')}</h3>
           </div>
           <div className="settings-card">
             <PluginList />
@@ -1187,7 +1138,7 @@ export default function Settings(){
             <h3 id="data-header" className="settings-section-title">{t('settings.data')}</h3>
           </div>
           <div className="settings-warning" role="note">
-            <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:20}}>warning</span>
+            <span className="material-symbols-rounded" aria-hidden="true" style={{ fontSize: 20 }}>warning</span>
             <div>{t('settings.data.warning')}</div>
           </div>
           <div className="settings-card tight" aria-live="polite">
@@ -1195,7 +1146,7 @@ export default function Settings(){
               <div className="settings-field">
                 <div className="btn-row">
                   <button className="btn btn-danger" onClick={onClearCache}>
-                    <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>delete</span>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>delete</span>
                     {t('settings.data.cache.clear')}
                   </button>
                 </div>
@@ -1204,7 +1155,7 @@ export default function Settings(){
               <div className="settings-field">
                 <div className="btn-row">
                   <button className="btn btn-danger" onClick={onClearLocalData}>
-                    <span className="material-symbols-rounded" aria-hidden="true" style={{fontSize:18}}>delete_forever</span>
+                    <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>delete_forever</span>
                     {t('settings.data.local.clear')}
                   </button>
                 </div>
@@ -1218,21 +1169,96 @@ export default function Settings(){
   )
 }
 
-function PluginList(){
-  const [plugins, setPlugins] = React.useState<any[]>([])
+function PluginList() {
+  const [plugins, setPlugins] = React.useState<any[]>([]);
+  const [busy, setBusy] = React.useState(false);
+  const fileRef = React.useRef<HTMLInputElement | null>(null);
   const { t } = useI18n();
-  React.useEffect(()=>{
-    fetch('/plugins/index.json').then(r=>r.json()).then(setPlugins).catch(()=>setPlugins([]))
-  },[])
-  if(plugins.length === 0) return <div className="plugin-empty">{t('plugins.none')}</div>
+
+  async function load() {
+    try {
+      // Prefer Tauri backend list when available
+      if (isTauriAvailable()) {
+        const list = await pluginsList();
+        list.sort((a: any, b: any) => String(a?.name || '').toLowerCase().localeCompare(String(b?.name || '').toLowerCase()));
+        setPlugins(list);
+      } else {
+        // Fallback: show bundled public list without enabled state
+        const base = await fetch('/plugins/index.json').then(r => r.json()).catch(() => []);
+        const sorted = (base || []).slice().sort((a: any, b: any) => String(a?.name || '').toLowerCase().localeCompare(String(b?.name || '').toLowerCase()));
+        setPlugins(sorted.map((e: any) => ({ ...e, enabled: true })));
+      }
+    } catch {
+      setPlugins([]);
+    }
+  }
+
+  React.useEffect(() => { load(); }, []);
+
+  async function onToggle(p: any, checked: boolean) {
+    if (!isTauriAvailable()) return; // no-op in web
+    setBusy(true);
+    try {
+      await pluginsSetEnabled(p.name, checked);
+      await load();
+    } finally { setBusy(false); }
+  }
+
+  async function onDelete(p: any) {
+    if (!isTauriAvailable()) return; // no-op in web
+  if (!confirm(t('plugins.delete.confirm'))) return;
+    setBusy(true);
+    try {
+      await pluginsDelete(p.name);
+      await load();
+    } finally { setBusy(false); }
+  }
+
+  async function onUploadZip(e: React.ChangeEvent<HTMLInputElement>) {
+    try {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      setBusy(true);
+      await pluginsInstallZipFromFile(f);
+      await load();
+    } catch (err) {
+      frontendLogger.error('Plugin install failed', err);
+  alert(t('plugins.installFailed'));
+    } finally {
+      setBusy(false);
+      try { if (e.target) (e.target as HTMLInputElement).value = ''; } catch { }
+    }
+  }
+
   return (
-    <div className="plugin-grid">
-      {plugins.map((p:any)=> (
-        <div className="plugin-card" key={p.name}>
-          <div className="title">{p.name}</div>
-          <div className="meta">v{p.version}</div>
+    <div className="plugin-section">
+      <div className="plugin-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+        <label className={`btn btn-subtle ${!isTauriAvailable() ? 'disabled' : ''}`} style={{ cursor: isTauriAvailable() ? 'pointer' : 'not-allowed' }}>
+          <span className="material-symbols-rounded" aria-hidden="true" style={ICON_STYLE}>upload</span>
+          {t('plugins.add')}
+          <input ref={fileRef} type="file" accept=".zip" onChange={onUploadZip} style={{ display: 'none' }} disabled={!isTauriAvailable() || busy} />
+        </label>
+      </div>
+      {plugins.length === 0 ? (
+        <div className="plugin-empty">{t('plugins.none')}</div>
+      ) : (
+        <div className="plugin-grid">
+          {plugins.map((p: any) => (
+            <div className="plugin-card" key={p.name}>
+              <div className="title"><div className='plugin-name'>{p.name}</div> <small>v{p.version}</small></div>
+              <div className="meta">{p.provider && <div className="meta-sub">{p.provider}</div>}</div>
+              <div className="row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 8 }}>
+                <label className="toggle" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="checkbox" checked={!!p.enabled} onChange={e => onToggle(p, e.target.checked)} disabled={!isTauriAvailable() || busy} />
+                </label>
+                <button className="btn btn-danger btn-sm" onClick={() => onDelete(p)} disabled={!isTauriAvailable() || busy}>
+                  <span className="material-symbols-rounded" aria-hidden>delete</span>
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   )
 }

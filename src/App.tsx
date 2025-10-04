@@ -19,8 +19,7 @@ import { PromptProvider } from './core/PromptContext';
 import { runTauriCommand } from './core/TauriCommands';
 import { DownloadsProvider } from './core/Downloads';
 import { ContextMenuProvider } from './core/ContextMenu';
-import { frontendLogger, logInfo } from './core/FrontendLogger';
-import { is } from 'cheerio/dist/commonjs/api/traversing';
+import { frontendLogger } from './core/FrontendLogger';
 
 // Constants for performance optimization
 const UI_CONSTANTS = {
@@ -125,7 +124,7 @@ function useWindowState() {
       try {
         const { Window } = await import('@tauri-apps/api/window');
         if (!Window?.getCurrent) {
-          console.warn('[App] Tauri Window API not available');
+          frontendLogger.warn('[App] Tauri Window API not available');
           return;
         }
 
@@ -137,7 +136,7 @@ function useWindowState() {
           const isMax = await wnd.isMaximized();
           if (isMounted) setMaximized(isMax);
         } catch (e) {
-          console.warn('[App] failed to read initial maximized state', e);
+          frontendLogger.warn('[App] failed to read initial maximized state', e);
         }
 
         const unlistenMax = await wnd.listen('window:maximize', () => {
@@ -150,7 +149,7 @@ function useWindowState() {
         });
         unlistenFns.push(unlistenUnmax);
       } catch (e) {
-        console.debug('[App] Tauri integration not available or failed to init', e);
+        frontendLogger.debug('[App] Tauri integration not available or failed to init', e);
       }
     };
 
@@ -171,10 +170,10 @@ function useWindowState() {
   }, []);
 
   const windowActions = useMemo(() => ({
-    maximize: async () => await appWindow?.maximize?.().catch(console.error),
-    restore: async () => await appWindow?.unmaximize?.().catch(console.error),
-    minimize: async () => await appWindow?.minimize?.().catch(console.error),
-    close: async () => await appWindow?.close?.().catch(console.error),
+    maximize: async () => await appWindow?.maximize?.().catch(frontendLogger.error),
+    restore: async () => await appWindow?.unmaximize?.().catch(frontendLogger.error),
+    minimize: async () => await appWindow?.minimize?.().catch(frontendLogger.error),
+    close: async () => await appWindow?.close?.().catch(frontendLogger.error),
   }), [appWindow]);
 
   return { appWindow, isMaximized: maximized, windowControls: windowActions };
@@ -214,7 +213,7 @@ function useDebouncedSearch(searchState: SearchState, setSearchState: React.Disp
         const results = await client.search(trimmedQuery, ['track', 'artist', 'album', 'playlist'], { limit: 50 });
         setSearchState(prev => ({ ...prev, results, loading: false }));
       } catch (e) {
-        console.warn('search failed', e);
+        frontendLogger.warn('search failed', e);
         setSearchState(prev => ({ ...prev, results: undefined, loading: false }));
       }
     }, UI_CONSTANTS.searchDebounceMs);
@@ -284,10 +283,10 @@ function Main() {
     const initializeLogging = async () => {
       try {
         await frontendLogger.init();
-        await logInfo('Frontend logging initialized successfully');
-        await logInfo('Freely Player application started');
+        await frontendLogger.info('Frontend logging initialized successfully');
+        await frontendLogger.info('Freely Player application started');
       } catch (error) {
-        console.error('Failed to initialize frontend logging:', error);
+        frontendLogger.error('Failed to initialize frontend logging:', error);
       }
     };
 
@@ -298,9 +297,15 @@ function Main() {
   useEffect(() => {
     if (ready) {
       // Call the Tauri command when app is ready using the helper function
-      runTauriCommand('app_ready').catch(console.error);
+      runTauriCommand('app_ready').catch(frontendLogger.error);
       // Log app ready state
-      logInfo('Application ready state achieved').catch(console.error);
+      frontendLogger.info('Application ready state achieved').catch(frontendLogger.error);
+      // Load script plugins once after readiness
+      import('./core/pluginScripts').then(m => m.loadScriptPluginsOnce())
+        .then(list => {
+          frontendLogger.info(`Loaded ${list.length} script plugin(s)`).catch(frontendLogger.error);
+        })
+        .catch(err => frontendLogger.error('Failed loading script plugins', err));
     }
   }, [ready]);
 
@@ -317,7 +322,7 @@ function Main() {
       status: statusText,
       progress: progress.percentage,
       details: progress.details
-    }).catch(console.error);
+    }).catch(frontendLogger.error);
   }, [ready, progress]);
 
   // Update current track ID ref
@@ -798,11 +803,10 @@ function Main() {
       
       // Load background appearance settings
       try {
-        const [bgImage, bgBlur, bgBlurAmount, bgAnimate, bgOverlayColor, bgOverlayOpacity] = await Promise.all([
+        const [bgImage, bgBlur, bgBlurAmount, bgOverlayColor, bgOverlayOpacity] = await Promise.all([
           getSetting('ui.bg.image'),
           getSetting('ui.bg.blur'),
           getSetting('ui.bg.blurAmount'),
-          getSetting('ui.bg.animate'),
           getSetting('ui.bg.overlayColor'),
           getSetting('ui.bg.overlayOpacity')
         ]);
@@ -813,16 +817,11 @@ function Main() {
         }
         
         const blur = (bgBlur === null || bgBlur === undefined || bgBlur === '') ? true : (bgBlur === '1' || bgBlur === 'true');
-        const animate = (bgAnimate === null || bgAnimate === undefined || bgAnimate === '') ? true : (bgAnimate === '1' || bgAnimate === 'true');
         const blurAmount = bgBlurAmount != null ? Math.max(0, Math.min(200, Number(bgBlurAmount))) : 200;
         
         const filter = blur ? `blur(${blurAmount}px)` : 'none';
-        const animation = animate ? 'drift 60s ease-in-out infinite alternate' : 'none';
         
         root.style.setProperty('--bg-filter', filter);
-        root.style.setProperty('--bg-animation', animation);
-        root.style.setProperty('--bg-size', '200%');
-        root.style.setProperty('--bg-radius', '100em');
         
         // Apply overlay
         const overlayColor = bgOverlayColor || '#0A131A';
@@ -840,7 +839,7 @@ function Main() {
       // Force a repaint to ensure all styles are reapplied
       document.body.offsetHeight; // Trigger reflow
     } catch (error) {
-      console.warn('Failed to reload appearance settings:', error);
+      frontendLogger.warn('Failed to reload appearance settings:', error);
     }
   }, [getSetting]);
 

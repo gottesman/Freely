@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import { frontendLogger } from '../core/FrontendLogger';
 import { useI18n } from '../core/i18n';
 import { usePlaybackSelector } from '../core/Playback';
 import { useContextMenu, ContextMenuItem } from '../core/ContextMenu';
@@ -96,9 +97,6 @@ const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputed
       if (!data) return null;
 
       const { isFocus, isActive, wasActive, isPlayed, isLast, peakIdx, wordData } = data;
-
-      const shouldBlur = !isFocus && !isActive && !isLast && !isPlayed;
-      const blurAmount = Math.abs(i-1 - focusIndex) * 1; // 1px per index distance
       const opacity = Math.max(0, 1 - Math.abs(i - focusIndex) * 0.4);
       let letterPosInLine = 0;
       return (
@@ -113,7 +111,6 @@ const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputed
             (isLast ? ' last' : '') + 
             (ln.isArtificial ? ' artificial' : '')
           }
-          style={shouldBlur ? { filter: `blur(${blurAmount}px)`, opacity: opacity } : undefined}
           data-index={i}
           aria-current={isFocus ? 'true' : undefined}
         >
@@ -129,28 +126,32 @@ const SyncedLyricsBody = React.memo<SyncedLyricsBodyProps>(({ lines, precomputed
                   <span className="word-text">
                     {p.text.split('').map((letter, idx) => {
                       if (letter === ' ') return <span key={idx}>&nbsp;</span>;
-
-                      const currentLetterPos = wordStartPos + idx;
-                      const distance = Math.abs(currentLetterPos - peakIdx);
-                      const t = Math.max(0, 1 - distance / 4);
-                      const waveY = t * t * (3 - 2 * t) * 5;
-                      
-                      // Improved letter timing for rich sync precision
-                      const letterDuration = partDuration / Math.max(1, p.text.length);
-                      const letterStart = p.start + (idx * letterDuration);
-                      const letterEnd = letterStart + letterDuration;
-                      
-                      // More precise timing check with small buffer for smooth transitions
-                      const LETTER_BUFFER = 0.05; // 50ms buffer for smoother animation
-                      const hasPeaked = effectivePosition >= (letterStart - LETTER_BUFFER);
-                      const isCurrentLetter = effectivePosition >= letterStart && effectivePosition < letterEnd;
-                      const shouldHighlight = isPlayed || hasPeaked;
+                      let waveY = 0;
+                                           
+                      let isCurrentLetter = false;
+                      let shouldHighlight = isPlayed;
+                      if (!isPlayed) {
+                        const currentLetterPos = wordStartPos + idx;
+                        const distance = Math.abs(currentLetterPos - peakIdx);
+                        const t = Math.max(0, 1 - distance / 4);
+                        waveY = t * t * (3 - 2 * t) * 5;
+                        
+                        const letterDuration = partDuration / Math.max(1, p.text.length);
+                        const letterStart = p.start + (idx * letterDuration);
+                        const letterEnd = letterStart + letterDuration;
+                        // Small buffer for smoother animation
+                        const LETTER_BUFFER = 0.05;
+                        const hasPeaked = effectivePosition >= (letterStart - LETTER_BUFFER);
+                        shouldHighlight = hasPeaked;
+                        
+                        isCurrentLetter = effectivePosition >= letterStart && effectivePosition < letterEnd;
+                      }
 
                       return (
                         <span 
                           key={idx} 
                           className={`letter${shouldHighlight ? ' sung' : ''}${isCurrentLetter ? ' current' : ''}`} 
-                          style={{ transform: `translateY(${-waveY}px)` }}
+                          style={waveY !== 0 ? { transform: `translateY(${-waveY}px)` } : undefined}
                         >
                           {letter}
                         </span>
@@ -224,7 +225,7 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
     
     // Sync if drift is more than 250ms or if position jumped significantly
     if (positionDrift > 0.25 || Math.abs((position ?? 0) - basePosRef.current) > 1.0) {
-      console.log('🎵 Lyrics sync: Updating base position', {
+      frontendLogger.log('🎵 Lyrics sync: Updating base position', {
         newPosition: position,
         drift: positionDrift,
         wasInterpolated: currentInterpolated
@@ -466,8 +467,8 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
     const baseTime = playing ? derivedPosition : (position ?? 0);
     const offsetTime = baseTime + (syncOffsetMs / 1000);
     
-    // Debug logging for timing precision (only when synced lyrics are available)
-    if (hasSynced && playing) {
+    // Debug logging for timing precision (dev-only, throttled)
+    if (process.env.NODE_ENV !== 'production' && hasSynced && playing) {
       const timingInfo = {
         rawPosition: position,
         derivedPosition,
@@ -477,8 +478,8 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
       };
       
       // Log occasionally to avoid spam
-      if (Math.floor(offsetTime * 10) % 20 === 0) {
-        console.log('🎵 Lyrics timing:', timingInfo);
+      if (Math.floor(offsetTime * 10) % 50 === 0) {
+        frontendLogger.log('🎵 Lyrics timing:', timingInfo);
       }
     }
     
@@ -494,7 +495,7 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
 
     // Validate effective position is reasonable
     if (!isFinite(effectivePosition) || effectivePosition < 0) {
-      console.warn('🎵 Invalid effective position:', effectivePosition);
+      frontendLogger.warn('🎵 Invalid effective position:', effectivePosition);
       return { focusIndex: -1, activeIndices: [] };
     }
 
@@ -504,7 +505,7 @@ const LyricsOverlay = ({ open, onClose, lyrics, title, synced }: LyricsOverlayPr
       
       // Validate line timing data
       if (!isFinite(line.start) || !isFinite(line.end) || line.start > line.end) {
-        console.warn('🎵 Invalid line timing:', line);
+        frontendLogger.warn('🎵 Invalid line timing:', line);
         continue;
       }
       

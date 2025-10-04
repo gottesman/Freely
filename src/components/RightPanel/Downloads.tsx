@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { frontendLogger } from '../../core/FrontendLogger';
 import { usePlaybackSelector } from '../../core/Playback';
 import { useDownloads } from '../../core/Downloads';
 import { useI18n } from '../../core/i18n';
@@ -62,7 +63,7 @@ const useMissingTrackMetadata = (trackIds: string[]) => {
 
         setMetadata(prev => ({ ...prev, ...newMetadata }));
       } catch (e) {
-        console.warn('[Downloads] Failed to fetch missing track metadata:', e);
+        frontendLogger.warn('[Downloads] Failed to fetch missing track metadata:', e);
       } finally {
         // Clear loading state
         setLoading(prev => {
@@ -88,14 +89,16 @@ interface DownloadsItemProps {
   trackId: string;
   isDownloading: boolean;
   progress?: number;
+  bytes?: number;
   isPaused?: boolean;
   trackData?: TrackData;
   sourceType?: string;
   total?: number; // total bytes if known (e.g., YouTube)
+  fileIndex?: number; // torrent selected file index when known
 }
 
-const DownloadsItem = React.memo<DownloadsItemProps>(({
-  id, trackId, isDownloading, progress = 0, isPaused, trackData, sourceType, total
+const DownloadsItem = React.memo<DownloadsItemProps>(({ 
+  id, trackId, isDownloading, progress = 0, bytes, isPaused, trackData, sourceType, total, fileIndex
 }) => {
   const { t } = useI18n();
   const { openMenu } = useContextMenu();
@@ -104,6 +107,7 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
   // Internal state for torrent-specific telemetry
   const [torrentPeers, setTorrentPeers] = useState<number | undefined>(undefined);
   const [torrentSize, setTorrentSize] = useState<number | undefined>(undefined);
+  const [torrentSpeed, setTorrentSpeed] = useState<number | undefined>(undefined);
 
   const imgUrl = useMemo(() => getImageUrl(trackData?.album?.images || []), [trackData?.album?.images]);
 
@@ -127,18 +131,28 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
 
     await openMenu({ e: e.currentTarget as any, items });
   }, [t, trackData, openMenu]);
-  // progress provided via props
+  // progress: prefer backend-supplied normalized progress (0..1) via DownloadItem.progress.
+  // Fallback: derive from bytes/total or, for torrents without total yet, bytes/torrentSize.
   const percent = useMemo(() => {
-    const clamped = Math.max(0, Math.min(1, progress));
+    let frac: number | undefined = (typeof progress === 'number' ? progress : undefined);
+    if (typeof frac !== 'number' || isNaN(frac)) {
+      if (typeof bytes === 'number' && typeof total === 'number' && total > 0) {
+        frac = bytes / total;
+      } else if ((sourceType === 'torrent') && (!total || total <= 0) && typeof bytes === 'number' && typeof torrentSize === 'number' && torrentSize > 0) {
+        frac = bytes / torrentSize;
+      } else {
+        frac = 0;
+      }
+    }
+    const clamped = Math.max(0, Math.min(1, frac));
     return Math.round(clamped * 100);
-  }, [progress]);
+  }, [progress, sourceType, total, bytes, torrentSize]);
 
-  // Poll torrent progress to get peers and authoritative file size
+  // Poll torrent progress to get peers, authoritative file size, and speed (via Tauri command)
   useEffect(() => {
     let active = true;
     let interval: any;
     let aborted = false;
-    let cachedPort: number | null = null;
 
     const poll = async () => {
       if (aborted) return;
@@ -147,7 +161,7 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
         if (sourceType !== 'torrent') return;
 
         // Selected file index is not fetched from legacy DB anymore; server progress will infer defaults
-        let fileIndex: number | undefined = undefined;
+  let selectedFileIndex: number | undefined = (typeof fileIndex === 'number' ? fileIndex : undefined);
 
         // Derive infoHash from id or sourceHash portion of id
         // Our DownloadItem id is sanitized: <trackId>_<sourceType>_<sourceHash>
@@ -156,26 +170,16 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
         const sourceHash = parts.slice(2).join('_');
         if (!sourceHash) return;
 
-        // Resolve server port once (fallback to 9000)
-        if (cachedPort == null) {
-          try {
-            const status: any = await runTauriCommand('server_status');
-            const port = (status && (status.port || (status.data && status.data.port))) || 9000;
-            cachedPort = typeof port === 'number' ? port : 9000;
-          } catch (_) {
-            cachedPort = 9000;
-          }
-        }
-
-        const idx = typeof fileIndex === 'number' ? fileIndex : 0;
-        const url = `http://localhost:${cachedPort}/progress/${encodeURIComponent(sourceHash)}/${idx}`;
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const json = await res.json();
-        const data = json?.data || {};
+        const idx = typeof selectedFileIndex === 'number' ? selectedFileIndex : 0;
+        const json: any = await runTauriCommand('torrent_progress', {
+          hash_or_magnet: sourceHash,
+          index: idx
+        });
+        const data = (json && json.data) || {};
         if (!active) return;
         if (typeof data.peers === 'number') setTorrentPeers(data.peers);
         if (typeof data.total === 'number' && data.total > 0) setTorrentSize(data.total);
+        if (typeof data.downSpeed === 'number') setTorrentSpeed(data.downSpeed);
       } catch (_) {
         // Ignore network errors
       }
@@ -192,7 +196,7 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
       aborted = true;
       if (interval) clearInterval(interval);
     };
-  }, [id, trackId, sourceType, isPaused, getSource]);
+  }, [id, trackId, sourceType, isPaused, getSource, fileIndex]);
 
   const displayPeers = useMemo(() => {
     if (sourceType === 'torrent') return torrentPeers ?? 0;
@@ -205,6 +209,13 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
     const raw = (sourceType === 'torrent') ? torrentSize : (typeof total === 'number' ? total : undefined);
     return formatBytes(raw);
   }, [formatBytes, torrentSize, sourceType, total]);
+
+  const displaySpeed = useMemo(() => {
+    if (sourceType !== 'torrent') return undefined;
+    const v = torrentSpeed ?? 0;
+    // formatBytes returns a string for bytes; append "/s"
+    return `${formatBytes(v)}/s`;
+  }, [sourceType, torrentSpeed, formatBytes]);
 
   return (
     <li
@@ -259,11 +270,14 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
         </small>
       </span>
       <span className={`download-info${sourceType ? ` source-${sourceType}` : ''}`} aria-hidden="true">
-        {sourceType === 'torrent' ? (          
-          <span className='download-info-peers'><span className='download-info-label'>{t('downloads.peers')}:</span>{displayPeers ?? 0}</span>
+        {sourceType === 'torrent' ? (
+          <>
+            <span className='download-info-peers'><span className='download-info-label'>{t('downloads.peers')}:</span>{displayPeers ?? 0}</span>
+            <span className='download-info-speed'><span className='download-info-label'>{t('downloads.speed', 'Speed')}:</span>{displaySpeed}</span>
+          </>
         ) : null}
         <span className='download-info-size'><span className='download-info-label'>{t('downloads.size')}:</span>{displaySize}</span>
-      </span>      
+      </span>
     </li>
   );
 }, (prevProps, nextProps) => {
@@ -273,6 +287,7 @@ const DownloadsItem = React.memo<DownloadsItemProps>(({
     prevProps.trackId === nextProps.trackId &&
     prevProps.isDownloading === nextProps.isDownloading &&
     prevProps.isPaused === nextProps.isPaused &&
+    prevProps.bytes === nextProps.bytes &&
     prevProps.progress === nextProps.progress &&
     prevProps.trackData === nextProps.trackData &&
     prevProps.sourceType === nextProps.sourceType &&
@@ -391,6 +406,7 @@ export const DownloadsTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) 
         {list.map((d) => {
           const total = typeof d.total === 'number' && d.total > 0 ? d.total : undefined;
           const bytes = typeof d.bytes === 'number' ? d.bytes : 0;
+          // Compute percent using known total; fallback to 0 here. The item will self-show size via torrent polling.
           const prog = total ? Math.max(0, Math.min(1, bytes / total)) : 0;
           // Consider 'queued' as paused. 'ready' means playable but still downloading, not paused.
           const paused = d.status === 'queued';
@@ -403,10 +419,12 @@ export const DownloadsTab = React.memo<{ collapsed?: boolean }>(({ collapsed }) 
               trackId={d.trackId}
               isDownloading={d.status === 'downloading' || d.status === 'ready'}
               progress={prog}
+              bytes={bytes}
               isPaused={paused}
               trackData={td as TrackData | undefined}
               sourceType={d.sourceType}
               total={total}
+              fileIndex={d.fileIndex}
             />
           );
         })}

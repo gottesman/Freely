@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { frontendLogger } from './FrontendLogger';
 
 // Type definitions for better type safety
 type TauriInvokeFunction = (cmd: string, args?: any) => Promise<any>;
@@ -61,7 +62,7 @@ function findInvokeFunction(): TauriInvokeFunction | null {
     return cachedInvoke;
   }
 
-  console.warn('Tauri invoke not found in this environment');
+  frontendLogger.warn('Tauri invoke not found in this environment');
   invokeSearchComplete = true;
   return null;
 }
@@ -155,7 +156,7 @@ export async function runTauriCommand<T = any>(command: string, args?: any): Pro
   // Get cached invoke function
   const invokeFunction = findInvokeFunction();
   if (!invokeFunction) {
-    console.warn('Tauri invoke not available in this environment');
+    frontendLogger.warn('Tauri invoke not available in this environment');
     return false;
   }
 
@@ -173,12 +174,12 @@ export async function runTauriCommand<T = any>(command: string, args?: any): Pro
   // Create and cache the promise
   const inflightPromise = (async (): Promise<TauriResult<T>> => {
     try {
-      console.log(`[TauriCommands] Invoking command: ${command}`, args);
+      //frontendLogger.log(`[TauriCommands] Invoking command: ${command}`, args);
       const result = await invokeFunction(command, args ?? {});
-      console.log(`[TauriCommands] Command ${command} result:`, result);
+      //frontendLogger.log(`[TauriCommands] Command ${command} result:`, result);
       return result as T;
     } catch (err) {
-      console.error(`[TauriCommands] Command ${command} error:`, err);
+      frontendLogger.error(`[TauriCommands] Command ${command} error:`, err);
       return parseError(err);
     }
   })();
@@ -302,7 +303,8 @@ export async function getAudioSettings(): Promise<{ settings: AudioSettings }> {
  * @returns Promise resolving to success status
  */
 export async function setAudioSettings(settings: Partial<AudioSettings>): Promise<{ success: boolean; message: string; reinitialized?: boolean }> {
-  const result = await runTauriCommand('set_audio_settings', settings);
+  // Pass settings wrapped under the `settings` key to match Rust command signature
+  const result = await runTauriCommand('set_audio_settings', { settings });
   return result;
 }
 
@@ -320,4 +322,42 @@ export async function reinitializeAudio(deviceId: number, sampleRate: number, bu
     buffer_size: bufferSize 
   });
   return result;
+}
+
+// Plugins API
+export interface PluginInfo {
+  name: string;
+  version: string;
+  provider?: string | null;
+  type?: string | null;
+  enabled: boolean;
+}
+
+export async function pluginsList(): Promise<PluginInfo[]> {
+  const res = await runTauriCommand('plugins_list');
+  return (res as any) ?? [];
+}
+
+export async function pluginsSetEnabled(name: string, enabled: boolean): Promise<boolean> {
+  const res = await runTauriCommand('plugins_set_enabled', { payload: { name, enabled } });
+  return !!(res as any)?.status;
+}
+
+export async function pluginsDelete(name: string): Promise<boolean> {
+  const res = await runTauriCommand('plugins_delete', { name });
+  return !!(res as any)?.status;
+}
+
+export async function pluginsInstallZipFromFile(file: File): Promise<boolean> {
+  const buf = await file.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const res = await runTauriCommand('plugins_install_zip', { payload: { base64_zip: base64 } });
+  return !!(res as any)?.status;
+}
+
+// Script plugin sources
+export interface ScriptPluginSource { name: string; provider?: string | null; entry: string; code: string; }
+export async function pluginsScriptSources(): Promise<ScriptPluginSource[]> {
+  const res = await runTauriCommand('plugins_script_sources');
+  return (res as any) ?? [];
 }

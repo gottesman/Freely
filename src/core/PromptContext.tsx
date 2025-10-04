@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useMemo, useRef } from 'react';
+import { frontendLogger } from './FrontendLogger';
 import { useI18n } from './i18n';
 import '../styles/prompt.css';
 
@@ -121,7 +122,7 @@ class PromptResolver {
         (resolver as PromptResolve)(value || null);
       }
     } catch (error) {
-      console.warn('[PromptResolver] Error resolving prompt:', error);
+      frontendLogger.warn('[PromptResolver] Error resolving prompt:', error);
     }
   }
 
@@ -138,7 +139,7 @@ class PromptResolver {
         (resolver as PromptResolve)(null);
       }
     } catch (error) {
-      console.warn('[PromptResolver] Error canceling prompt:', error);
+      frontendLogger.warn('[PromptResolver] Error canceling prompt:', error);
     }
   }
 }

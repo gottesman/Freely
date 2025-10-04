@@ -3,22 +3,27 @@
 // These can be tightened later by addressing each warning individually.
 #![allow(unused_imports, dead_code, unused_variables, unused_mut)]
 
+#[macro_use]
+mod logging; // must come first so logging macros are available to subsequent modules
+mod audio_settings;
 mod bass;
 mod cache;
 mod commands;
 mod downloads;
-mod logging;
 mod paths;
 mod playback;
-mod server;
 mod utils;
+pub mod plugins;
+pub mod scrape;
+mod youtube;
 mod window;
 
 use cache::{cache_clear, cache_download_and_store, cache_get_file, cache_get_stats};
-use commands::{db, external, search, torrent, youtube};
+use commands::{db, external, search, youtube as cmd_youtube};
+use commands::torrent as cmd_torrent;
 use logging::BackendLogger;
 use paths::{get_path_config, write_to_log_file, PathConfig};
-use server::{server_start, server_status};
+mod torrents;
 use window::{handle_window_resize, WindowState};
 
 use once_cell::sync::Lazy;
@@ -44,7 +49,7 @@ async fn open_audio_file_dialog(app: tauri::AppHandle) -> Option<String> {
     let mut builder = app.dialog().file();
     // Add common audio filters
     builder = builder.add_filter("Audio", &[
-        "m4a", "mp3", "opus", "ogg", "flac", "wav", "aac", "webm"
+        "m4a", "mp3", "opus", "ogg", "flac", "wav", "aac", "webm","dsd", "alac", "aiff", "aif", "aifc", "wma"
     ]);
     // Optionally prefer the user's Music or Downloads folder
     if let Ok(music_dir) = app.path().audio_dir() {
@@ -103,7 +108,7 @@ async fn save_file_dialog(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command]
 async fn app_ready(app_handle: tauri::AppHandle) {
     // Called when the React app is fully ready
-    println!("App is ready, transitioning from splashscreen to main window");
+    log_info!("App is ready, transitioning from splashscreen to main window");
 
     // Close splashscreen and show main window
     if let Some(splashscreen) = app_handle.get_webview_window("splashscreen") {
@@ -140,6 +145,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        //.plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_prevent_default::init()) // ::init() makes the app ignore default browser shortcuts and context menu, ::debug() enables them in dev mode
         .setup(|app| {
             // Initialize global path configuration
@@ -153,7 +159,7 @@ fn main() {
             ).expect("Failed to initialize backend logger");
 
             log_info!("Freely Player starting up...");
-            log_info!("Path configuration initialized: {}", path_config.to_json().unwrap_or_default());
+            //log_info!("Path configuration initialized: {}", path_config.to_json().unwrap_or_default());
 
             // Store path configuration for other components to use
             app.manage(path_config.clone());
@@ -191,21 +197,8 @@ fn main() {
 
             // Store global app handle for event emission
             *APP_HANDLE.lock().unwrap() = Some(app_handle.clone());
-
-            tauri::async_runtime::spawn(async move {
-                // Start server in background
-                let path_config = app_handle.state::<PathConfig>();
-                match server_start(path_config).await {
-                    Ok(status) => {
-                        log_info!("Server started on localhost:{}", status.port.unwrap_or(0));
-                    }
-                    Err(e) => {
-                        log_error!("Failed to start server: {}", e);
-                    }
-                }
-                // Note: No longer auto-closing splashscreen here
-                // The React app will call app_ready() when it's fully loaded
-            });
+            // Note: We no longer auto-start any embedded HTTP server.
+            // The React app will call app_ready() when it's fully loaded.
 
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_i])?;
@@ -240,19 +233,24 @@ fn main() {
             db::db_path,
             db::db_read,
             db::db_write,
-            // Server commands
-            server_status,
-            server_start,
             // Path configuration commands
             get_path_config,
             write_to_log_file,
-            // Torrent commands
-            torrent::torrent_list_scrapers,
-            torrent::torrent_get_files,
+            // Torrent commands (from commands::torrent)
+            cmd_torrent::torrent_list_scrapers,
+            cmd_torrent::torrent_search,
+            cmd_torrent::torrent_get_files,
+            cmd_torrent::torrent_start_download,
+            cmd_torrent::torrent_progress,
+            cmd_torrent::torrent_get_file_path,
+            cmd_torrent::torrent_pause,
+            cmd_torrent::torrent_resume,
+            cmd_torrent::torrent_remove,
             // Search commands
             search::source_search,
             // YouTube commands
-            youtube::youtube_get_info,
+            cmd_youtube::youtube_get_info,
+            cmd_youtube::youtube_get_stream_url,
             // (no fs command)
             // Playback commands
             commands::playback::playback_start,
@@ -291,6 +289,12 @@ fn main() {
             external::lyrics_cache_get,
             external::lyrics_cache_set,
             external::spotify_search,
+            // Plugins management
+            commands::plugins_api::plugins_list,
+            commands::plugins_api::plugins_set_enabled,
+            commands::plugins_api::plugins_delete,
+            commands::plugins_api::plugins_install_zip,
+            commands::plugins_api::plugins_script_sources,
         ])
         .on_window_event(|window, event| {
             match event {
@@ -298,12 +302,8 @@ fn main() {
                     handle_window_resize(window);
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
-                    // Only kill server when main window is closing, not splashscreen
+                    // Cleanup BASS resources before closing main window
                     if window.label() == "main" {
-                        let config = window.app_handle().state::<PathConfig>();
-                        config.kill_server();
-
-                        // Cleanup BASS resources before closing
                         tauri::async_runtime::spawn(async move {
                             let _ = crate::playback::playback_cleanup_internal().await;
                         });

@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "1.3.0-test",
+  "version": "1.4.0-alpha",
   "build": {
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run fetch:ytdlp && npm run fetch:bass && npm run dev",
-    "beforeBuildCommand": "npm run fetch:ytdlp && npm run fetch:bass && npm run build && npm run build:server",
+    "beforeBuildCommand": "npm run fetch:ytdlp && npm run fetch:bass && npm run build",
     "frontendDist": "../dist"
   },
   "bundle": {
@@ -23,16 +23,15 @@
       "nsis": {
         "displayLanguageSelector": false,
         "sidebarImage": "icons/installer-sidebar.bmp",
-        "installerIcon": "icons/icon-installer.ico"
+        "installerIcon": "icons/icon-installer.ico",
+        "installMode": "perMachine"
       }
     },
     "targets": [
       "nsis"
     ],
     "resources": [
-      "server-dist",
-      "bin/*",
-      "../node_modules/utp-native/prebuilds"
+      "bin/*"
     ]
   },
   "app": {
