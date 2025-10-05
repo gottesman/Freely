@@ -106,7 +106,7 @@ let needsDownload = FORCE;
 if (!needsDownload) {
   console.log('[bass] Checking existing files...');
   for (const [key, lib] of Object.entries(LIBRARIES)) {
-    const targetFile = `${platforms[PLATFORM]?.filePreffix || ''}${lib.file}${platforms[PLATFORM]?.fileSuffix || ''}`;
+    const targetFile = `${lib.file}${platforms[PLATFORM]?.fileSuffix || ''}`;
     const targetPath = path.join(BIN_DIR, targetFile);
     const exists = fs.existsSync(targetPath);
     console.log(`[bass] ${targetFile}: ${exists ? 'EXISTS' : 'MISSING'}`);
@@ -139,9 +139,9 @@ function download(url) {
 }
 
 async function downloadLibrary(key, lib) {
-  const url = ` ${lib.url}${platforms[PLATFORM]?.urlSuffix || ''}${VERSION}.zip`;
+  const url = ` ${lib.url}${VERSION}${platforms[PLATFORM]?.urlSuffix || ''}.zip`;
   const targetFile = `${platforms[PLATFORM]?.filePreffix || ''}${lib.file}${platforms[PLATFORM]?.fileSuffix || ''}`;
-  const targetPath = path.join(BIN_DIR, targetFile);
+  const targetPath = path.join(BIN_DIR, `${lib.file}${platforms[PLATFORM]?.fileSuffix || ''}`);
 
   if (!url) {
     console.log(`[bass] Skipping ${lib.name} - not available for platform:`, PLATFORM);

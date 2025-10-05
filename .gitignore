@@ -3,6 +3,7 @@ dist
 public/vendor
 server/data
 build*
+!build.rs
 logo
 website
 apis
@@ -27,3 +28,4 @@ TODO.md
 public/plugins/*
 !public/plugins/index.json
 !public/plugins/example
+tsconfig.tsbuildinfo
